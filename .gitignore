@@ -1,0 +1,4 @@
+serviceAccountKey.json
+.vercel
+node_modules/
+.env.local
