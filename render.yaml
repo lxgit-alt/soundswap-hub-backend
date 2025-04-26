@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: soundswap-frontend
+    runtime: node
+    buildCommand: npm install && npm run build
+    staticPublishPath: "./dist"
+    envVars:
+      - key: VITE_API_URL
+        value: https://your-backend.vercel.app
+      - key: VITE_FIREBASE_CONFIG
+        value: '{
+          "apiKey": "YOUR_KEY",
+          "authDomain": "YOUR_DOMAIN",
+          "projectId": "YOUR_ID",
+          "storageBucket": "YOUR_BUCKET",
+          "messagingSenderId": "YOUR_SENDER",
+          "appId": "YOUR_APP_ID"
+        }'
