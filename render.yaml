@@ -9,10 +9,10 @@ services:
         value: https://your-backend.vercel.app
       - key: VITE_FIREBASE_CONFIG
         value: '{
-          "apiKey": "YOUR_KEY",
-          "authDomain": "YOUR_DOMAIN",
-          "projectId": "YOUR_ID",
-          "storageBucket": "YOUR_BUCKET",
-          "messagingSenderId": "YOUR_SENDER",
-          "appId": "YOUR_APP_ID"
+          "apiKey": "AIzaSyB4d9DUu0B7NG3mb-jRApMqE32siJESZUg",
+          "authDomain": "soundswap-7e780.firebaseapp.com",
+          "projectId": "soundswap-7e780",
+          "storageBucket": "soundswap-7e780.firebasestorage.app",
+          "messagingSenderId": "1022111514649",
+          "appId": "Y1:1022111514649:web:3f4eae618d33a63137aa88"
         }'
