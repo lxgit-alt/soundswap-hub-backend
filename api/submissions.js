@@ -1,33 +1,25 @@
-import { authenticate } from '../lib/authMiddleware';
-import { db } from '../lib/firebaseAdmin';
+// backend/api/submissions.js
+import { allowCors } from './_cors.js';
+import { authMiddleware } from '../middlewares/authMiddleware.js';
+import { submitSubmission } from '../services/submissionsService.js';
 
-const ALLOWED_DOMAINS = ['soundcloud.com', 'open.spotify.com'];
-
-const validateTrackURL = (url) => {
-  try {
-    const parsed = new URL(url);
-    return ALLOWED_DOMAINS.some(domain => parsed.hostname.includes(domain));
-  } catch {
-    return false;
-  }
-};
-
-export default authenticate(async (req, res) => {
-  if (req.method !== 'POST') return res.status(405).end();
-
-  const { trackURL } = req.body;
-
-  if (!validateTrackURL(trackURL)) {
-    return res.status(400).json({
-      error: "Only SoundCloud/Spotify URLs allowed"
-    });
+async function handler(req, res) {
+  if (req.method !== 'POST') {
+    return res.status(405).json({ error: 'Method Not Allowed' });
   }
 
-  await db.collection('users').doc(req.user.uid).update({
-    trackURL,
-    hasUnreviewedTrack: true,
-    lastSubmitted: new Date()
+  const { trackUrl } = req.body;
+  if (!trackUrl) {
+    return res.status(400).json({ error: 'trackUrl is required' });
+  }
+
+  // userId from the token
+  const submission = await submitSubmission({
+    userId: req.userId,
+    trackUrl,
   });
 
-  res.status(200).json({ success: true });
-});
+  return res.status(201).json(submission);
+}
+
+export default allowCors(authMiddleware(handler));
