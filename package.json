@@ -1,43 +1,26 @@
 {
-  "name": "soundswap-hub-backend",
+  "name": "backend",
   "version": "1.0.0",
   "type": "module",
-  "main": "src/server.js",
   "scripts": {
-    "dev": "nodemon src/server.js",
-    "build": "prisma generate",
-    "migrate": "prisma migrate deploy",
-    "start": "node src/server.js",
     "test": "jest",
-    "test:watch": "jest --watch",
-    "deploy": "vercel deploy --prod"
+    "dev": "node --experimental-modules server.js",
+    "debug": "node --experimental-modules --inspect server.js"
   },
   "dependencies": {
-    "@firebasegen/default-connector": "file:dataconnect-generated/js/default-connector",
-    "@jest/globals": "^29.7.0",
-    "@prisma/client": "^4.12.0",
-    "bcrypt": "^5.1.0",
+    "axios": "^1.10.0",
+    "canvas-confetti": "^1.9.3",
     "cors": "^2.8.5",
-    "dotenv": "^16.0.3",
-    "express": "^4.18.2",
-    "firebase": "^11.6.0",
-    "firebase-admin": "^13.2.0",
-    "jsonwebtoken": "^9.0.2",
-    "micro-cors": "^0.1.1",
-    "uuid": "^11.1.0"
+    "dotenv": "^16.5.0",
+    "express": "^4.21.2",
+    "express-rate-limit": "^7.5.0",
+    "firebase-admin": "^13.4.0",
+    "handlebars": "^4.7.8",
+    "nodemailer": "^7.0.3",
+    "validator": "^13.15.15",
+    "ws": "^8.18.2"
   },
   "devDependencies": {
-    "jest": "^29.7.0",
-    "nodemon": "^3.1.9",
-    "prisma": "^4.12.0",
-    "supertest": "^7.1.0"
-  },
-  "directories": {
-    "lib": "lib",
-    "test": "tests"
-  },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "description": ""
+    "jest": "^29.7.0"
+  }
 }

@@ -1,20 +1,23 @@
-const admin = require('firebase-admin');
+// backend/firebaseAdmin.js
+import admin from 'firebase-admin'
+import fs from 'fs'
+import path from 'path'
 
-let serviceAccount;
+// Load service account from env or file
+let serviceAccount
 if (process.env.FIREBASE_SERVICE_ACCOUNT) {
-  serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+  serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT)
 } else {
-  serviceAccount = require('./serviceAccountKey.json');
+  const filePath = path.join(process.cwd(), 'serviceAccountKey.json')
+  const fileContents = fs.readFileSync(filePath, 'utf8')
+  serviceAccount = JSON.parse(fileContents)
 }
 
 if (!admin.apps.length) {
   admin.initializeApp({
     credential: admin.credential.cert(serviceAccount),
-    databaseURL: process.env.FIREBASE_DATABASE_URL || 'https://soundswap-7e780.firebaseio.com'
-  });
+  })
 }
 
-const db = admin.firestore();
-const storage = admin.storage();
-
-module.exports = { admin, db, storage };
+const db = admin.firestore()
+export { admin, db }

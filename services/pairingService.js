@@ -1,42 +1,40 @@
-import { db } from '../lib/firebaseAdmin';
+// backend/services/pairingService.js
 
-export const generatePairs = async (genre) => {
-  const usersRef = db.collection('users');
+import { db } from '../firebaseAdmin.js'
+
+/**
+ * Fetch users in a genre who have an unreviewed track URL, prioritize by boosts,
+ * and then pair them sequentially.
+ */
+export async function getRandomPairsByGenre(genre) {
+  const usersRef = db.collection('users')
   const snapshot = await usersRef
     .where('genres', 'array-contains', genre)
     .where('hasUnreviewedTrack', '==', true)
-    .where('trackURL', '!=', null) // Added condition to exclude null trackURL
+    .where('trackURL', '!=', null) // only those who submitted a URL
     .limit(50)
-    .get();
+    .get()
 
-  if (snapshot.empty) return [];
-
-  const users = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-
-  // Prioritize users who have priorityPairing boosts
-  return users
-    .sort((a, b) => {
-      const aBoost = (a.boosts?.priorityPairing?.remainingUses || 0) > 0 ? 1 : 0;
-      const bBoost = (b.boosts?.priorityPairing?.remainingUses || 0) > 0 ? 1 : 0;
-      return bBoost - aBoost;
-    })
-    .reduce((pairs, user, index, sortedUsers) => {
-      if (index % 2 === 0) {
-        pairs.push(sortedUsers.slice(index, index + 2));
-      }
-      return pairs;
-    }, []);
-};
-
-const shuffleArray = (array) => {
-  return [...array].sort(() => Math.random() - 0.5);
-};
-
-const createPairs = (users) => {
-  const pairs = [];
-  for (let i = 0; i < users.length; i += 2) {
-    if (i + 1 >= users.length) break;
-    pairs.push([users[i], users[i + 1]]);
+  if (snapshot.empty) {
+    return []
   }
-  return pairs;
-};
+
+  const users = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }))
+
+  // Prioritize users with remaining priorityPairing boosts
+  const prioritized = users.sort((a, b) => {
+    const aBoost = (a.boosts?.priorityPairing?.remainingUses || 0) > 0 ? 1 : 0
+    const bBoost = (b.boosts?.priorityPairing?.remainingUses || 0) > 0 ? 1 : 0
+    return bBoost - aBoost
+  })
+
+  // Now create pairs sequentially
+  const pairs = []
+  for (let i = 0; i < prioritized.length; i += 2) {
+    if (i + 1 < prioritized.length) {
+      pairs.push([prioritized[i], prioritized[i + 1]])
+    }
+  }
+
+  return pairs
+}

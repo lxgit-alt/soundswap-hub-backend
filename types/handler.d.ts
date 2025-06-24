@@ -1,0 +1,1 @@
+export type APIHandler = (req: Request, res: Response) => Promise<void> | void;

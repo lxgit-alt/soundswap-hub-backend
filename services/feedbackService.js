@@ -1,4 +1,4 @@
-import { db } from '../lib/firebaseAdmin';
+import { db } from '../firebaseAdmin.js'
 
 export const submitFeedback = async ({ fromUserId, toUserId, rating, comments }) => {
   const batch = db.batch();

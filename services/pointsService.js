@@ -1,4 +1,4 @@
-const { db } = require('../firebaseAdmin'); // <- adjust path if needed
+import { db, admin } from '../firebaseAdmin.js';
 
 // Main function to redeem a boost
 const redeemBoost = async (userId, boostType) => {
