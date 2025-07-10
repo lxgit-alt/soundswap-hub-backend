@@ -50,7 +50,8 @@ const claimLimiter = rateLimit({
 router.get('/', async (req, res) => {
   try {
     const snapshot = await db.collection('signups').get();
-    res.json({ spotsClaimed: snapshot.size });
+    const spotsClaimed = snapshot.size; // Number of signups
+    res.json({ spotsClaimed });
   } catch (err) {
     res.status(500).json({ error: 'Failed to fetch spots claimed' });
   }
@@ -96,7 +97,10 @@ router.post('/claim', claimLimiter, express.json(), async (req, res) => {
     console.log('Email sent:', info);
 
     // Save email to Firestore
-    await db.collection('signups').doc(email).set({ email, timestamp: Date.now() });
+    await db.collection('signups').doc(email).set({
+      email,
+      createdAt: admin.firestore.FieldValue.serverTimestamp()
+    });
 
     // Add user to the users collection with founder features
     const userRef = db.collection('users').doc(email);
