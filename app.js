@@ -14,7 +14,7 @@ dotenv.config();
 const app = express();
 
 app.use(cors({
-  origin: 'https://soundswap.onrender.com', // e.g. https://sound-swap.onrender.com
+  origin: 'http://localhost:5173', // or '*' for all origins (not recommended for production)
   credentials: true
 }));
 

@@ -50,10 +50,9 @@ const claimLimiter = rateLimit({
 router.get('/', async (req, res) => {
   try {
     const snapshot = await db.collection('signups').get();
-    const spotsClaimed = snapshot.size; // Number of signups
-    res.json({ spotsClaimed });
+    res.json({ spotsClaimed: snapshot.size });
   } catch (err) {
-    res.status(500).json({ error: 'Failed to fetch spots claimed' });
+    res.status(500).json({ error: 'Failed to fetch spots' });
   }
 });
 
@@ -68,63 +67,49 @@ const verifyCaptcha = async (token) => {
 };
 
 // Claim a spot
-router.post('/claim', claimLimiter, express.json(), async (req, res) => {
-  const { email, captchaToken } = req.body;
+router.post('/claim', claimLimiter, async (req, res) => {
+  const { name, email, genre, phone, captchaToken } = req.body;
+
+  // Basic validation
+  if (!name || name.trim().length < 2) {
+    return res.status(400).json({ error: 'Name is required.' });
+  }
   if (!email || !validator.isEmail(email)) {
-    return res.status(400).json({ error: 'Invalid email' });
+    return res.status(400).json({ error: 'Valid email is required.' });
   }
-  if (!captchaToken) {
-    return res.status(400).json({ error: 'CAPTCHA token missing' });
+  if (!genre) {
+    return res.status(400).json({ error: 'Genre is required.' });
   }
-  const captchaValid = await verifyCaptcha(captchaToken);
-  if (!captchaValid) {
-    return res.status(400).json({ error: 'CAPTCHA verification failed' });
+  if (phone && !/^\+?\d{10,15}$/.test(phone)) {
+    return res.status(400).json({ error: 'Invalid phone number.' });
   }
 
-  // Check if email already exists
-  const existing = await db.collection('signups').doc(email).get();
-  if (existing.exists) {
+  // Check for duplicate email
+  const existing = await db.collection('signups').where('email', '==', email).get();
+  if (!existing.empty) {
     return res.status(409).json({ error: 'Email already used' });
   }
 
+  // Store in Firestore
+  await db.collection('signups').add({
+    name,
+    email,
+    genre,
+    phone: phone || null,
+    createdAt: new Date()
+  });
+
+  // Send confirmation email
   try {
-    const info = await transporter.sendMail({
+    await transporter.sendMail({
       from: process.env.GMAIL_USER,
       to: email,
       subject: 'Your SoundSwap Lifetime Deal',
-      text: 'Thank you for signing up for the SoundSwap lifetime deal! Stay tuned for more info.'
+      text: `Hi ${name},\n\nThank you for signing up for SoundSwap!\n\nWe've noted your genre: ${genre}.\n\nStay tuned for more info.`
     });
-    console.log('Email sent:', info);
-
-    // Save email to Firestore
-    await db.collection('signups').doc(email).set({
-      email,
-      createdAt: admin.firestore.FieldValue.serverTimestamp()
-    });
-
-    // Add user to the users collection with founder features
-    const userRef = db.collection('users').doc(email);
-    await userRef.set({
-      email: email,
-      isFounder: true,
-      features: {
-        premiumAccess: {
-          type: "permanent",
-          grantedAt: new Date().toISOString()
-        },
-        priorityRequests: true,
-        founderBadge: true,
-        bonusPoints: 500,
-        earlyAccess: true
-      },
-      feedbackPoints: 500,
-      subscription: "lifetime",
-      founderSince: new Date().toISOString().slice(0, 10)
-    }, { merge: true }); // merge: true to avoid overwriting if user exists
-
-    // Get updated count
-    const snapshot = await db.collection('signups').get();
-    res.json({ spotsClaimed: snapshot.size });
+    // Update spotsClaimed count
+    const spotsClaimed = (await db.collection('signups').get()).size;
+    res.json({ spotsClaimed });
   } catch (err) {
     console.error('Email send error:', err);
     res.status(500).json({ error: 'Failed to send email' });
