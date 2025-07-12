@@ -1,4 +1,4 @@
-const { db } = require('../firebaseAdmin'); // adjust path
+import { db } from '../firebaseAdmin.js'; // adjust path
 
 const seedBoosts = async () => {
   const boosts = [

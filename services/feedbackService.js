@@ -1,8 +1,17 @@
-import { db } from '../firebaseAdmin.js'
+import { initializeApp, applicationDefault, getApps } from 'firebase-admin/app';
+import { getFirestore, FieldValue } from 'firebase-admin/firestore';
+
+// Initialize Firebase only once per cold start
+if (!getApps().length) {
+  initializeApp({
+    credential: applicationDefault(),
+  });
+}
+const db = getFirestore();
 
 export const submitFeedback = async ({ fromUserId, toUserId, rating, comments }) => {
   const batch = db.batch();
-  
+
   const feedbackRef = db.collection('feedback').doc();
   batch.set(feedbackRef, {
     fromUserId,
@@ -14,7 +23,7 @@ export const submitFeedback = async ({ fromUserId, toUserId, rating, comments })
 
   const userRef = db.collection('users').doc(toUserId);
   batch.update(userRef, {
-    feedbackPoints: firebase.firestore.FieldValue.increment(1),
+    feedbackPoints: FieldValue.increment(1),
     hasUnreviewedTrack: false
   });
 

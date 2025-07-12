@@ -1,5 +1,14 @@
 // backend/services/submissionsService.js
-import { db, admin } from '../firebaseAdmin.js';
+import { initializeApp, applicationDefault, getApps } from 'firebase-admin/app';
+import { getFirestore, FieldValue } from 'firebase-admin/firestore';
+
+// Initialize Firebase only once per cold start
+if (!getApps().length) {
+  initializeApp({
+    credential: applicationDefault(),
+  });
+}
+const db = getFirestore();
 
 export async function submitSubmission({ userId, trackURL }) {
   // 1) Add a submission document
@@ -9,7 +18,7 @@ export async function submitSubmission({ userId, trackURL }) {
     userId,
     trackURL,
     reviewed: false,
-    createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    createdAt: FieldValue.serverTimestamp(),
   };
   await subRef.set(submissionData);
 
@@ -17,7 +26,7 @@ export async function submitSubmission({ userId, trackURL }) {
   await db.collection('users').doc(userId).update({
     trackURL,
     hasUnreviewedTrack: true,
-    lastSubmitted: admin.firestore.FieldValue.serverTimestamp(),
+    lastSubmitted: FieldValue.serverTimestamp(),
   });
 
   return submissionData;

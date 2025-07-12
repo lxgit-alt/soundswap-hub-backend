@@ -1,5 +1,5 @@
-const WebSocket = require('ws');
-const jwt = require('jsonwebtoken');
+import WebSocket from 'ws';
+import jwt from 'jsonwebtoken';
 
 const setupWebSocket = (server) => {
   const wss = new WebSocket.Server({ server });
@@ -34,4 +34,4 @@ const setupWebSocket = (server) => {
   return { broadcastUpdate };
 };
 
-module.exports = setupWebSocket;
+export default setupWebSocket;

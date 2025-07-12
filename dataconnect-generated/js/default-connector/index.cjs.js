@@ -1,9 +1,8 @@
-const { , validateArgs } = require('firebase/data-connect');
+import { validateArgs } from 'firebase/data-connect';
 
-const connectorConfig = {
+export const connectorConfig = {
   connector: 'default',
   service: 'backend',
   location: 'us-central1'
 };
-exports.connectorConfig = connectorConfig;
 

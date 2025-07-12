@@ -1,5 +1,5 @@
 import nodemailer from 'nodemailer';
-import fs from 'fs';
+import { readFile } from 'fs/promises';
 import path from 'path';
 import Handlebars from 'handlebars';
 import dotenv from 'dotenv';
@@ -18,19 +18,10 @@ const transporter = nodemailer.createTransport({
   }
 });
 
-// Verify connection configuration
-transporter.verify((error) => {
-  if (error) {
-    console.error('SMTP connection error:', error);
-  } else {
-    console.log('SMTP server ready');
-  }
-});
-
-// Utility to load and compile a Handlebars template
-function renderTemplate(templateName, data) {
+// Utility to load and compile a Handlebars template (async)
+async function renderTemplate(templateName, data) {
   const templatePath = path.join(process.cwd(), 'backend', 'templates', `${templateName}.hbs`);
-  const source = fs.readFileSync(templatePath, 'utf8');
+  const source = await readFile(templatePath, 'utf8');
   const template = Handlebars.compile(source);
   return template(data);
 }
@@ -68,7 +59,7 @@ export const sendEmail = async ({ to, subject, html }) => {
  * @param {string} name - User name
  */
 export const sendFounderActivationEmail = async (email, name = 'Artist') => {
-  const html = renderTemplate('founderActivation', {
+  const html = await renderTemplate('founderActivation', {
     name,
     dashboardUrl: process.env.CLIENT_URL + '/dashboard'
   });
@@ -98,25 +89,21 @@ export const sendFounderActivationEmail = async (email, name = 'Artist') => {
  */
 export const sendAuditAlertEmail = async (email, issues, founderEmail) => {
   const subject = `🚨 SoundSwap Audit Alert: Issues with ${founderEmail}`;
-  
+
   const html = `
     <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
       <div style="background: #f8f9fa; padding: 30px; border-radius: 10px;">
         <h2 style="color: #d33a3a; text-align: center;">Founder Benefits Audit Alert</h2>
-        
         <div style="background: white; border-radius: 8px; padding: 25px; margin: 20px 0;">
           <p><strong>Affected Founder:</strong> ${founderEmail}</p>
-          
           <h3 style="color: #333; margin-top: 25px;">Missing Benefits:</h3>
           <ul style="padding-left: 20px;">
             ${issues.map(issue => `<li>${issue}</li>`).join('')}
           </ul>
-          
           <div style="margin-top: 30px; background: #fff8f8; border-left: 4px solid #d33a3a; padding: 10px 15px;">
             <p>Please investigate and manually resolve these issues in the Firestore database.</p>
           </div>
         </div>
-        
         <div style="text-align: center; margin-top: 30px;">
           <a href="${process.env.ADMIN_URL}/users/${encodeURIComponent(founderEmail)}" 
             style="color: #d3a373; font-weight: bold;">

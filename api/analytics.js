@@ -1,46 +1,47 @@
-const express = require('express');
-const cors = require('cors');
-const jwt = require('jsonwebtoken');
+import { initializeApp, applicationDefault, getApps } from 'firebase-admin/app';
+import { getFirestore } from 'firebase-admin/firestore';
+import jwt from 'jsonwebtoken';
 
-const router = express.Router();
+// Initialize Firebase only once per cold start
+if (!getApps().length) {
+  initializeApp({
+    credential: applicationDefault(),
+  });
+}
+const db = getFirestore();
 
-// CORS configuration
-const corsOptions = {
-  origin: process.env.FRONTEND_URL || 'http://localhost:3000',
-  credentials: true,
-  methods: ['POST'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
-};
+export default async function handler(req, res) {
+  // Only allow POST
+  if (req.method !== 'POST') {
+    return res.status(405).json({ error: 'Method not allowed' });
+  }
 
-router.use(cors(corsOptions));
+  // CORS headers (Vercel handles preflight automatically)
+  res.setHeader('Access-Control-Allow-Origin', process.env.FRONTEND_URL || 'http://localhost:3000');
+  res.setHeader('Access-Control-Allow-Credentials', 'true');
 
-// Auth middleware
-const validateToken = (req, res, next) => {
-  const token = req.headers.authorization?.split(' ')[1];
-  
+  // Auth middleware
+  const authHeader = req.headers.authorization || '';
+  const token = authHeader.split(' ')[1];
   if (!token) {
     return res.status(401).json({ error: 'No token provided' });
   }
 
+  let decoded;
   try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    req.user = decoded;
-    next();
+    decoded = jwt.verify(token, process.env.JWT_SECRET);
   } catch (err) {
     return res.status(401).json({ error: 'Invalid token' });
   }
-};
 
-router.post('/analytics', validateToken, async (req, res) => {
+  // Log analytics event to Firestore
   try {
     const { eventType, trackUrl, timestamp } = req.body;
-    
-    // Log analytics event to your database
-    await db.analytics.create({
-      userId: req.user.id,
+    await db.collection('analytics').add({
+      userId: decoded.id,
       eventType,
       trackUrl,
-      timestamp
+      timestamp: timestamp || new Date(),
     });
 
     res.status(200).json({ success: true });
@@ -48,6 +49,4 @@ router.post('/analytics', validateToken, async (req, res) => {
     console.error('Analytics error:', error);
     res.status(500).json({ error: 'Failed to log analytics' });
   }
-});
-
-module.exports = router;
+}

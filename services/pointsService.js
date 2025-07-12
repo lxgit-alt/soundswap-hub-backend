@@ -1,7 +1,16 @@
-import { db, admin } from '../firebaseAdmin.js';
+import { initializeApp, applicationDefault, getApps } from 'firebase-admin/app';
+import { getFirestore, FieldValue, Timestamp } from 'firebase-admin/firestore';
+
+// Initialize Firebase only once per cold start
+if (!getApps().length) {
+  initializeApp({
+    credential: applicationDefault(),
+  });
+}
+const db = getFirestore();
 
 // Main function to redeem a boost
-const redeemBoost = async (userId, boostType) => {
+export const redeemBoost = async (userId, boostType) => {
   const userRef = db.collection('users').doc(userId);
   const boostRef = db.collection('boosts').doc(boostType);
 
@@ -21,7 +30,7 @@ const redeemBoost = async (userId, boostType) => {
 
     const userData = userDoc.data();
     const boostData = boostDoc.data();
-    
+
     // 2. Check points
     const points = userData.feedbackPoints || 0;
     if (points < boostData.cost) {
@@ -44,11 +53,11 @@ const redeemBoost = async (userId, boostType) => {
 // Helper: how boost affects user data
 const calculateBoostEffect = (currentBoosts, effect) => {
   const boosts = { ...currentBoosts };
-  
+
   switch (effect.type) {
     case 'profileHighlight':
       boosts.profileHighlight = {
-        expiresAt: admin.firestore.Timestamp.fromDate(
+        expiresAt: Timestamp.fromDate(
           new Date(Date.now() + effect.durationHours * 60 * 60 * 1000)
         )
       };
@@ -63,5 +72,3 @@ const calculateBoostEffect = (currentBoosts, effect) => {
 
   return boosts;
 };
-
-module.exports = { redeemBoost };

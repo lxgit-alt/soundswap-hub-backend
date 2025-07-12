@@ -1,8 +1,8 @@
 // backend/api/auth/logout.js
-const cors = require('../../lib/cors');
-const { admin } = require('../../lib/firebaseAdmin');
+import cors from '../../lib/cors.js';
+import { admin } from '../../lib/firebaseAdmin.js';
 
-module.exports = cors(async (req, res) => {
+const handler = async (req, res) => {
   if (req.method !== 'POST') 
     return res.status(405).json({ error: 'Method not allowed' });
 
@@ -18,4 +18,6 @@ module.exports = cors(async (req, res) => {
     console.error('Logout error:', err);
     return res.status(400).json({ error: err.message });
   }
-});
+};
+
+export default cors(handler);

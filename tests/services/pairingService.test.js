@@ -1,4 +1,5 @@
 import { generatePairs } from '../../services/pairingService';
+import { db } from '../../lib/firebaseAdmin.js';
 
 jest.mock('../../lib/firebaseAdmin', () => ({
   db: {
@@ -13,7 +14,7 @@ describe('Pairing Service', () => {
   it('should generate valid pairs', async () => {
     // Mock Firestore response
     const mockUsers = Array(5).fill().map((_, i) => ({ id: `user${i}` }));
-    require('../../lib/firebaseAdmin').db.get.mockResolvedValue({
+    db.get.mockResolvedValue({
       empty: false,
       docs: mockUsers.map(user => ({ id: user.id, data: () => user }))
     });

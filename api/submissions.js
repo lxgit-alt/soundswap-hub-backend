@@ -1,7 +1,7 @@
 // backend/api/submissions.js
 import { allowCors } from './_cors.js';
-import authenticate from '../lib/authMiddleware.js';
 import { submitSubmission } from '../services/submissionsService.js';
+import authenticate from '../lib/authMiddleware.js';
 
 async function handler(req, res) {
   if (req.method !== 'POST') {
@@ -15,9 +15,9 @@ async function handler(req, res) {
   }
 
   const idToken = authHeader.split(' ')[1];
+  let decodedToken;
   try {
-    const decodedToken = await authenticate(idToken); // Assuming authenticate validates the token
-    req.user = decodedToken;
+    decodedToken = await authenticate(idToken); // authenticate should return user info
   } catch (error) {
     return res.status(401).json({ error: 'Invalid token' });
   }
@@ -27,12 +27,15 @@ async function handler(req, res) {
     return res.status(400).json({ error: 'trackURL is required' });
   }
 
-  const submission = await submitSubmission({
-    userId: req.user.uid,
-    trackURL,
-  });
-
-  return res.status(201).json(submission);
+  try {
+    const submission = await submitSubmission({
+      userId: decodedToken.uid,
+      trackURL,
+    });
+    return res.status(201).json(submission);
+  } catch (err) {
+    return res.status(500).json({ error: 'Failed to submit track' });
+  }
 }
 
-export default allowCors(authenticate(handler));
+export default allowCors(handler);
