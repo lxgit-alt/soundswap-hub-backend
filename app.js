@@ -1,12 +1,12 @@
 import express from 'express';
 import cors from 'cors';
-import spotsRoutes from './routes/spots.js';
-import pairingsRoutes from './routes/pairings.js';
-import feedbackRoutes from './routes/feedback.js'; // Add this import
-import achievementsRoutes from './routes/achievements.js';
-import founderActivationRoutes from './routes/founder-activation.js';
-import auditFoundersRoutes from './routes/audit-founders.js';
-import leaderboardRoutes from './routes/leaderboard.js';
+import spotsRoutes from './api/spots.js';
+import pairingsRoutes from './api/pairings.js';
+import feedbackRoutes from './api/feedback.js'; // Add this import
+import achievementsRoutes from './api/achievements.js';
+import founderActivationRoutes from './api/founder-activation.js';
+import auditFoundersRoutes from './api/audit-founders.js';
+import leaderboardRoutes from './api/leaderboard.js';
 import dotenv from 'dotenv';
 
 dotenv.config();

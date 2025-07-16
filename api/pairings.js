@@ -1,36 +1,33 @@
-// backend/api/pairings.js
+import { initializeApp, applicationDefault, getApps } from 'firebase-admin/app';
+import { getFirestore } from 'firebase-admin/firestore';
+import express from 'express';
 
-import { allowCors } from './_cors.js';
-import authenticate from '../lib/authMiddleware.js';
-import { getRandomPairsByGenre } from '../services/pairingService.js';
-
-function getQueryParam(req, key) {
-  // Helper to get query param in Vercel serverless functions
-  const url = new URL(req.url, `http://${req.headers.host}`);
-  return url.searchParams.get(key);
+// Initialize Firebase only once per cold start
+if (!getApps().length) {
+  initializeApp({
+    credential: applicationDefault(),
+  });
 }
+const db = getFirestore();
+const router = express.Router();
 
-async function handler(req, res) {
-  // Only GETs are allowed
+router.get('/current', async (req, res) => {
+  // Only GET is allowed
   if (req.method !== 'GET') {
-    return res.status(405).json({ error: 'Method Not Allowed' })
-  }
-
-  const genre = getQueryParam(req, 'genre');
-  if (!genre) {
-    return res.status(400).json({ error: 'genre is required' })
+    return res.status(405).json({ error: 'Method not allowed' });
   }
 
   try {
-    console.log('Pairings request for genre:', genre)
-    const pairs = await getRandomPairsByGenre(genre)
-    console.log('Generated pairs:', pairs)
-    return res.status(200).json({ pairs })
+    // Adjust the query to your actual Firestore structure
+    const snapshot = await db.collection('pairings')
+      .orderBy('createdAt', 'desc')
+      .limit(1)
+      .get();
+    const current = snapshot.empty ? null : snapshot.docs[0].data();
+    res.json({ current });
   } catch (err) {
-    console.error('Pairings error:', err)
-    return res.status(500).json({ error: err.message })
+    res.status(500).json({ error: 'Failed to fetch current pairing' });
   }
-}
+});
 
-// Wrap with CORS and authentication
-export default allowCors(authenticate(handler))
+export default router;

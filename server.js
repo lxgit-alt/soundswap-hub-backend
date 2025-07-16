@@ -19,20 +19,17 @@ app.use(cors({
 app.use(express.json());
 
 // API routes
-app.use('/api', async (req, res, next) => {
+app.use('/api/:endpoint', async (req, res, next) => {
   try {
-    const path = req.path.replace('/api', '') || '/';
-    const endpoint = path.split('/')[1] || 'index';
-    
+    const endpoint = req.params.endpoint || 'index';
     const modulePath = `file://${join(__dirname, 'api', `${endpoint}.js`)}`;
     const { default: handler } = await import(modulePath);
-    
     return handler(req, res);
   } catch (error) {
     console.error('API handler error:', error);
-    res.status(500).json({ 
+    res.status(500).json({
       error: 'Internal server error',
-      details: process.env.NODE_ENV === 'development' ? error.stack : undefined 
+      details: process.env.NODE_ENV === 'development' ? error.stack : undefined
     });
   }
 });
