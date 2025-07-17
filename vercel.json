@@ -2,22 +2,22 @@
   "version": 2,
   "functions": {
     "api/analytics.js": {
-      "runtime": "nodejs18.x"
+      "runtime": "@vercel/node@18.x"
     },
     "api/points.js": {
-      "runtime": "nodejs18.x"
+      "runtime": "@vercel/node@18.x"
     },
     "api/feedback.js": {
-      "runtime": "nodejs18.x"
+      "runtime": "@vercel/node@18.x"
     },
     "api/user.js": {
-      "runtime": "nodejs18.x"
+      "runtime": "@vercel/node@18.x"
     },
     "api/pairings.js": {
-      "runtime": "nodejs18.x"
+      "runtime": "@vercel/node@18.x"
     },
     "api/test.js": {
-      "runtime": "nodejs18.x"
+      "runtime": "@vercel/node@18.x"
     }
   }
 }
