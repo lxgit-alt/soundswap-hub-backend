@@ -18,31 +18,41 @@ export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type,Authorization');
 
-  const { pathname } = new URL(req.url, `http://${req.headers.host}`);
-  
-  console.log(`API Request: ${req.method} ${pathname}`);
-
   try {
+    const { pathname, search } = new URL(req.url, `http://${req.headers.host}`);
+    
+    console.log(`API Request: ${req.method} ${pathname}${search}`);
+
+    // Create a new request object with the correct URL
+    const modifiedReq = {
+      ...req,
+      url: pathname + (search || '')
+    };
+
     // Route to appropriate handler
     if (pathname.startsWith('/api/points')) {
-      return await pointsHandler(req, res);
+      return await pointsHandler(modifiedReq, res);
     } else if (pathname.startsWith('/api/analytics')) {
-      return await analyticsHandler(req, res);
+      return await analyticsHandler(modifiedReq, res);
     } else if (pathname.startsWith('/api/feedback')) {
-      return await feedbackHandler(req, res);
+      return await feedbackHandler(modifiedReq, res);
     } else if (pathname.startsWith('/api/user')) {
-      return await userHandler(req, res);
+      return await userHandler(modifiedReq, res);
     } else if (pathname.startsWith('/api/pairings')) {
-      return await pairingsHandler(req, res);
+      return await pairingsHandler(modifiedReq, res);
     } else if (pathname.startsWith('/api/test')) {
-      return await testHandler(req, res);
+      return await testHandler(modifiedReq, res);
     } else if (pathname === '/health') {
       return res.status(200).json({ status: 'OK', timestamp: new Date().toISOString() });
     }
 
-    return res.status(404).json({ error: 'API endpoint not found' });
+    return res.status(404).json({ error: 'API endpoint not found', path: pathname });
   } catch (error) {
     console.error('API Error:', error);
-    return res.status(500).json({ error: 'Internal server error', details: error.message });
+    return res.status(500).json({ 
+      error: 'Internal server error', 
+      details: error.message,
+      stack: error.stack 
+    });
   }
 }
