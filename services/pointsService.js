@@ -1,5 +1,6 @@
 import { initializeApp, applicationDefault, getApps } from 'firebase-admin/app';
 import { getFirestore, FieldValue, Timestamp } from 'firebase-admin/firestore';
+import { getUserPoints } from '../services/pointsService.js';
 
 // Initialize Firebase only once per cold start
 if (!getApps().length) {
@@ -72,3 +73,12 @@ const calculateBoostEffect = (currentBoosts, effect) => {
 
   return boosts;
 };
+
+export async function getUserPoints(/* params */) {
+  // ...your code...
+}
+
+// test.js
+import { getUserPoints } from './pointsService.js';
+console.log('getUserPoints:', typeof getUserPoints);
+
