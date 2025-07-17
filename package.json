@@ -1,27 +1,24 @@
 {
-  "name": "backend",
+  "name": "soundswap-backend",
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "test": "jest",
-    "dev": "node server.js",
-    "debug": "node --inspect server.js",
-    "build": "echo 'No build step required'"
+    "dev": "node dev-server.js",
+    "test": "node test-endpoints.js",
+    "debug-signup": "node debug-signup.js",
+    "start": "node dev-server.js"
   },
   "dependencies": {
-    "axios": "^1.10.0",
-    "canvas-confetti": "^1.9.3",
+    "axios": "^1.6.0",
     "cors": "^2.8.5",
-    "dotenv": "^16.5.0",
-    "express": "^4.21.2",
-    "express-rate-limit": "^7.5.0",
-    "firebase-admin": "^13.4.0",
-    "handlebars": "^4.7.8",
-    "nodemailer": "^7.0.3",
-    "validator": "^13.15.15",
-    "ws": "^8.18.2"
+    "dotenv": "^16.0.0",
+    "express": "^4.18.0",
+    "firebase-admin": "^11.0.0",
+    "nodemailer": "^6.9.0",
+    "validator": "^13.11.0",
+    "jsonwebtoken": "^9.0.0"
   },
   "devDependencies": {
-    "jest": "^29.7.0"
+    "concurrently": "^8.2.0"
   }
 }

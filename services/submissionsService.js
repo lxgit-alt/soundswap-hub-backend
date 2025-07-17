@@ -31,3 +31,25 @@ export async function submitSubmission({ userId, trackURL }) {
 
   return submissionData;
 }
+
+export const submitSubmissionV2 = async ({ userId, trackURL }) => {
+  try {
+    const submissionRef = await db.collection('submissions').add({
+      userId,
+      trackURL,
+      createdAt: new Date(),
+      status: 'pending',
+    });
+
+    return {
+      id: submissionRef.id,
+      userId,
+      trackURL,
+      status: 'pending',
+      createdAt: new Date(),
+    };
+  } catch (error) {
+    console.error('Error submitting track:', error);
+    throw error;
+  }
+};

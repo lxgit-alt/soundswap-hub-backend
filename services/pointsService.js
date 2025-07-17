@@ -1,6 +1,5 @@
 import { initializeApp, applicationDefault, getApps } from 'firebase-admin/app';
 import { getFirestore, FieldValue, Timestamp } from 'firebase-admin/firestore';
-import { getUserPoints } from '../services/pointsService.js';
 
 // Initialize Firebase only once per cold start
 if (!getApps().length) {
@@ -74,8 +73,44 @@ const calculateBoostEffect = (currentBoosts, effect) => {
   return boosts;
 };
 
-export async function getUserPoints(/* params */) {
-  // ...your code...
+export async function getUserPoints(userId) {
+  try {
+    const userDoc = await db.collection('users').doc(userId).get();
+    if (!userDoc.exists) {
+      return 0;
+    }
+    return userDoc.data().points || 0;
+  } catch (error) {
+    console.error('Error getting user points:', error);
+    throw error;
+  }
+}
+
+export async function updateUserPoints(userId, points) {
+  try {
+    const userRef = db.collection('users').doc(userId);
+    await userRef.update({ points });
+    return points;
+  } catch (error) {
+    console.error('Error updating user points:', error);
+    throw error;
+  }
+}
+
+export async function addUserPoints(userId, pointsToAdd) {
+  try {
+    const userRef = db.collection('users').doc(userId);
+    const userDoc = await userRef.get();
+    
+    const currentPoints = userDoc.exists ? (userDoc.data().points || 0) : 0;
+    const newPoints = currentPoints + pointsToAdd;
+    
+    await userRef.set({ points: newPoints }, { merge: true });
+    return newPoints;
+  } catch (error) {
+    console.error('Error adding user points:', error);
+    throw error;
+  }
 }
 
 // test.js
