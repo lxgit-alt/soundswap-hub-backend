@@ -22,6 +22,8 @@ const verifyCaptcha = async (token) => {
 
 export default async function handler(req, res) {
   console.log(`🔥 Points API called: ${req.method} ${req.url}`);
+  console.log(`Request headers:`, req.headers);
+  console.log(`Request body:`, req.body);
   
   // CORS headers
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -38,6 +40,17 @@ export default async function handler(req, res) {
     const action = urlParams.get('action');
     
     console.log(`Method: ${req.method}, Action: ${action}`);
+
+    // Handle GET request to signup (debugging)
+    if (req.method === 'GET' && action === 'signup') {
+      console.log('❌ Received GET request for signup - should be POST');
+      return res.status(405).json({ 
+        error: 'Method not allowed', 
+        message: 'Signup requires POST method, but received GET',
+        receivedMethod: req.method,
+        expectedMethod: 'POST'
+      });
+    }
 
     // GET spots
     if (req.method === 'GET' && action === 'spots') {
@@ -124,7 +137,8 @@ export default async function handler(req, res) {
     return res.status(404).json({ 
       error: 'Endpoint not found',
       method: req.method,
-      action: action
+      action: action,
+      url: req.url
     });
   } catch (error) {
     console.error('❌ Handler error:', error);
