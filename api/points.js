@@ -35,9 +35,14 @@ export default async function handler(req, res) {
   }
 
   try {
-    // Parse action from query string
+    // Parse action from query string OR request body
     const urlParams = new URLSearchParams(req.url?.split('?')[1] || '');
-    const action = urlParams.get('action');
+    let action = urlParams.get('action');
+    
+    // If no action in query, check request body
+    if (!action && req.body && req.body.action) {
+      action = req.body.action;
+    }
     
     console.log(`Method: ${req.method}, Action: ${action}`);
 
@@ -67,7 +72,7 @@ export default async function handler(req, res) {
       }
     }
 
-    // POST signup
+    // POST signup - handle both query and body action
     if (req.method === 'POST' && action === 'signup') {
       console.log('📝 Processing POST signup...');
       const { name, email, genre, phone, captchaToken } = req.body;
@@ -138,7 +143,8 @@ export default async function handler(req, res) {
       error: 'Endpoint not found',
       method: req.method,
       action: action,
-      url: req.url
+      url: req.url,
+      body: req.body
     });
   } catch (error) {
     console.error('❌ Handler error:', error);
