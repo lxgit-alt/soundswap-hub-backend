@@ -6,7 +6,7 @@ export default async function handler(req, res) {
   console.log(`Method: ${req.method}, URL: ${req.url}`);
   console.log(`Headers:`, req.headers);
   console.log(`Body:`, req.body);
-  console.log(`Query params:`, req.query);
+  console.log(`Query:`, req.query);
   
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
@@ -16,9 +16,12 @@ export default async function handler(req, res) {
     return res.status(200).end();
   }
 
-  // Parse action from query string
-  const urlParams = new URLSearchParams(req.url?.split('?')[1] || '');
+  // Parse ALL query parameters from URL
+  const url = new URL(req.url, `https://${req.headers.host || 'localhost'}`);
+  const urlParams = url.searchParams;
   const action = urlParams.get('action');
+
+  console.log('All URL params:', Object.fromEntries(urlParams.entries()));
 
   // GET spots functionality
   if (req.method === 'GET' && action === 'spots') {
@@ -47,7 +50,7 @@ export default async function handler(req, res) {
       signupData = req.body;
       console.log('Using body data:', signupData);
     }
-    // Then try query parameters (for converted GET requests)
+    // Then try URL search params (for converted GET requests)
     else {
       signupData = {
         name: urlParams.get('name'),
@@ -56,30 +59,32 @@ export default async function handler(req, res) {
         captchaToken: urlParams.get('captchaToken'),
         phone: urlParams.get('phone')
       };
-      console.log('Using query params:', signupData);
-    }
-    
-    // Also try req.query if available
-    if (req.query && (!signupData.name && req.query.name)) {
-      signupData = req.query;
-      console.log('Using req.query:', signupData);
+      console.log('Using URL params:', signupData);
     }
 
     const { name, email, genre, phone, captchaToken } = signupData;
 
     console.log('Final extracted data:', { name, email, genre, phone, captchaToken });
 
-    // If we still don't have data, return debug info
+    // If we still don't have data, return debug info with full URL details
     if (!name && !email && !genre) {
       return res.status(400).json({ 
         error: 'No signup data found',
         debug: {
           method: req.method,
+          fullUrl: req.url,
           hasBody: !!req.body,
-          bodyKeys: req.body ? Object.keys(req.body) : [],
+          bodyData: req.body,
           hasQuery: !!req.query,
-          queryKeys: req.query ? Object.keys(req.query) : [],
-          urlParams: Object.fromEntries(urlParams.entries())
+          queryData: req.query,
+          urlSearchParams: Object.fromEntries(urlParams.entries()),
+          allParams: {
+            name: urlParams.get('name'),
+            email: urlParams.get('email'),
+            genre: urlParams.get('genre'),
+            captchaToken: urlParams.get('captchaToken'),
+            phone: urlParams.get('phone')
+          }
         }
       });
     }
