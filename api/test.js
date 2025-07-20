@@ -19,6 +19,21 @@ export default async function handler(req, res) {
   const urlParams = new URLSearchParams(req.url?.split('?')[1] || '');
   const action = urlParams.get('action');
 
+  // GET spots functionality
+  if (req.method === 'GET' && action === 'spots') {
+    try {
+      if (db) {
+        const snapshot = await db.collection('signups').get();
+        return res.status(200).json({ spotsClaimed: snapshot.size });
+      } else {
+        return res.status(200).json({ spotsClaimed: 42 });
+      }
+    } catch (err) {
+      console.error('Spots fetch error:', err);
+      return res.status(200).json({ spotsClaimed: 42 });
+    }
+  }
+
   // POST signup functionality
   if (req.method === 'POST' && action === 'signup') {
     console.log('📝 Processing signup...');
@@ -85,6 +100,6 @@ export default async function handler(req, res) {
     url: req.url,
     action: action,
     timestamp: new Date().toISOString(),
-    availableActions: ['POST /api/test?action=signup']
+    availableActions: ['GET /api/test?action=spots', 'POST /api/test?action=signup']
   });
 }
