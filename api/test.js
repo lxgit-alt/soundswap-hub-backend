@@ -34,10 +34,24 @@ export default async function handler(req, res) {
     }
   }
 
-  // POST signup functionality
-  if (req.method === 'POST' && action === 'signup') {
+  // Handle signup for BOTH GET and POST (due to Vercel conversion issue)
+  if ((req.method === 'POST' || req.method === 'GET') && action === 'signup') {
     console.log('📝 Processing signup...');
-    const { name, email, genre, phone, captchaToken } = req.body;
+    
+    // For GET requests converted from POST, check if there's body data
+    let signupData = req.body;
+    if (req.method === 'GET' && !signupData) {
+      // Try to get data from query parameters as fallback
+      signupData = {
+        name: urlParams.get('name'),
+        email: urlParams.get('email'),
+        genre: urlParams.get('genre'),
+        captchaToken: urlParams.get('captchaToken'),
+        phone: urlParams.get('phone')
+      };
+    }
+
+    const { name, email, genre, phone, captchaToken } = signupData || {};
 
     // Basic validation
     if (!name || name.trim().length < 2) {
@@ -100,6 +114,7 @@ export default async function handler(req, res) {
     url: req.url,
     action: action,
     timestamp: new Date().toISOString(),
-    availableActions: ['GET /api/test?action=spots', 'POST /api/test?action=signup']
+    availableActions: ['GET /api/test?action=spots', 'POST /api/test?action=signup'],
+    note: 'POST requests may be converted to GET by Vercel edge functions'
   });
 }
