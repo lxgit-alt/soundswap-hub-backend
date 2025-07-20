@@ -112,6 +112,17 @@ app.use('/api/pairings', async (req, res) => {
   }
 });
 
+app.use('/api/subscriptions', async (req, res) => {
+  console.log(`💳 Subscriptions route called: ${req.method} ${req.originalUrl}`);
+  try {
+    const handler = await importHandler('./api/subscriptions.js');
+    return handler(req, res);
+  } catch (error) {
+    console.error('Subscriptions route error:', error);
+    res.status(500).json({ error: 'Subscriptions API error', details: error.message });
+  }
+});
+
 // Add a catch-all route for debugging
 app.use('/api/*', (req, res) => {
   console.log(`❓ Unknown API route: ${req.method} ${req.originalUrl}`);
@@ -188,6 +199,7 @@ app.listen(PORT, () => {
   console.log(`   - http://localhost:${PORT}/api/user`);
   console.log(`   - http://localhost:${PORT}/api/feedback`);
   console.log(`   - http://localhost:${PORT}/api/analytics`);
+  console.log(`   - http://localhost:${PORT}/api/subscriptions`);
   console.log(`   - http://localhost:${PORT}/api/pairings`);
   console.log(`   - http://localhost:${PORT}/api/test`);
 });
