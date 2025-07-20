@@ -6,6 +6,7 @@ export default async function handler(req, res) {
   console.log(`Method: ${req.method}, URL: ${req.url}`);
   console.log(`Headers:`, req.headers);
   console.log(`Body:`, req.body);
+  console.log(`Query params:`, req.query);
   
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
@@ -34,14 +35,20 @@ export default async function handler(req, res) {
     }
   }
 
-  // Handle signup for BOTH GET and POST (due to Vercel conversion issue)
+  // Handle signup for BOTH GET and POST
   if ((req.method === 'POST' || req.method === 'GET') && action === 'signup') {
     console.log('📝 Processing signup...');
     
-    // For GET requests converted from POST, check if there's body data
-    let signupData = req.body;
-    if (req.method === 'GET' && !signupData) {
-      // Try to get data from query parameters as fallback
+    // Try multiple ways to get the data
+    let signupData = {};
+    
+    // First try request body (for real POST requests)
+    if (req.body && Object.keys(req.body).length > 0) {
+      signupData = req.body;
+      console.log('Using body data:', signupData);
+    }
+    // Then try query parameters (for converted GET requests)
+    else {
       signupData = {
         name: urlParams.get('name'),
         email: urlParams.get('email'),
@@ -49,9 +56,33 @@ export default async function handler(req, res) {
         captchaToken: urlParams.get('captchaToken'),
         phone: urlParams.get('phone')
       };
+      console.log('Using query params:', signupData);
+    }
+    
+    // Also try req.query if available
+    if (req.query && (!signupData.name && req.query.name)) {
+      signupData = req.query;
+      console.log('Using req.query:', signupData);
     }
 
-    const { name, email, genre, phone, captchaToken } = signupData || {};
+    const { name, email, genre, phone, captchaToken } = signupData;
+
+    console.log('Final extracted data:', { name, email, genre, phone, captchaToken });
+
+    // If we still don't have data, return debug info
+    if (!name && !email && !genre) {
+      return res.status(400).json({ 
+        error: 'No signup data found',
+        debug: {
+          method: req.method,
+          hasBody: !!req.body,
+          bodyKeys: req.body ? Object.keys(req.body) : [],
+          hasQuery: !!req.query,
+          queryKeys: req.query ? Object.keys(req.query) : [],
+          urlParams: Object.fromEntries(urlParams.entries())
+        }
+      });
+    }
 
     // Basic validation
     if (!name || name.trim().length < 2) {
