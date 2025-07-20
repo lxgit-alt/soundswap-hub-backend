@@ -36,14 +36,18 @@ const verifyCaptcha = async (token) => {
 
 async function handler(req, res) {
   console.log(`🔥 Points API called: ${req.method} ${req.url}`);
+  console.log(`Headers:`, req.headers);
+  console.log(`Body:`, req.body);
   
-  // CORS preflight
+  // Enhanced CORS for production
   if (req.method === 'OPTIONS') {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type,Authorization');
+    res.setHeader('Access-Control-Max-Age', '86400');
     return res.status(200).end();
   }
+  
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type,Authorization');
@@ -58,6 +62,15 @@ async function handler(req, res) {
   }
 
   console.log(`Method: ${req.method}, Action: ${action}`);
+
+  // Remove the confusing GET signup handler - this might be causing issues
+  // if (req.method === 'GET' && action === 'signup') {
+  //   return res.status(405).json({ 
+  //     error: 'Method not allowed', 
+  //     message: 'Signup requires POST method',
+  //     expectedMethod: 'POST'
+  //   });
+  // }
 
   // --- PUBLIC ENDPOINTS (no auth required) ---
 
@@ -74,8 +87,10 @@ async function handler(req, res) {
 
   // POST signup
   if (req.method === 'POST' && action === 'signup') {
-    console.log('📝 Processing signup...');
+    console.log('📝 Processing POST signup...');
     const { name, email, genre, phone, captchaToken } = req.body;
+
+    console.log('Received data:', { name, email, genre, phone, captchaToken });
 
     // Basic validation
     if (!name || name.trim().length < 2) {
@@ -188,7 +203,15 @@ async function handler(req, res) {
     }
   }
 
-  return res.status(404).json({ error: 'Endpoint not found' });
+  return res.status(404).json({ 
+    error: 'Endpoint not found',
+    method: req.method,
+    action: action,
+    availableEndpoints: [
+      'GET /api/points?action=spots',
+      'POST /api/points?action=signup'
+    ]
+  });
 }
 
 export default allowCors((req, res) => {
