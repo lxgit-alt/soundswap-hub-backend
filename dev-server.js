@@ -3,6 +3,7 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
+import fs from 'fs';
 
 // Load environment variables
 dotenv.config();
@@ -12,6 +13,9 @@ const __dirname = dirname(__filename);
 
 const app = express();
 const PORT = process.env.PORT || 3001;
+
+// Determine the frontend build directory path
+const frontendBuildPath = join(__dirname, '../frontend/dist');
 
 // Middleware
 app.use(cors({
@@ -189,6 +193,42 @@ app.get('/test-firebase', async (req, res) => {
   }
 });
 
+// Serve static files from the frontend build directory if it exists
+if (fs.existsSync(frontendBuildPath)) {
+  console.log(`📁 Serving frontend static files from: ${frontendBuildPath}`);
+  app.use(express.static(frontendBuildPath));
+
+  // Serve index.html for any non-API requests (client-side routing)
+  app.get('*', (req, res, next) => {
+    // Skip API routes
+    if (req.path.startsWith('/api/') || 
+        req.path === '/health' || 
+        req.path === '/test-firebase') {
+      return next();
+    }
+    
+    console.log(`🌐 Serving frontend for path: ${req.path}`);
+    res.sendFile(join(frontendBuildPath, 'index.html'));
+  });
+} else {
+  console.warn(`⚠️ Frontend build directory not found at: ${frontendBuildPath}`);
+  console.warn('⚠️ Only API routes will be available');
+  
+  // Add a placeholder response for the frontend
+  app.get('/', (req, res) => {
+    res.send(`
+      <html>
+        <head><title>SoundSwap API Server</title></head>
+        <body>
+          <h1>SoundSwap API Server</h1>
+          <p>This is the API server. Frontend is not available.</p>
+          <p>Please build the frontend or check the configuration.</p>
+        </body>
+      </html>
+    `);
+  });
+}
+
 // Start server
 app.listen(PORT, () => {
   console.log(`🚀 Backend server running on http://localhost:${PORT}`);
@@ -203,4 +243,3 @@ app.listen(PORT, () => {
   console.log(`   - http://localhost:${PORT}/api/pairings`);
   console.log(`   - http://localhost:${PORT}/api/test`);
 });
-console.log(`   - http://localhost:${PORT}/api/analytics`);
