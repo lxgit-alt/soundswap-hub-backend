@@ -6,14 +6,6 @@ import dotenv from 'dotenv';
 
 dotenv.config();
 
-// Set client URL based on environment
-const getClientURL = () => {
-  if (process.env.NODE_ENV === 'production') {
-    return 'https://soundswap.onrender.com';
-  }
-  return process.env.CLIENT_URL || 'http://localhost:5173';
-};
-
 // Create reusable transporter object
 const transporter = nodemailer.createTransport({
   service: 'gmail',
@@ -70,11 +62,51 @@ export const sendEmail = async ({ to, subject, html }) => {
     };
 
     const info = await transporter.sendMail(mailOptions);
-    console.log(`Email sent to ${to}: ${info.messageId}`);
+    console.log(`✅ Email sent to ${to}: ${info.messageId}`);
     return info;
   } catch (error) {
-    console.error('Email send error:', error);
+    console.error('❌ Email send error:', error);
     throw new Error('Failed to send email');
+  }
+};
+
+/**
+ * Send welcome email to new users
+ * @param {string} email - User email
+ * @param {string} name - User name
+ * @param {string} subscription - User subscription tier
+ * @param {boolean} isFounder - Whether user is a founder
+ */
+export const sendWelcomeEmail = async (email, name = 'Artist', subscription = 'Free', isFounder = false) => {
+  try {
+    console.log(`📧 Preparing welcome email for ${email} (${subscription} plan)`);
+    
+    const html = await renderTemplate('welcome', {
+      name,
+      subscription: subscription.charAt(0).toUpperCase() + subscription.slice(1),
+      isFounder,
+      dashboardUrl: process.env.CLIENT_URL + '/dashboard',
+      supportUrl: process.env.CLIENT_URL + '/support',
+      settingsUrl: process.env.CLIENT_URL + '/settings',
+      unsubscribeUrl: process.env.CLIENT_URL + '/unsubscribe'
+    });
+
+    const subject = `Welcome to SoundSwap, ${name}! Your musical journey begins now`;
+
+    const mailOptions = {
+      from: `SoundSwap <${process.env.GMAIL_USER}>`,
+      replyTo: process.env.SUPPORT_EMAIL || process.env.GMAIL_USER,
+      to: email,
+      subject,
+      html
+    };
+
+    const info = await transporter.sendMail(mailOptions);
+    console.log(`✅ Welcome email sent to ${email}: ${info.messageId}`);
+    return info;
+  } catch (error) {
+    console.error('❌ Welcome email send error:', error);
+    throw new Error('Failed to send welcome email');
   }
 };
 
@@ -86,7 +118,7 @@ export const sendEmail = async ({ to, subject, html }) => {
 export const sendFounderActivationEmail = async (email, name = 'Artist') => {
   const html = await renderTemplate('founderActivation', {
     name,
-    dashboardUrl: getClientURL() + '/dashboard'
+    dashboardUrl: process.env.CLIENT_URL + '/dashboard'
   });
 
   const mailOptions = {
@@ -103,44 +135,6 @@ export const sendFounderActivationEmail = async (email, name = 'Artist') => {
   } catch (error) {
     console.error('Email send error:', error);
     throw new Error('Failed to send email');
-  }
-};
-
-/**
- * Send welcome email to new users
- * @param {string} email - User email
- * @param {string} name - User name
- * @param {string} subscription - User subscription tier
- * @param {boolean} isFounder - Whether user is a founder
- */
-export const sendWelcomeEmail = async (email, name = 'Artist', subscription = 'Free', isFounder = false) => {
-  try {
-    const html = await renderTemplate('welcome', {
-      name,
-      subscription: subscription.charAt(0).toUpperCase() + subscription.slice(1),
-      isFounder,
-      dashboardUrl: getClientURL() + '/dashboard',
-      supportUrl: getClientURL() + '/support',
-      settingsUrl: getClientURL() + '/settings',
-      unsubscribeUrl: getClientURL() + '/unsubscribe'
-    });
-
-    const subject = `🎵 Welcome to SoundSwap, ${name}! Your musical journey begins now`;
-
-    const mailOptions = {
-      from: `SoundSwap <${process.env.GMAIL_USER}>`,
-      replyTo: process.env.SUPPORT_EMAIL || process.env.GMAIL_USER,
-      to: email,
-      subject,
-      html
-    };
-
-    const info = await transporter.sendMail(mailOptions);
-    console.log(`Welcome email sent to ${email}: ${info.messageId}`);
-    return info;
-  } catch (error) {
-    console.error('Welcome email send error:', error);
-    throw new Error('Failed to send welcome email');
   }
 };
 
@@ -168,7 +162,7 @@ export const sendAuditAlertEmail = async (email, issues, founderEmail) => {
           </div>
         </div>
         <div style="text-align: center; margin-top: 30px;">
-          <a href="${getClientURL()}/admin/users/${encodeURIComponent(founderEmail)}" 
+          <a href="${process.env.ADMIN_URL}/users/${encodeURIComponent(founderEmail)}" 
             style="color: #d3a373; font-weight: bold;">
             View User in Admin Dashboard
           </a>
