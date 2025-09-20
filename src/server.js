@@ -23,6 +23,15 @@ app.get('/health', (req, res) => {
   res.json({ status: 'OK', message: 'SoundSwap API is running' });
 });
 
+// Add a root route handler if it doesn't exist
+app.get('/', (req, res) => {
+  res.json({
+    success: true,
+    message: "SoundSwap API - Backend service is running",
+    version: "1.0.0"
+  });
+});
+
 // Error handling middleware
 app.use((err, req, res, next) => {
   console.error('API Error:', err);
@@ -33,11 +42,11 @@ app.use((err, req, res, next) => {
   });
 });
 
-// 404 handler
+// Make sure your 404 handler comes AFTER all your routes
 app.use('*', (req, res) => {
   res.status(404).json({
     success: false,
-    message: 'Endpoint not found'
+    message: "Endpoint not found"
   });
 });
 
