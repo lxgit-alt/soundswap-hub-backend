@@ -1,5 +1,5 @@
 import express from 'express';
-import { sendWelcomeEmail } from '../utils/emailService.js';
+import { sendWelcomeEmail, sendPasswordResetEmail } from '../utils/emailService.js';
 
 const router = express.Router();
 
@@ -33,6 +33,47 @@ router.post('/send-welcome-email', async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to send welcome email',
+      error: error.message
+    });
+  }
+});
+
+// Add this new endpoint for password reset
+router.post('/send-password-reset', async (req, res) => {
+  try {
+    const { email, resetToken, name } = req.body;
+
+    // Validate required fields
+    if (!email || !resetToken) {
+      return res.status(400).json({
+        success: false,
+        message: 'Email and reset token are required'
+      });
+    }
+
+    // Generate reset URL
+    const clientURL = process.env.NODE_ENV === 'production'
+      ? 'https://soundswap.onrender.com'
+      : (process.env.CLIENT_URL || 'http://localhost:5173');
+    
+    const resetUrl = `${clientURL}/reset-password?token=${resetToken}&email=${encodeURIComponent(email)}`;
+
+    // Send the password reset email
+    await sendPasswordResetEmail(
+      email,
+      resetUrl,
+      name || ''
+    );
+
+    res.json({
+      success: true,
+      message: 'Password reset email sent successfully'
+    });
+  } catch (error) {
+    console.error('Error sending password reset email:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to send password reset email',
       error: error.message
     });
   }

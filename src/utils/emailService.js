@@ -14,17 +14,33 @@ const getClientURL = () => {
   return process.env.CLIENT_URL || 'http://localhost:5173';
 };
 
-// Create reusable transporter object
-const transporter = nodemailer.createTransport({
-  service: 'gmail',
-  auth: {
-    user: process.env.GMAIL_USER,
-    pass: process.env.GMAIL_PASS
-  },
-  tls: {
-    rejectUnauthorized: false
+// Set email sending retry options for production
+const getTransportOptions = () => {
+  const options = {
+    service: 'gmail',
+    auth: {
+      user: process.env.GMAIL_USER,
+      pass: process.env.GMAIL_PASS
+    },
+    tls: {
+      rejectUnauthorized: false
+    }
+  };
+
+  // Add production-specific settings
+  if (process.env.NODE_ENV === 'production') {
+    options.pool = true; // Use pooled connections
+    options.maxConnections = 5; // Limit connections
+    options.maxMessages = 100; // Limit messages per connection
+    options.rateDelta = 1000; // 1 second
+    options.rateLimit = 5; // 5 messages per second (to avoid Gmail limits)
   }
-});
+
+  return options;
+};
+
+// Create reusable transporter object
+const transporter = nodemailer.createTransport(getTransportOptions());
 
 // Test the transporter connection
 const testEmailConnection = async () => {
@@ -45,10 +61,80 @@ testEmailConnection();
 
 // Utility to load and compile a Handlebars template (async)
 async function renderTemplate(templateName, data) {
-  const templatePath = path.join(process.cwd(), 'templates', `${templateName}.hbs`);
-  const source = await readFile(templatePath, 'utf8');
-  const template = Handlebars.compile(source);
-  return template(data);
+  try {
+    // Handle template path differently for production
+    let templatePath;
+    if (process.env.NODE_ENV === 'production') {
+      // In production, templates might be in different locations
+      // Check if path from project root works
+      templatePath = path.join(process.cwd(), 'templates', `${templateName}.hbs`);
+      
+      // Alternative paths if needed
+      if (!await fileExists(templatePath)) {
+        // Try alternative paths
+        const alternatives = [
+          path.join(process.cwd(), 'dist', 'templates', `${templateName}.hbs`),
+          path.join(process.cwd(), 'build', 'templates', `${templateName}.hbs`)
+        ];
+        
+        for (const alt of alternatives) {
+          if (await fileExists(alt)) {
+            templatePath = alt;
+            break;
+          }
+        }
+      }
+    } else {
+      // Development path
+      templatePath = path.join(process.cwd(), 'templates', `${templateName}.hbs`);
+    }
+    
+    console.log(`📄 Loading template from: ${templatePath}`);
+    const source = await readFile(templatePath, 'utf8');
+    const template = Handlebars.compile(source);
+    return template(data);
+  } catch (error) {
+    console.error(`❌ Failed to render template '${templateName}':`, error);
+    // Fallback to a basic template if needed
+    return generateFallbackTemplate(templateName, data);
+  }
+}
+
+// Helper to check if file exists
+async function fileExists(filepath) {
+  try {
+    await readFile(filepath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// Generate a simple fallback template in case the .hbs file can't be found
+function generateFallbackTemplate(templateName, data) {
+  if (templateName === 'password-reset') {
+    return `
+      <h2>Reset Your SoundSwap Password</h2>
+      <p>Hello ${data.name || 'there'},</p>
+      <p>Click the link below to reset your password:</p>
+      <p><a href="${data.resetUrl}">Reset Password</a></p>
+      <p>If you didn't request this, you can ignore this email.</p>
+    `;
+  }
+  
+  if (templateName === 'welcome') {
+    return `
+      <h2>Welcome to SoundSwap!</h2>
+      <p>Hello ${data.name || 'Artist'},</p>
+      <p>Thank you for joining SoundSwap with a ${data.subscription || 'Free'} subscription.</p>
+      <p><a href="${data.dashboardUrl}">Go to Dashboard</a></p>
+    `;
+  }
+  
+  return `
+    <h2>SoundSwap Notification</h2>
+    <p>This is an automated message from SoundSwap.</p>
+  `;
 }
 
 /**
@@ -60,18 +146,24 @@ async function renderTemplate(templateName, data) {
  * @returns {Promise}
  */
 export const sendEmail = async ({ to, subject, html }) => {
-  try {
-    const mailOptions = {
-      from: `SoundSwap <${process.env.GMAIL_USER}>`,
-      replyTo: process.env.SUPPORT_EMAIL || process.env.GMAIL_USER,
-      to,
-      subject,
-      html
-    };
+  const mailOptions = {
+    from: `SoundSwap <${process.env.GMAIL_USER}>`,
+    replyTo: process.env.SUPPORT_EMAIL || process.env.GMAIL_USER,
+    to,
+    subject,
+    html
+  };
 
-    const info = await transporter.sendMail(mailOptions);
-    console.log(`Email sent to ${to}: ${info.messageId}`);
-    return info;
+  try {
+    // In production, add to queue; otherwise send directly
+    if (process.env.NODE_ENV === 'production') {
+      emailQueue.add(mailOptions);
+      return { queued: true, to };
+    } else {
+      const info = await transporter.sendMail(mailOptions);
+      console.log(`Email sent to ${to}: ${info.messageId}`);
+      return info;
+    }
   } catch (error) {
     console.error('Email send error:', error);
     throw new Error('Failed to send email');
@@ -92,7 +184,7 @@ export const sendFounderActivationEmail = async (email, name = 'Artist') => {
   const mailOptions = {
     from: `SoundSwap <${process.env.GMAIL_USER}>`,
     to: email,
-    subject: '🎉 Welcome to SoundSwap Founders Circle!',
+    subject: 'Welcome to SoundSwap Founders Circle!',
     html
   };
 
@@ -125,7 +217,7 @@ export const sendWelcomeEmail = async (email, name = 'Artist', subscription = 'F
       unsubscribeUrl: getClientURL() + '/unsubscribe'
     });
 
-    const subject = `🎵 Welcome to SoundSwap, ${name}! Your musical journey begins now`;
+    const subject = `Welcome to SoundSwap, ${name}! Your musical journey begins now`;
 
     const mailOptions = {
       from: `SoundSwap <${process.env.GMAIL_USER}>`,
@@ -179,3 +271,93 @@ export const sendAuditAlertEmail = async (email, issues, founderEmail) => {
 
   return sendEmail({ to: email, subject, html });
 };
+
+/**
+ * Send password reset email
+ * @param {string} email - User email address
+ * @param {string} resetUrl - Password reset URL with token
+ * @param {string} name - User name (optional)
+ */
+export const sendPasswordResetEmail = async (email, resetUrl, name = '') => {
+  try {
+    const html = await renderTemplate('password-reset', {
+      name,
+      resetUrl,
+      loginUrl: getClientURL() + '/login',
+      supportUrl: getClientURL() + '/support',
+      settingsUrl: getClientURL() + '/settings'
+    });
+
+    const subject = 'Reset Your SoundSwap Password';
+
+    const mailOptions = {
+      from: `SoundSwap <${process.env.GMAIL_USER}>`,
+      replyTo: process.env.SUPPORT_EMAIL || process.env.GMAIL_USER,
+      to: email,
+      subject,
+      html
+    };
+
+    const info = await transporter.sendMail(mailOptions);
+    console.log(`Password reset email sent to ${email}: ${info.messageId}`);
+    return info;
+  } catch (error) {
+    console.error('Password reset email send error:', error);
+    throw new Error('Failed to send password reset email');
+  }
+};
+
+// Simple email queue with retry for production
+class EmailQueue {
+  constructor() {
+    this.queue = [];
+    this.processing = false;
+    this.maxRetries = 3;
+  }
+
+  // Add email to queue
+  add(emailOptions, retryCount = 0) {
+    this.queue.push({ options: emailOptions, retryCount });
+    
+    // Start processing if not already running
+    if (!this.processing) {
+      this.processQueue();
+    }
+  }
+
+  // Process the email queue
+  async processQueue() {
+    if (this.queue.length === 0) {
+      this.processing = false;
+      return;
+    }
+
+    this.processing = true;
+    const { options, retryCount } = this.queue.shift();
+
+    try {
+      // Try to send the email
+      await transporter.sendMail(options);
+      console.log(`✅ Email sent to ${options.to} (Production Queue)`);
+      
+      // Process next item in queue
+      setTimeout(() => this.processQueue(), 1000); // Rate limiting
+    } catch (error) {
+      console.error(`❌ Failed to send email to ${options.to}:`, error);
+      
+      // Retry if under max retries
+      if (retryCount < this.maxRetries) {
+        console.log(`🔄 Retrying email to ${options.to} (${retryCount + 1}/${this.maxRetries})`);
+        this.add(options, retryCount + 1);
+      } else {
+        console.error(`❌ Failed to send email to ${options.to} after ${this.maxRetries} attempts`);
+      }
+      
+      // Continue processing queue
+      setTimeout(() => this.processQueue(), 2000); // Longer delay after error
+    }
+  }
+}
+
+// Create email queue instance for production
+const emailQueue = new EmailQueue();

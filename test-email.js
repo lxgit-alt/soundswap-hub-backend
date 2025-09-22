@@ -1,31 +1,59 @@
-import { sendWelcomeEmail } from './src/utils/emailService-fixed.js';
+import { sendWelcomeEmail, sendPasswordResetEmail } from './src/utils/emailService.js';
 import dotenv from 'dotenv';
 
+// Load environment variables
 dotenv.config();
 
-// Test email function
-const testEmail = async () => {
+// Test email address - replace with your email
+const TEST_EMAIL = 'youngcky083@gmail.com';
+
+// Function to test welcome email
+const testWelcomeEmail = async () => {
+  console.log(`🧪 Testing welcome email to ${TEST_EMAIL}...`);
+  
   try {
-    console.log('🧪 Testing email service...');
-    console.log('📧 GMAIL_USER:', process.env.GMAIL_USER);
-    console.log('🔑 GMAIL_PASS:', process.env.GMAIL_PASS ? '***configured***' : '❌ NOT SET');
-    console.log('🌐 CLIENT_URL:', process.env.CLIENT_URL);
-    
-    if (!process.env.GMAIL_USER || !process.env.GMAIL_PASS) {
-      console.error('❌ Missing email configuration. Please set GMAIL_USER and GMAIL_PASS in .env file');
-      return;
-    }
-    
-    // Test with your own email
-    const testEmailAddress = process.env.GMAIL_USER; // Send to yourself for testing
-    
-    await sendWelcomeEmail(testEmailAddress, 'Test User', 'Free', false);
-    console.log('✅ Test email sent successfully!');
-    
+    await sendWelcomeEmail(
+      TEST_EMAIL,
+      'Test User',
+      'Premium',
+      true
+    );
+    console.log('✅ Welcome email sent successfully!');
   } catch (error) {
-    console.error('❌ Test email failed:', error);
+    console.error('❌ Welcome email test failed:', error);
   }
 };
 
-// Run the test
-testEmail();
+// Function to test password reset email
+const testPasswordResetEmail = async () => {
+  console.log(`🧪 Testing password reset email to ${TEST_EMAIL}...`);
+  
+  const resetUrl = 'http://localhost:3000/reset-password?token=test-token-123';
+  
+  try {
+    await sendPasswordResetEmail(
+      TEST_EMAIL,
+      resetUrl,
+      'Test User'
+    );
+    console.log('✅ Password reset email sent successfully!');
+  } catch (error) {
+    console.error('❌ Password reset email test failed:', error);
+  }
+};
+
+// Main function to run tests
+const runTests = async () => {
+  console.log('🚀 Starting email tests...');
+  
+  // Test welcome email
+  await testWelcomeEmail();
+  
+  // Test password reset email
+  await testPasswordResetEmail();
+  
+  console.log('🏁 Email tests completed!');
+};
+
+// Run the tests
+runTests();
