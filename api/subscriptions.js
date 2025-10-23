@@ -65,7 +65,7 @@ export default async function handler(req, res) {
     if (req.method === 'POST' && action === 'upgrade') {
       const { plan, paymentMethod } = req.body;
 
-      if (!plan || !['creator', 'professional'].includes(plan)) {
+      if (!plan || !['creator', 'pro'].includes(plan)) {
         return res.status(400).json({ error: 'Invalid plan' });
       }
 
@@ -80,7 +80,7 @@ export default async function handler(req, res) {
             collaborationTools: true,
             price: 19
           },
-          professional: {
+          pro: {
             maxTracks: -1, // unlimited
             feedbackRequests: -1, // unlimited
             prioritySupport: true,
@@ -142,7 +142,7 @@ export default async function handler(req, res) {
         // Check feature access based on plan
         const hasFeatureAccess = (feature) => {
           switch (subscription.plan) {
-            case 'professional':
+            case 'pro':
               return true; // All features
             case 'creator':
               return ['maxTracks', 'feedbackRequests', 'analyticsAccess', 'collaborationTools'].includes(feature);

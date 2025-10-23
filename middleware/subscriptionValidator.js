@@ -76,11 +76,10 @@ const subscriptionValidator = (options = {}) => {
 // Helper function to check if user's tier meets the required tier
 const hasRequiredTier = (userTier, requiredTier) => {
   const tierHierarchy = {
-    [SUBSCRIPTION_TIERS.FREE]: 0,
-    [SUBSCRIPTION_TIERS.BASIC]: 1,
-    [SUBSCRIPTION_TIERS.CREATOR]: 2,
-    [SUBSCRIPTION_TIERS.PROFESSIONAL]: 3,
-    [SUBSCRIPTION_TIERS.FOUNDER]: 4
+    [SUBSCRIPTION_TIERS.BASIC]: 0,
+    [SUBSCRIPTION_TIERS.CREATOR]: 1,
+    [SUBSCRIPTION_TIERS.PRO]: 2,
+    [SUBSCRIPTION_TIERS.FOUNDER]: 3
   };
   
   const userLevel = tierHierarchy[userTier] || 0;
@@ -109,7 +108,7 @@ const checkUsageLimits = async (userId, userTier, feature) => {
     // Set limit based on tier
     switch (userTier) {
       case SUBSCRIPTION_TIERS.FOUNDER:
-      case SUBSCRIPTION_TIERS.PROFESSIONAL:
+      case SUBSCRIPTION_TIERS.PRO:
         limitCount = Infinity;
         break;
       case SUBSCRIPTION_TIERS.CREATOR:
@@ -135,7 +134,7 @@ const checkUsageLimits = async (userId, userTier, feature) => {
     // Set limit based on tier
     switch (userTier) {
       case SUBSCRIPTION_TIERS.FOUNDER:
-      case SUBSCRIPTION_TIERS.PROFESSIONAL:
+      case SUBSCRIPTION_TIERS.PRO:
         limitCount = Infinity;
         break;
       case SUBSCRIPTION_TIERS.CREATOR:

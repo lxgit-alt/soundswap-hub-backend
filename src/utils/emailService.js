@@ -11,7 +11,7 @@ const getClientURL = () => {
   if (process.env.NODE_ENV === 'production') {
     return 'https://soundswap.onrender.com';
   }
-  return process.env.CLIENT_URL || 'http://localhost:5173';
+  return process.env.CLIENT_URL || 'https://soundswap.onrender.com';
 };
 
 // Set email sending retry options for production

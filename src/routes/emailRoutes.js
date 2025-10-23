@@ -54,7 +54,7 @@ router.post('/send-password-reset', async (req, res) => {
     // Generate reset URL
     const clientURL = process.env.NODE_ENV === 'production'
       ? 'https://soundswap.onrender.com'
-      : (process.env.CLIENT_URL || 'http://localhost:5173');
+      : (process.env.CLIENT_URL || 'https://soundswap.onrender.com');
     
     const resetUrl = `${clientURL}/reset-password?token=${resetToken}&email=${encodeURIComponent(email)}`;
 
