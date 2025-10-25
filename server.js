@@ -9,7 +9,10 @@ const __dirname = dirname(__filename);
 
 // CORS configuration
 app.use(cors({
-  origin: 'http://localhost:5173',
+  origin: [
+    'http://localhost:3000', // local development
+    'https://soundswap.onrender.com/' // your actual Render frontend URL
+  ],
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
   credentials: true
