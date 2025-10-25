@@ -7,7 +7,7 @@ import achievementsRoutes from './api/achievements.js';
 import founderActivationRoutes from './api/founder-activation.js';
 import auditFoundersRoutes from './api/audit-founders.js';
 import leaderboardRoutes from './api/leaderboard.js';
-import emailRoutes from './api/send-welcome-email.js'; // Add this import
+import emailRoutes from './api/send-welcome-email.js';
 import dotenv from 'dotenv';
 
 dotenv.config();
@@ -31,7 +31,7 @@ app.use(cors({
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Routes
+// Routes - FIXED: Mount emailRoutes directly without /api prefix since it already has it
 app.use('/api/spots', spotsRoutes);
 app.use('/api/pairings', pairingsRoutes);
 app.use('/api/feedback', feedbackRoutes);
@@ -39,7 +39,7 @@ app.use('/api/achievements', achievementsRoutes);
 app.use('/api/founder-activation', founderActivationRoutes);
 app.use('/api/audit-founders', auditFoundersRoutes);
 app.use('/api/leaderboard', leaderboardRoutes);
-app.use('/api', emailRoutes); // Add email routes
+app.use('/', emailRoutes); // CHANGED: from app.use('/api', emailRoutes) to app.use('/', emailRoutes)
 
 // Health check endpoint
 app.get('/api/health', (req, res) => {
@@ -56,7 +56,7 @@ app.get('/api/test-email', (req, res) => {
   res.json({
     success: true,
     message: 'Email endpoint is available',
-    email_configured: !!(process.env.EMAIL_USER && process.env.EMAIL_PASSWORD)
+    email_configured: !!(process.env.GMAIL_USER && process.env.GMAIL_PASS)
   });
 });
 

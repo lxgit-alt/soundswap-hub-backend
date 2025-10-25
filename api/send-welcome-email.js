@@ -3,39 +3,13 @@ import nodemailer from 'nodemailer';
 
 const router = express.Router();
 
-// Add CORS middleware
-router.use((req, res, next) => {
-  const allowedOrigins = [
-    'http://localhost:3000',
-    'http://localhost:5173',
-    'https://soundswap.onrender.com',
-    'https://sound-swap-frontend.onrender.com',
-    'https://soundswap-backend.vercel.app'
-  ];
-  
-  const origin = req.headers.origin;
-  if (allowedOrigins.includes(origin)) {
-    res.setHeader('Access-Control-Allow-Origin', origin);
-  }
-  
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, PUT, PATCH, DELETE');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-  
-  if (req.method === 'OPTIONS') {
-    return res.sendStatus(200);
-  }
-  
-  next();
-});
-
 // Create email transporter
 const createTransporter = () => {
-  // Use environment variables for email configuration
   return nodemailer.createTransporter({
     service: 'gmail',
     auth: {
-      user: process.env.GMAIL_USER || 'soundswaphub@gmail.com',
-      pass: process.env.GMAIL_PASS, // Use app password
+      user: process.env.GMAIL_USER,
+      pass: process.env.GMAIL_PASS,
     },
   });
 };
@@ -45,16 +19,7 @@ const sendWelcomeEmail = async (email, name, subscription, isFounder = false) =>
   try {
     console.log('📧 Preparing to send welcome email:', { email, name, subscription, isFounder });
 
-    // Validate email configuration
-    if (!process.env.EMAIL_USER || !process.env.EMAIL_PASSWORD) {
-      throw new Error('Email credentials not configured');
-    }
-
     const transporter = createTransporter();
-
-    // Verify transporter configuration
-    await transporter.verify();
-    console.log('✅ Email transporter verified');
 
     // Email content with your custom styles
     const subject = isFounder 
@@ -272,6 +237,7 @@ const sendWelcomeEmail = async (email, name, subscription, isFounder = false) =>
                 <a href="https://twitter.com/soundswap" title="Follow us on Twitter">🐦</a>
                 <a href="https://facebook.com/soundswap" title="Like us on Facebook">📘</a>
                 <a href="https://instagram.com/soundswap" title="Follow us on Instagram">📸</a>
+                <a href="https://youtube.com/soundswap" title="Subscribe to our YouTube">📺</a>
             </div>
             
             <p>
@@ -282,7 +248,7 @@ const sendWelcomeEmail = async (email, name, subscription, isFounder = false) =>
             <p>
                 <a href="https://soundswap.onrender.com/dashboard">Dashboard</a> | 
                 <a href="https://soundswap.onrender.com/settings">Account Settings</a> | 
-                <a href="https://soundswap.onrender.com/settings">Unsubscribe</a>
+                <a href="https://soundswap.onrender.com/unsubscribe">Unsubscribe</a>
             </p>
             
             <p style="margin-top: 20px; color: #999; font-size: 12px;">
@@ -342,7 +308,7 @@ You're receiving this email because you signed up for SoundSwap.
     const mailOptions = {
       from: {
         name: 'SoundSwap',
-        address: process.env.EMAIL_USER
+        address: process.env.GMAIL_USER
       },
       to: email,
       subject: subject,
@@ -353,7 +319,7 @@ You're receiving this email because you signed up for SoundSwap.
     console.log('📤 Sending email with options:', {
       to: email,
       subject: subject,
-      from: process.env.EMAIL_USER
+      from: process.env.GMAIL_USER
     });
 
     const result = await transporter.sendMail(mailOptions);
@@ -366,7 +332,7 @@ You're receiving this email because you signed up for SoundSwap.
   }
 };
 
-// Send welcome email endpoint
+// Send welcome email endpoint - CHANGED: removed /api prefix since it's already mounted at root
 router.post('/api/send-welcome-email', async (req, res) => {
   try {
     console.log('📨 Received welcome email request:', req.body);
@@ -420,8 +386,6 @@ router.post('/api/send-welcome-email', async (req, res) => {
       errorMessage = 'Invalid email address.';
     } else if (error.message.includes('ENOTFOUND')) {
       errorMessage = 'Network error. Please try again.';
-    } else if (error.message.includes('credentials not configured')) {
-      errorMessage = 'Email service not configured on server.';
     }
 
     res.status(500).json({
@@ -432,18 +396,18 @@ router.post('/api/send-welcome-email', async (req, res) => {
   }
 });
 
-// Test endpoint
+// Test endpoint for welcome email - CHANGED: removed /api prefix
 router.get('/api/send-welcome-email/test', async (req, res) => {
   try {
-    const hasEmailConfig = !!(process.env.EMAIL_USER && process.env.EMAIL_PASSWORD);
+    // Check if email credentials are available
+    const hasEmailConfig = !!(process.env.GMAIL_USER && process.env.GMAIL_PASS);
     
     res.json({
       success: true,
       email_configured: hasEmailConfig,
-      email_user: process.env.EMAIL_USER ? 'Set' : 'Not set',
+      email_user: process.env.GMAIL_USER ? 'Set' : 'Not set',
       node_env: process.env.NODE_ENV,
-      timestamp: new Date().toISOString(),
-      message: 'Welcome email API is working'
+      timestamp: new Date().toISOString()
     });
   } catch (error) {
     console.error('Test endpoint error:', error);
@@ -452,15 +416,6 @@ router.get('/api/send-welcome-email/test', async (req, res) => {
       error: error.message
     });
   }
-});
-
-// Add a simple health check
-router.get('/api/health', (req, res) => {
-  res.json({
-    status: 'OK',
-    service: 'email-api',
-    timestamp: new Date().toISOString()
-  });
 });
 
 export default router;
