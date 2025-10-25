@@ -9,7 +9,8 @@ router.use((req, res, next) => {
     'http://localhost:3000',
     'http://localhost:5173',
     'https://soundswap.onrender.com',
-    'https://sound-swap-frontend.onrender.com'
+    'https://sound-swap-frontend.onrender.com',
+    'https://soundswap-backend.vercel.app'
   ];
   
   const origin = req.headers.origin;
@@ -271,7 +272,6 @@ const sendWelcomeEmail = async (email, name, subscription, isFounder = false) =>
                 <a href="https://twitter.com/soundswap" title="Follow us on Twitter">🐦</a>
                 <a href="https://facebook.com/soundswap" title="Like us on Facebook">📘</a>
                 <a href="https://instagram.com/soundswap" title="Follow us on Instagram">📸</a>
-                <a href="https://youtube.com/soundswap" title="Subscribe to our YouTube">📺</a>
             </div>
             
             <p>
@@ -282,7 +282,7 @@ const sendWelcomeEmail = async (email, name, subscription, isFounder = false) =>
             <p>
                 <a href="https://soundswap.onrender.com/dashboard">Dashboard</a> | 
                 <a href="https://soundswap.onrender.com/settings">Account Settings</a> | 
-                <a href="https://soundswap.onrender.com/unsubscribe">Unsubscribe</a>
+                <a href="https://soundswap.onrender.com/settings">Unsubscribe</a>
             </p>
             
             <p style="margin-top: 20px; color: #999; font-size: 12px;">
