@@ -9,9 +9,9 @@ dotenv.config();
 // Set client URL based on environment
 const getClientURL = () => {
   if (process.env.NODE_ENV === 'production') {
-    return 'https://soundswap.onrender.com';
+    return 'https://soundswap.live';
   }
-  return process.env.CLIENT_URL || 'https://soundswap.onrender.com';
+  return process.env.CLIENT_URL || 'https://soundswap.live';
 };
 
 // Set email sending retry options for production

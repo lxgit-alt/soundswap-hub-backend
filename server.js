@@ -35,6 +35,7 @@ app.use(cors({
     'https://soundswap.onrender.com', // your Render frontend URL with HTTPS
     'https://www.soundswap.onrender.com', // www variant with HTTPS
     'http://localhost:5173', // Vite dev server
+    'https://soundswap.live',
     'https://sound-swap-frontend.onrender.com' // alternative frontend URL
   ],
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
@@ -61,12 +62,12 @@ app.get('/health', (req, res) => {
 app.get('/api/send-welcome-email/test', async (req, res) => {
   try {
     // Check if email credentials are available
-    const hasEmailConfig = !!(process.env.EMAIL_USER && process.env.EMAIL_PASSWORD);
+    const hasEmailConfig = !!(process.env.GMAIL_USER && process.env.GMAIL_PASS);
     
     res.json({
       success: true,
       email_configured: hasEmailConfig,
-      email_user: process.env.EMAIL_USER ? 'Set' : 'Not set',
+      email_user: process.env.GMAIL_USER ? 'Set' : 'Not set',
       node_env: process.env.NODE_ENV,
       timestamp: new Date().toISOString(),
       message: 'Welcome email API endpoint is working!'
@@ -154,8 +155,8 @@ const sendWelcomeEmail = async (email, name, subscription, isFounder = false) =>
     const transporter = nodemailer.createTransporter({
       service: 'gmail',
       auth: {
-        user: process.env.EMAIL_USER,
-        pass: process.env.EMAIL_PASSWORD,
+        user: process.env.GMAIL_USER,
+        pass: process.env.GMAIL_PASS,
       },
     });
 
@@ -360,7 +361,7 @@ const sendWelcomeEmail = async (email, name, subscription, isFounder = false) =>
             </div>
 
             <div style="text-align: center;">
-                <a href="https://soundswap.onrender.com/dashboard" class="cta-button">
+                <a href="https://soundswap.live/dashboard" class="cta-button">
                     Start Your Musical Journey
                 </a>
             </div>
@@ -374,19 +375,18 @@ const sendWelcomeEmail = async (email, name, subscription, isFounder = false) =>
             <div class="social-links">
                 <a href="https://twitter.com/soundswap" title="Follow us on Twitter">🐦</a>
                 <a href="https://facebook.com/soundswap" title="Like us on Facebook">📘</a>
-                <a href="https://instagram.com/soundswap" title="Follow us on Instagram">📸</a>
-                <a href="https://youtube.com/soundswap" title="Subscribe to our YouTube">📺</a>
+                <a href="https://instagram.com/soundswap_official" title="Follow us on Instagram">📸</a>
             </div>
             
             <p>
                 Questions? We're here to help! Reply to this email or visit our 
-                <a href="https://soundswap.onrender.com/support">Help Center</a>.
+                <a href="https://soundswap.live/support">Help Center</a>.
             </p>
             
             <p>
-                <a href="https://soundswap.onrender.com/dashboard">Dashboard</a> | 
-                <a href="https://soundswap.onrender.com/settings">Account Settings</a> | 
-                <a href="https://soundswap.onrender.com/unsubscribe">Unsubscribe</a>
+                <a href="https://soundswap.live/dashboard">Dashboard</a> | 
+                <a href="https://soundswap.live/settings">Account Settings</a> | 
+                <a href="https://soundswap.live/unsubscribe">Unsubscribe</a>
             </p>
             
             <p style="margin-top: 20px; color: #999; font-size: 12px;">
@@ -421,23 +421,22 @@ ${isFounder ? `
 ` : ''}
 
 Start Your Musical Journey:
-https://soundswap.onrender.com/dashboard
+https://soundswap.live/dashboard
 
 Pro tip: Complete your profile and upload your first track to make the most of your SoundSwap experience. The community is here to support your musical growth!
 
 Questions? We're here to help! Reply to this email or visit our Help Center:
-https://soundswap.onrender.com/support
+https://soundswap.live/support
 
 Useful Links:
-- Dashboard: https://soundswap.onrender.com/dashboard
-- Account Settings: https://soundswap.onrender.com/settings
-- Unsubscribe: https://soundswap.onrender.com/unsubscribe
+- Dashboard: https://soundswap.live/dashboard
+- Account Settings: https://soundswap.live/settings
+- Unsubscribe: https://soundswap.live/unsubscribe
 
 Follow us:
 - Twitter: https://twitter.com/soundswap
 - Facebook: https://facebook.com/soundswap  
-- Instagram: https://instagram.com/soundswap
-- YouTube: https://youtube.com/soundswap
+- Instagram: https://instagram.com/soundswap_official
 
 © ${new Date().getFullYear()} SoundSwap. All rights reserved.
 You're receiving this email because you signed up for SoundSwap.
@@ -446,7 +445,7 @@ You're receiving this email because you signed up for SoundSwap.
     const mailOptions = {
       from: {
         name: 'SoundSwap',
-        address: process.env.EMAIL_USER
+        address: process.env.GMAIL_USER
       },
       to: email,
       subject: subject,
@@ -457,7 +456,7 @@ You're receiving this email because you signed up for SoundSwap.
     console.log('📤 Sending email with options:', {
       to: email,
       subject: subject,
-      from: process.env.EMAIL_USER
+      from: process.env.GMAIL_USER
     });
 
     const result = await transporter.sendMail(mailOptions);
