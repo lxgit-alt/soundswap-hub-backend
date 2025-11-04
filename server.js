@@ -58,6 +58,13 @@ app.get('/health', (req, res) => {
   });
 });
 
+app.get('/api/rss', (req, res) => {
+  // Your RSS generation logic here
+  const rss = generateRSS(); // Use the function from your utils
+  res.setHeader('Content-Type', 'application/rss+xml');
+  res.send(rss);
+});
+
 // Email test endpoint
 app.get('/api/send-welcome-email/test', async (req, res) => {
   try {
