@@ -4,6 +4,7 @@ import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import helmet from 'helmet';
 import nodemailer from 'nodemailer';
+import trendsRoutes from './api/trends.js';
 
 const app = express();
 const __filename = fileURLToPath(import.meta.url);
@@ -47,6 +48,7 @@ app.use(cors({
 // Body parser middleware
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+app.use('/', trendsRoutes);
 
 // Health check endpoint
 app.get('/health', (req, res) => {
