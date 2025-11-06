@@ -10,7 +10,7 @@ const app = express();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-// Trust proxy - important for HTTPS behind reverse proxy (Render, etc.)
+// Trust proxy - important for HTTPS behind reverse proxy
 app.set('trust proxy', 1);
 
 // Security headers with Helmet
@@ -22,23 +22,38 @@ app.use(helmet({
       fontSrc: ["'self'", "https://fonts.gstatic.com"],
       scriptSrc: ["'self'", "'unsafe-inline'"],
       imgSrc: ["'self'", "data:", "https:"],
-      connectSrc: ["'self'", "https://soundswap-api.onrender.com", "wss:"]
+      connectSrc: ["'self'", "https://soundswap-backend.vercel.app", "wss:"]
     },
   },
   crossOriginEmbedderPolicy: false
 }));
 
-// CORS configuration - updated for HTTPS
+// CORS configuration for production
 app.use(cors({
-  origin: [
-    'http://localhost:3000', // local development
-    'https://localhost:3000', // local development with HTTPS
-    'https://soundswap.onrender.com', // your Render frontend URL with HTTPS
-    'https://www.soundswap.onrender.com', // www variant with HTTPS
-    'http://localhost:5173', // Vite dev server
-    'https://soundswap.live',
-    'https://sound-swap-frontend.onrender.com' // alternative frontend URL
-  ],
+  origin: function (origin, callback) {
+    // Allow requests with no origin (like mobile apps or curl requests)
+    if (!origin) return callback(null, true);
+    
+    const allowedOrigins = [
+      'http://localhost:3000',
+      'https://localhost:3000', 
+      'http://localhost:5173',
+      'https://localhost:5173',
+      'https://soundswap-backend.vercel.app',
+      'https://soundswap.onrender.com',
+      'https://www.soundswap.onrender.com',
+      'https://soundswap.live',
+      'https://www.soundswap.live',
+      'https://sound-swap-frontend.onrender.com'
+    ];
+    
+    if (allowedOrigins.indexOf(origin) !== -1) {
+      callback(null, true);
+    } else {
+      console.log('Blocked by CORS:', origin);
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
   credentials: true,
@@ -48,6 +63,8 @@ app.use(cors({
 // Body parser middleware
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+// Mount routes
 app.use('/', trendsRoutes);
 
 // Health check endpoint
@@ -56,30 +73,52 @@ app.get('/health', (req, res) => {
     status: 'OK',
     timestamp: new Date().toISOString(),
     environment: process.env.NODE_ENV || 'development',
-    secure: req.secure
+    secure: req.secure,
+    version: '1.0.0',
+    services: {
+      trends: 'operational',
+      email: process.env.GMAIL_USER ? 'configured' : 'not_configured',
+      database: 'mock_data'
+    }
   });
 });
 
-app.get('/api/rss', (req, res) => {
-  // Your RSS generation logic here
-  const rss = generateRSS(); // Use the function from your utils
-  res.setHeader('Content-Type', 'application/rss+xml');
-  res.send(rss);
+// Enhanced API status endpoint
+app.get('/api/status', (req, res) => {
+  res.json({
+    success: true,
+    service: 'soundswap-backend',
+    status: 'operational',
+    version: '1.0.0',
+    environment: process.env.NODE_ENV || 'development',
+    timestamp: new Date().toISOString(),
+    endpoints: {
+      trends: '/api/trends/*',
+      email: '/api/send-welcome-email',
+      health: '/health',
+      status: '/api/status'
+    },
+    features: {
+      music_trends: 'active',
+      content_ideas: 'active',
+      welcome_emails: process.env.GMAIL_USER ? 'active' : 'disabled',
+      analytics: 'in_development'
+    }
+  });
 });
 
 // Email test endpoint
 app.get('/api/send-welcome-email/test', async (req, res) => {
   try {
-    // Check if email credentials are available
     const hasEmailConfig = !!(process.env.GMAIL_USER && process.env.GMAIL_PASS);
     
     res.json({
       success: true,
       email_configured: hasEmailConfig,
-      email_user: process.env.GMAIL_USER ? 'Set' : 'Not set',
+      email_user: process.env.GMAIL_USER ? 'Configured' : 'Not set',
       node_env: process.env.NODE_ENV,
       timestamp: new Date().toISOString(),
-      message: 'Welcome email API endpoint is working!'
+      message: 'Welcome email API endpoint is operational'
     });
   } catch (error) {
     console.error('Test endpoint error:', error);
@@ -131,12 +170,12 @@ app.post('/api/send-welcome-email', async (req, res) => {
     res.json({
       success: true,
       message: 'Welcome email sent successfully',
-      messageId: result.messageId
+      messageId: result.messageId,
+      timestamp: new Date().toISOString()
     });
   } catch (error) {
     console.error('❌ Error sending welcome email:', error);
     
-    // Provide more specific error messages
     let errorMessage = 'Failed to send welcome email';
     
     if (error.code === 'EAUTH') {
@@ -160,6 +199,11 @@ const sendWelcomeEmail = async (email, name, subscription, isFounder = false) =>
   try {
     console.log('📧 Preparing to send welcome email:', { email, name, subscription, isFounder });
 
+    // Check if email credentials are available
+    if (!process.env.GMAIL_USER || !process.env.GMAIL_PASS) {
+      throw new Error('Email credentials not configured');
+    }
+
     // Create email transporter
     const transporter = nodemailer.createTransporter({
       service: 'gmail',
@@ -169,7 +213,7 @@ const sendWelcomeEmail = async (email, name, subscription, isFounder = false) =>
       },
     });
 
-    // Email content with your custom styles
+    // Email content
     const subject = isFounder 
       ? `🎉 Welcome to SoundSwap, ${name}! You're a Founder Member!`
       : `🎉 Welcome to SoundSwap, ${name}! Your ${subscription} Plan is Active`;
@@ -478,30 +522,6 @@ You're receiving this email because you signed up for SoundSwap.
   }
 };
 
-// Redirect HTTP to HTTPS in production
-app.use((req, res, next) => {
-  if (process.env.NODE_ENV === 'production' && !req.secure) {
-    return res.redirect(301, `https://${req.headers.host}${req.url}`);
-  }
-  next();
-});
-
-// API routes
-app.use('/api/:endpoint', async (req, res, next) => {
-  try {
-    const endpoint = req.params.endpoint || 'index';
-    const modulePath = `file://${join(__dirname, 'api', `${endpoint}.js`)}`;
-    const { default: handler } = await import(modulePath);
-    return handler(req, res);
-  } catch (error) {
-    console.error('API handler error:', error);
-    res.status(500).json({
-      error: 'Internal server error',
-      details: process.env.NODE_ENV === 'development' ? error.stack : undefined
-    });
-  }
-});
-
 // Handle 404
 app.use('*', (req, res) => {
   res.status(404).json({
@@ -509,11 +529,14 @@ app.use('*', (req, res) => {
     path: req.originalUrl,
     availableEndpoints: [
       '/health',
+      '/api/status',
       '/api/send-welcome-email/test',
       '/api/send-welcome-email',
-      '/api/spots',
-      '/api/pairings',
-      '/api/feedback'
+      '/api/trends/music',
+      '/api/trends/content-ideas',
+      '/api/trends/health',
+      '/api/trends/dev/music',
+      '/api/trends/dev/test-integration'
     ]
   });
 });
@@ -522,15 +545,21 @@ app.use('*', (req, res) => {
 app.use((error, req, res, next) => {
   console.error('Unhandled error:', error);
   res.status(500).json({
+    success: false,
     error: 'Internal server error',
-    message: process.env.NODE_ENV === 'development' ? error.message : 'Something went wrong'
+    message: process.env.NODE_ENV === 'development' ? error.message : 'Something went wrong',
+    timestamp: new Date().toISOString()
   });
 });
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`Server running on port ${PORT}`);
-  console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
-  console.log(`Health check: http://localhost:${PORT}/health`);
-  console.log(`Email test endpoint: http://localhost:${PORT}/api/send-welcome-email/test`);
+  console.log(`🚀 Server running on port ${PORT}`);
+  console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
+  console.log(`❤️  Health check: http://localhost:${PORT}/health`);
+  console.log(`📊 API Status: http://localhost:${PORT}/api/status`);
+  console.log(`📧 Email test: http://localhost:${PORT}/api/send-welcome-email/test`);
+  console.log(`📈 Trends API: http://localhost:${PORT}/api/trends/music`);
+  console.log(`🧪 Dev Trends: http://localhost:${PORT}/api/trends/dev/music`);
+  console.log(`🔧 CORS enabled for production domains`);
 });
