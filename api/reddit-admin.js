@@ -1,19 +1,4 @@
-import express from 'express';
 import snoowrap from 'snoowrap';
-import cors from 'cors';
-
-const router = express.Router();
-
-// CORS for your frontend domains
-router.use(cors({
-  origin: [
-    'https://www.soundswap.live',
-    'https://soundswap.onrender.com',
-    'http://localhost:3000',
-    'http://localhost:5173'
-  ],
-  credentials: true
-}));
 
 // Reddit configuration
 const REDDIT_CONFIG = {
@@ -63,23 +48,6 @@ try {
   console.warn('⚠️ Reddit client not initialized - check environment variables');
 }
 
-// Authentication middleware - only you can access
-const authenticateAdmin = (req, res, next) => {
-  const adminToken = process.env.ADMIN_SECRET_TOKEN;
-  const providedToken = req.headers['x-admin-token'];
-  
-  if (!adminToken || providedToken !== adminToken) {
-    return res.status(403).json({
-      success: false,
-      message: 'Access denied. Admin token required.'
-    });
-  }
-  next();
-};
-
-// Apply admin authentication to all API routes
-router.use(authenticateAdmin);
-
 // Store found posts (in production, use a database)
 let foundPosts = [];
 let analytics = {
@@ -89,99 +57,189 @@ let analytics = {
   lastScan: null
 };
 
-// ========== API ROUTES ==========
+// Authentication middleware
+const authenticateAdmin = (req) => {
+  const adminToken = process.env.ADMIN_SECRET_TOKEN;
+  const providedToken = req.headers['x-admin-token'];
+  
+  if (!adminToken || providedToken !== adminToken) {
+    throw new Error('Access denied. Admin token required.');
+  }
+};
 
-// Scan subreddits for keyword matches
-router.post('/api/scan', async (req, res) => {
+// Helper functions
+function determineResponseType(keywords) {
+  if (keywords.some(k => k.includes('feedback'))) return 'feedback';
+  if (keywords.some(k => k.includes('promote') || k.includes('marketing'))) return 'promotion';
+  return 'general';
+}
+
+function extractPostIdFromUrl(url) {
+  const match = url.match(/comments\/([a-z0-9]+)/);
+  return match ? match[1] : null;
+}
+
+// CORS headers
+const setCorsHeaders = (res) => {
+  res.setHeader('Access-Control-Allow-Origin', 'https://www.soundswap.live');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-admin-token');
+  res.setHeader('Access-Control-Allow-Credentials', 'true');
+};
+
+// Main handler function
+export default async function handler(req, res) {
+  // Set CORS headers
+  setCorsHeaders(res);
+  
+  // Handle OPTIONS request for CORS
+  if (req.method === 'OPTIONS') {
+    return res.status(200).end();
+  }
+
   try {
-    console.log('🔍 Starting Reddit scan...');
+    // Authenticate admin for all routes except the admin panel
+    if (!req.url.includes('/admin')) {
+      authenticateAdmin(req);
+    }
+
+    const { method, url } = req;
     
-    if (!reddit) {
-      return res.status(500).json({
+    // Route handling
+    if (method === 'GET' && url === '/api/reddit-admin/admin') {
+      return serveAdminPanel(req, res);
+    }
+    
+    if (method === 'POST' && url === '/api/reddit-admin/scan') {
+      return handleScan(req, res);
+    }
+    
+    if (method === 'GET' && url === '/api/reddit-admin/posts') {
+      return handleGetPosts(req, res);
+    }
+    
+    if (method === 'POST' && url.includes('/api/reddit-admin/respond/')) {
+      const postId = url.split('/respond/')[1];
+      return handleRespond(req, res, postId);
+    }
+    
+    if (method === 'GET' && url === '/api/reddit-admin/analytics') {
+      return handleGetAnalytics(req, res);
+    }
+    
+    if (method === 'POST' && url === '/api/reddit-admin/posts/manual') {
+      return handleManualPost(req, res);
+    }
+
+    // If no route matches
+    return res.status(404).json({
+      success: false,
+      message: 'Endpoint not found',
+      availableEndpoints: [
+        'GET /api/reddit-admin/admin',
+        'POST /api/reddit-admin/scan',
+        'GET /api/reddit-admin/posts',
+        'POST /api/reddit-admin/respond/:id',
+        'GET /api/reddit-admin/analytics',
+        'POST /api/reddit-admin/posts/manual'
+      ]
+    });
+
+  } catch (error) {
+    console.error('❌ API Error:', error);
+    
+    if (error.message.includes('Access denied')) {
+      return res.status(403).json({
         success: false,
-        message: 'Reddit client not configured. Check environment variables.'
+        message: error.message
       });
     }
     
-    const newPosts = [];
-    
-    for (const subreddit of TARGET_SUBREDDITS) {
-      try {
-        console.log(`📊 Scanning r/${subreddit}...`);
-        
-        // Get recent posts
-        const posts = await reddit.getSubreddit(subreddit).getNew({ limit: 25 });
-        
-        for (const post of posts) {
-          analytics.totalScanned++;
-          
-          const content = `${post.title} ${post.selftext}`.toLowerCase();
-          const matchedKeywords = KEYWORDS.filter(keyword => 
-            content.includes(keyword.toLowerCase())
-          );
-          
-          if (matchedKeywords.length > 0) {
-            const existingPost = foundPosts.find(p => p.id === post.id);
-            
-            if (!existingPost) {
-              const postData = {
-                id: post.id,
-                title: post.title,
-                url: `https://reddit.com${post.permalink}`,
-                subreddit: subreddit,
-                author: post.author.name,
-                content: post.selftext.substring(0, 500),
-                keywords: matchedKeywords,
-                score: post.score,
-                commentCount: post.num_comments,
-                created: new Date(post.created_utc * 1000),
-                posted: false,
-                responseType: determineResponseType(matchedKeywords)
-              };
-              
-              foundPosts.unshift(postData);
-              newPosts.push(postData);
-              analytics.matchesFound++;
-              
-              console.log(`🎯 Found match in r/${subreddit}: "${post.title}"`);
-            }
-          }
-        }
-        
-        // Small delay to respect rate limits
-        await new Promise(resolve => setTimeout(resolve, 1000));
-        
-      } catch (error) {
-        console.error(`❌ Error scanning r/${subreddit}:`, error.message);
-      }
-    }
-    
-    analytics.lastScan = new Date();
-    
-    // Keep only last 100 posts to prevent memory issues
-    foundPosts = foundPosts.slice(0, 100);
-    
-    res.json({
-      success: true,
-      scanned: analytics.totalScanned,
-      newMatches: newPosts.length,
-      newPosts: newPosts,
-      analytics: analytics
-    });
-    
-  } catch (error) {
-    console.error('❌ Reddit scan error:', error);
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
-      message: 'Scan failed',
-      error: error.message
+      message: 'Internal server error',
+      error: process.env.NODE_ENV === 'production' ? undefined : error.message
     });
   }
-});
+}
 
-// Get all found posts
-router.get('/api/posts', (req, res) => {
-  const { limit = 50, posted = null } = req.query;
+// Route handlers
+async function handleScan(req, res) {
+  if (!reddit) {
+    return res.status(500).json({
+      success: false,
+      message: 'Reddit client not configured. Check environment variables.'
+    });
+  }
+
+  console.log('🔍 Starting Reddit scan...');
+  const newPosts = [];
+  
+  for (const subreddit of TARGET_SUBREDDITS) {
+    try {
+      console.log(`📊 Scanning r/${subreddit}...`);
+      
+      const posts = await reddit.getSubreddit(subreddit).getNew({ limit: 25 });
+      
+      for (const post of posts) {
+        analytics.totalScanned++;
+        
+        const content = `${post.title} ${post.selftext}`.toLowerCase();
+        const matchedKeywords = KEYWORDS.filter(keyword => 
+          content.includes(keyword.toLowerCase())
+        );
+        
+        if (matchedKeywords.length > 0) {
+          const existingPost = foundPosts.find(p => p.id === post.id);
+          
+          if (!existingPost) {
+            const postData = {
+              id: post.id,
+              title: post.title,
+              url: `https://reddit.com${post.permalink}`,
+              subreddit: subreddit,
+              author: post.author.name,
+              content: post.selftext.substring(0, 500),
+              keywords: matchedKeywords,
+              score: post.score,
+              commentCount: post.num_comments,
+              created: new Date(post.created_utc * 1000),
+              posted: false,
+              responseType: determineResponseType(matchedKeywords)
+            };
+            
+            foundPosts.unshift(postData);
+            newPosts.push(postData);
+            analytics.matchesFound++;
+            
+            console.log(`🎯 Found match in r/${subreddit}: "${post.title}"`);
+          }
+        }
+      }
+      
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      
+    } catch (error) {
+      console.error(`❌ Error scanning r/${subreddit}:`, error.message);
+    }
+  }
+  
+  analytics.lastScan = new Date();
+  foundPosts = foundPosts.slice(0, 100);
+  
+  res.json({
+    success: true,
+    scanned: analytics.totalScanned,
+    newMatches: newPosts.length,
+    newPosts: newPosts,
+    analytics: analytics
+  });
+}
+
+function handleGetPosts(req, res) {
+  const url = new URL(req.url, `http://${req.headers.host}`);
+  const limit = url.searchParams.get('limit') || 50;
+  const posted = url.searchParams.get('posted');
   
   let posts = foundPosts;
   
@@ -197,76 +255,57 @@ router.get('/api/posts', (req, res) => {
     total: foundPosts.length,
     analytics: analytics
   });
-});
+}
 
-// Post response to a Reddit post
-router.post('/api/respond/:postId', async (req, res) => {
-  try {
-    const { postId } = req.params;
-    const { responseType, customMessage } = req.body;
-    
-    if (!reddit) {
-      return res.status(500).json({
-        success: false,
-        message: 'Reddit client not configured'
-      });
-    }
-    
-    const post = foundPosts.find(p => p.id === postId);
-    
-    if (!post) {
-      return res.status(404).json({
-        success: false,
-        message: 'Post not found'
-      });
-    }
-    
-    if (post.posted) {
-      return res.status(400).json({
-        success: false,
-        message: 'Response already posted'
-      });
-    }
-    
-    // Get the response message
-    let message = customMessage || RESPONSE_TEMPLATES[responseType] || RESPONSE_TEMPLATES.general;
-    
-    // Add disclaimer
-    message += '\n\n---\n*I\'m the founder of SoundSwap and built this to help musicians like yourself. Hope it helps!*';
-    
-    console.log(`📝 Posting response to: ${post.title}`);
-    
-    // Post the comment
-    const submission = await reddit.getSubmission(postId);
-    const comment = await submission.reply(message);
-    
-    // Update post status
-    post.posted = true;
-    post.response = message;
-    post.respondedAt = new Date();
-    post.commentId = comment.id;
-    
-    analytics.responsesSent++;
-    
-    res.json({
-      success: true,
-      message: 'Response posted successfully',
-      commentUrl: `https://reddit.com${comment.permalink}`,
-      post: post
-    });
-    
-  } catch (error) {
-    console.error('❌ Response posting error:', error);
-    res.status(500).json({
+async function handleRespond(req, res, postId) {
+  if (!reddit) {
+    return res.status(500).json({
       success: false,
-      message: 'Failed to post response',
-      error: error.message
+      message: 'Reddit client not configured'
     });
   }
-});
 
-// Get analytics
-router.get('/api/analytics', (req, res) => {
+  const { responseType, customMessage } = req.body;
+  const post = foundPosts.find(p => p.id === postId);
+  
+  if (!post) {
+    return res.status(404).json({
+      success: false,
+      message: 'Post not found'
+    });
+  }
+  
+  if (post.posted) {
+    return res.status(400).json({
+      success: false,
+      message: 'Response already posted'
+    });
+  }
+  
+  let message = customMessage || RESPONSE_TEMPLATES[responseType] || RESPONSE_TEMPLATES.general;
+  message += '\n\n---\n*I\'m the founder of SoundSwap and built this to help musicians like yourself. Hope it helps!*';
+  
+  console.log(`📝 Posting response to: ${post.title}`);
+  
+  const submission = await reddit.getSubmission(postId);
+  const comment = await submission.reply(message);
+  
+  post.posted = true;
+  post.response = message;
+  post.respondedAt = new Date();
+  post.commentId = comment.id;
+  
+  analytics.responsesSent++;
+  
+  res.json({
+    success: true,
+    message: 'Response posted successfully',
+    commentUrl: `https://reddit.com${comment.permalink}`,
+    post: post
+  });
+}
+
+function handleGetAnalytics(req, res) {
   res.json({
     success: true,
     analytics: analytics,
@@ -276,77 +315,62 @@ router.get('/api/analytics', (req, res) => {
       monitoringSince: analytics.lastScan
     }
   });
-});
+}
 
-// Manual post addition
-router.post('/api/posts/manual', async (req, res) => {
-  try {
-    const { url } = req.body;
-    
-    if (!reddit) {
-      return res.status(500).json({
-        success: false,
-        message: 'Reddit client not configured'
-      });
-    }
-    
-    // Extract post ID from URL
-    const postId = extractPostIdFromUrl(url);
-    
-    if (!postId) {
-      return res.status(400).json({
-        success: false,
-        message: 'Invalid Reddit URL'
-      });
-    }
-    
-    const post = await reddit.getSubmission(postId).fetch();
-    const content = `${post.title} ${post.selftext}`.toLowerCase();
-    const matchedKeywords = KEYWORDS.filter(keyword => 
-      content.includes(keyword.toLowerCase())
-    );
-    
-    const postData = {
-      id: post.id,
-      title: post.title,
-      url: `https://reddit.com${post.permalink}`,
-      subreddit: post.subreddit.display_name,
-      author: post.author.name,
-      content: post.selftext.substring(0, 500),
-      keywords: matchedKeywords,
-      score: post.score,
-      commentCount: post.num_comments,
-      created: new Date(post.created_utc * 1000),
-      posted: false,
-      responseType: determineResponseType(matchedKeywords),
-      manuallyAdded: true
-    };
-    
-    foundPosts.unshift(postData);
-    analytics.matchesFound++;
-    
-    res.json({
-      success: true,
-      post: postData,
-      message: 'Post added manually'
-    });
-    
-  } catch (error) {
-    console.error('❌ Manual post addition error:', error);
-    res.status(500).json({
+async function handleManualPost(req, res) {
+  if (!reddit) {
+    return res.status(500).json({
       success: false,
-      message: 'Failed to add post',
-      error: error.message
+      message: 'Reddit client not configured'
     });
   }
-});
 
-// ========== FRONTEND ADMIN PANEL ==========
+  const { url } = req.body;
+  const postId = extractPostIdFromUrl(url);
+  
+  if (!postId) {
+    return res.status(400).json({
+      success: false,
+      message: 'Invalid Reddit URL'
+    });
+  }
+  
+  const post = await reddit.getSubmission(postId).fetch();
+  const content = `${post.title} ${post.selftext}`.toLowerCase();
+  const matchedKeywords = KEYWORDS.filter(keyword => 
+    content.includes(keyword.toLowerCase())
+  );
+  
+  const postData = {
+    id: post.id,
+    title: post.title,
+    url: `https://reddit.com${post.permalink}`,
+    subreddit: post.subreddit.display_name,
+    author: post.author.name,
+    content: post.selftext.substring(0, 500),
+    keywords: matchedKeywords,
+    score: post.score,
+    commentCount: post.num_comments,
+    created: new Date(post.created_utc * 1000),
+    posted: false,
+    responseType: determineResponseType(matchedKeywords),
+    manuallyAdded: true
+  };
+  
+  foundPosts.unshift(postData);
+  analytics.matchesFound++;
+  
+  res.json({
+    success: true,
+    post: postData,
+    message: 'Post added manually'
+  });
+}
 
-// Serve the admin panel HTML
-router.get('/admin', (req, res) => {
+function serveAdminPanel(req, res) {
   const adminToken = process.env.ADMIN_SECRET_TOKEN;
   
+  res.setHeader('Content-Type', 'text/html');
   res.send(`
 <!DOCTYPE html>
 <html>
@@ -355,206 +379,38 @@ router.get('/admin', (req, res) => {
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-        
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            line-height: 1.6;
-            color: #333;
-            background: #f5f5f5;
-            padding: 20px;
-        }
-        
-        .container {
-            max-width: 1200px;
-            margin: 0 auto;
-        }
-        
-        header {
-            background: white;
-            padding: 20px;
-            border-radius: 10px;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-            margin-bottom: 20px;
-        }
-        
-        h1 {
-            color: #fd4e2f;
-            margin-bottom: 10px;
-        }
-        
-        .controls {
-            background: white;
-            padding: 20px;
-            border-radius: 10px;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-            margin-bottom: 20px;
-            display: flex;
-            gap: 10px;
-            align-items: center;
-            flex-wrap: wrap;
-        }
-        
-        button {
-            background: #fd4e2f;
-            color: white;
-            border: none;
-            padding: 10px 20px;
-            border-radius: 5px;
-            cursor: pointer;
-            font-size: 14px;
-            transition: background 0.3s;
-        }
-        
-        button:hover {
-            background: #e63946;
-        }
-        
-        button:disabled {
-            background: #ccc;
-            cursor: not-allowed;
-        }
-        
-        .analytics {
-            background: white;
-            padding: 20px;
-            border-radius: 10px;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-            margin-bottom: 20px;
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 15px;
-        }
-        
-        .stat {
-            text-align: center;
-            padding: 15px;
-            background: #f8f9fa;
-            border-radius: 5px;
-        }
-        
-        .stat-number {
-            font-size: 24px;
-            font-weight: bold;
-            color: #fd4e2f;
-        }
-        
-        .posts-container {
-            display: grid;
-            gap: 15px;
-        }
-        
-        .post {
-            background: white;
-            padding: 20px;
-            border-radius: 10px;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-            border-left: 4px solid #fd4e2f;
-        }
-        
-        .post.posted {
-            border-left-color: #28a745;
-            background: #f8fff9;
-        }
-        
-        .post-header {
-            display: flex;
-            justify-content: between;
-            align-items: start;
-            margin-bottom: 10px;
-            gap: 10px;
-        }
-        
-        .post-title {
-            font-size: 16px;
-            font-weight: 600;
-            color: #1a1a1a;
-            flex: 1;
-        }
-        
-        .post-meta {
-            font-size: 12px;
-            color: #666;
-        }
-        
-        .post-content {
-            margin: 10px 0;
-            color: #555;
-            line-height: 1.4;
-        }
-        
-        .keywords {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 5px;
-            margin: 10px 0;
-        }
-        
-        .keyword {
-            background: #e9ecef;
-            padding: 2px 8px;
-            border-radius: 12px;
-            font-size: 11px;
-            color: #495057;
-        }
-        
-        .post-actions {
-            display: flex;
-            gap: 10px;
-            margin-top: 15px;
-            flex-wrap: wrap;
-        }
-        
-        .status {
-            padding: 10px;
-            border-radius: 5px;
-            margin: 10px 0;
-        }
-        
-        .status.success {
-            background: #d4edda;
-            color: #155724;
-            border: 1px solid #c3e6cb;
-        }
-        
-        .status.error {
-            background: #f8d7da;
-            color: #721c24;
-            border: 1px solid #f5c6cb;
-        }
-        
-        .status.info {
-            background: #cce7ff;
-            color: #004085;
-            border: 1px solid #b3d7ff;
-        }
-        
-        .loading {
-            opacity: 0.6;
-            pointer-events: none;
-        }
-        
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; line-height: 1.6; color: #333; background: #f5f5f5; padding: 20px; }
+        .container { max-width: 1200px; margin: 0 auto; }
+        header { background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); margin-bottom: 20px; }
+        h1 { color: #fd4e2f; margin-bottom: 10px; }
+        .controls { background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); margin-bottom: 20px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+        button { background: #fd4e2f; color: white; border: none; padding: 10px 20px; border-radius: 5px; cursor: pointer; font-size: 14px; transition: background 0.3s; }
+        button:hover { background: #e63946; }
+        button:disabled { background: #ccc; cursor: not-allowed; }
+        .analytics { background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); margin-bottom: 20px; display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; }
+        .stat { text-align: center; padding: 15px; background: #f8f9fa; border-radius: 5px; }
+        .stat-number { font-size: 24px; font-weight: bold; color: #fd4e2f; }
+        .posts-container { display: grid; gap: 15px; }
+        .post { background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); border-left: 4px solid #fd4e2f; }
+        .post.posted { border-left-color: #28a745; background: #f8fff9; }
+        .post-header { display: flex; justify-content: space-between; align-items: start; margin-bottom: 10px; gap: 10px; }
+        .post-title { font-size: 16px; font-weight: 600; color: #1a1a1a; flex: 1; }
+        .post-meta { font-size: 12px; color: #666; }
+        .post-content { margin: 10px 0; color: #555; line-height: 1.4; }
+        .keywords { display: flex; flex-wrap: wrap; gap: 5px; margin: 10px 0; }
+        .keyword { background: #e9ecef; padding: 2px 8px; border-radius: 12px; font-size: 11px; color: #495057; }
+        .post-actions { display: flex; gap: 10px; margin-top: 15px; flex-wrap: wrap; }
+        .status { padding: 10px; border-radius: 5px; margin: 10px 0; }
+        .status.success { background: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
+        .status.error { background: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
+        .status.info { background: #cce7ff; color: #004085; border: 1px solid #b3d7ff; }
+        .loading { opacity: 0.6; pointer-events: none; }
         @media (max-width: 768px) {
-            body {
-                padding: 10px;
-            }
-            
-            .controls {
-                flex-direction: column;
-                align-items: stretch;
-            }
-            
-            .post-header {
-                flex-direction: column;
-            }
-            
-            .post-actions {
-                flex-direction: column;
-            }
+            body { padding: 10px; }
+            .controls { flex-direction: column; align-items: stretch; }
+            .post-header { flex-direction: column; }
+            .post-actions { flex-direction: column; }
         }
     </style>
 </head>
@@ -599,7 +455,7 @@ router.get('/admin', (req, res) => {
 
     <script>
         const ADMIN_TOKEN = '${adminToken}';
-        const API_BASE = window.location.origin + '/api/reddit-admin';
+        const API_BASE = '/api/reddit-admin';
         
         let isLoading = false;
         
@@ -648,7 +504,7 @@ router.get('/admin', (req, res) => {
             btn.textContent = 'Scanning...';
             
             try {
-                const result = await apiCall('/api/scan', { method: 'POST' });
+                const result = await apiCall('/scan', { method: 'POST' });
                 showStatus(\`Scan complete: \${result.newMatches} new matches found!\`, 'success');
                 loadPosts();
                 loadAnalytics();
@@ -662,7 +518,7 @@ router.get('/admin', (req, res) => {
         
         async function loadPosts() {
             try {
-                const result = await apiCall('/api/posts?limit=50');
+                const result = await apiCall('/posts?limit=50');
                 displayPosts(result.posts);
             } catch (error) {
                 // Error already handled
@@ -671,7 +527,7 @@ router.get('/admin', (req, res) => {
         
         async function loadAnalytics() {
             try {
-                const result = await apiCall('/api/analytics');
+                const result = await apiCall('/analytics');
                 const analytics = result.analytics;
                 
                 document.getElementById('totalScanned').textContent = analytics.totalScanned.toLocaleString();
@@ -744,7 +600,7 @@ router.get('/admin', (req, res) => {
             }
             
             try {
-                const result = await apiCall(\`/api/respond/\${postId}\`, {
+                const result = await apiCall(\`/respond/\${postId}\`, {
                     method: 'POST',
                     body: JSON.stringify({ responseType })
                 });
@@ -773,18 +629,4 @@ router.get('/admin', (req, res) => {
 </body>
 </html>
   `);
-});
-
-// Helper functions
-function determineResponseType(keywords) {
-  if (keywords.some(k => k.includes('feedback'))) return 'feedback';
-  if (keywords.some(k => k.includes('promote') || k.includes('marketing'))) return 'promotion';
-  return 'general';
 }
-
-function extractPostIdFromUrl(url) {
-  const match = url.match(/comments\/([a-z0-9]+)/);
-  return match ? match[1] : null;
-}
-
-export default router;
