@@ -19,9 +19,14 @@ const sendWelcomeEmail = async (email, name, subscription, isFounder = false) =>
   try {
     console.log('📧 Preparing to send welcome email:', { email, name, subscription, isFounder });
 
+    // Check if email credentials are available
+    if (!process.env.GMAIL_USER || !process.env.GMAIL_PASS) {
+      throw new Error('Email credentials not configured');
+    }
+
     const transporter = createTransporter();
 
-    // Email content with your custom styles
+    // Email content
     const subject = isFounder 
       ? `🎉 Welcome to SoundSwap, ${name}! You're a Founder Member!`
       : `🎉 Welcome to SoundSwap, ${name}! Your ${subscription} Plan is Active`;
@@ -222,7 +227,7 @@ const sendWelcomeEmail = async (email, name, subscription, isFounder = false) =>
             </div>
 
             <div style="text-align: center;">
-                <a href="https://soundswap.onrender.com/dashboard" class="cta-button">
+                <a href="https://soundswap.live/dashboard" class="cta-button">
                     Start Your Musical Journey
                 </a>
             </div>
@@ -236,19 +241,18 @@ const sendWelcomeEmail = async (email, name, subscription, isFounder = false) =>
             <div class="social-links">
                 <a href="https://twitter.com/soundswap" title="Follow us on Twitter">🐦</a>
                 <a href="https://facebook.com/soundswap" title="Like us on Facebook">📘</a>
-                <a href="https://instagram.com/soundswap" title="Follow us on Instagram">📸</a>
-                <a href="https://youtube.com/soundswap" title="Subscribe to our YouTube">📺</a>
+                <a href="https://instagram.com/soundswap_official" title="Follow us on Instagram">📸</a>
             </div>
             
             <p>
                 Questions? We're here to help! Reply to this email or visit our 
-                <a href="https://soundswap.onrender.com/support">Help Center</a>.
+                <a href="https://soundswap.live/support">Help Center</a>.
             </p>
             
             <p>
-                <a href="https://soundswap.onrender.com/dashboard">Dashboard</a> | 
-                <a href="https://soundswap.onrender.com/settings">Account Settings</a> | 
-                <a href="https://soundswap.onrender.com/unsubscribe">Unsubscribe</a>
+                <a href="https://soundswap.live/dashboard">Dashboard</a> | 
+                <a href="https://soundswap.live/settings">Account Settings</a> | 
+                <a href="https://soundswap.live/unsubscribe">Unsubscribe</a>
             </p>
             
             <p style="margin-top: 20px; color: #999; font-size: 12px;">
@@ -283,23 +287,22 @@ ${isFounder ? `
 ` : ''}
 
 Start Your Musical Journey:
-https://soundswap.onrender.com/dashboard
+https://soundswap.live/dashboard
 
 Pro tip: Complete your profile and upload your first track to make the most of your SoundSwap experience. The community is here to support your musical growth!
 
 Questions? We're here to help! Reply to this email or visit our Help Center:
-https://soundswap.onrender.com/support
+https://soundswap.live/support
 
 Useful Links:
-- Dashboard: https://soundswap.onrender.com/dashboard
-- Account Settings: https://soundswap.onrender.com/settings
-- Unsubscribe: https://soundswap.onrender.com/unsubscribe
+- Dashboard: https://soundswap.live/dashboard
+- Account Settings: https://soundswap.live/settings
+- Unsubscribe: https://soundswap.live/unsubscribe
 
 Follow us:
 - Twitter: https://twitter.com/soundswap
 - Facebook: https://facebook.com/soundswap  
-- Instagram: https://instagram.com/soundswap
-- YouTube: https://youtube.com/soundswap
+- Instagram: https://instagram.com/soundswap_official
 
 © ${new Date().getFullYear()} SoundSwap. All rights reserved.
 You're receiving this email because you signed up for SoundSwap.
@@ -332,8 +335,222 @@ You're receiving this email because you signed up for SoundSwap.
   }
 };
 
-// Send welcome email endpoint - CHANGED: removed /api prefix since it's already mounted at root
-router.post('/api/send-welcome-email', async (req, res) => {
+// Send password reset email function
+const sendPasswordResetEmail = async (email, resetToken, name) => {
+  try {
+    console.log('📧 Preparing to send password reset email:', { email, resetToken, name });
+
+    // Check if email credentials are available
+    if (!process.env.GMAIL_USER || !process.env.GMAIL_PASS) {
+      throw new Error('Email credentials not configured');
+    }
+
+    const transporter = createTransporter();
+
+    // Generate reset URL
+    const clientURL = process.env.NODE_ENV === 'production'
+      ? 'https://soundswap.live'
+      : (process.env.CLIENT_URL || 'https://soundswap.live');
+    
+    const resetUrl = `${clientURL}/reset-password?token=${resetToken}&email=${encodeURIComponent(email)}`;
+
+    const subject = `🔐 Reset Your SoundSwap Password`;
+
+    const htmlContent = `
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Password Reset - SoundSwap</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            background-color: #f8f9fa;
+            color: #333;
+            line-height: 1.6;
+        }
+        .email-container {
+            max-width: 600px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 12px;
+            overflow: hidden;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+        }
+        .header {
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            padding: 40px 30px;
+            text-align: center;
+            color: white;
+        }
+        .header h1 {
+            margin: 0;
+            font-size: 32px;
+            font-weight: bold;
+        }
+        .content {
+            padding: 40px 30px;
+        }
+        .greeting {
+            font-size: 20px;
+            font-weight: 600;
+            margin-bottom: 20px;
+            color: #333;
+        }
+        .message {
+            font-size: 16px;
+            margin-bottom: 30px;
+            color: #555;
+        }
+        .reset-button {
+            display: inline-block;
+            background: #667eea;
+            color: white;
+            padding: 14px 30px;
+            text-decoration: none;
+            border-radius: 8px;
+            font-weight: 600;
+            font-size: 16px;
+            text-align: center;
+            margin: 20px 0;
+            transition: background-color 0.3s ease;
+        }
+        .reset-button:hover {
+            background: #5a6fd8;
+        }
+        .footer {
+            background: #f8f9fa;
+            padding: 30px;
+            text-align: center;
+            font-size: 14px;
+            color: #666;
+            border-top: 1px solid #eee;
+        }
+        .footer a {
+            color: #667eea;
+            text-decoration: none;
+        }
+        .footer a:hover {
+            text-decoration: underline;
+        }
+        @media (max-width: 600px) {
+            .email-container {
+                margin: 0;
+                border-radius: 0;
+            }
+            .header, .content, .footer {
+                padding: 20px;
+            }
+            .header h1 {
+                font-size: 28px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="email-container">
+        <div class="header">
+            <h1>Password Reset</h1>
+            <p>We got a request to reset your password</p>
+        </div>
+        
+        <div class="content">
+            <div class="greeting">
+                Hi ${name || 'there'},
+            </div>
+            
+            <div class="message">
+                You recently requested to reset your password for your SoundSwap account. Click the button below to reset it.
+            </div>
+
+            <div style="text-align: center;">
+                <a href="${resetUrl}" class="reset-button">
+                    Reset Your Password
+                </a>
+            </div>
+
+            <div class="message">
+                If you did not request a password reset, please ignore this email. This password reset link is only valid for the next 60 minutes.
+            </div>
+
+            <div class="message">
+                <strong>Note:</strong> If the button above doesn't work, copy and paste the following link into your browser:
+                <br>
+                <a href="${resetUrl}">${resetUrl}</a>
+            </div>
+        </div>
+
+        <div class="footer">
+            <p>
+                Questions? We're here to help! Reply to this email or visit our 
+                <a href="https://soundswap.live/support">Help Center</a>.
+            </p>
+            
+            <p style="margin-top: 20px; color: #999; font-size: 12px;">
+                © ${new Date().getFullYear()} SoundSwap. All rights reserved.<br>
+                You're receiving this email because you requested a password reset for your SoundSwap account.
+            </p>
+        </div>
+    </div>
+</body>
+</html>
+    `;
+
+    const textContent = `
+Password Reset Request - SoundSwap
+
+Hi ${name || 'there'},
+
+You recently requested to reset your password for your SoundSwap account. Use the link below to reset it.
+
+Reset Your Password:
+${resetUrl}
+
+If you did not request a password reset, please ignore this email. This password reset link is only valid for the next 60 minutes.
+
+Note: If the link above doesn't work, copy and paste the following URL into your browser:
+${resetUrl}
+
+Questions? We're here to help! Reply to this email or visit our Help Center: https://soundswap.live/support
+
+© ${new Date().getFullYear()} SoundSwap. All rights reserved.
+You're receiving this email because you requested a password reset for your SoundSwap account.
+    `;
+
+    const mailOptions = {
+      from: {
+        name: 'SoundSwap',
+        address: process.env.GMAIL_USER
+      },
+      to: email,
+      subject: subject,
+      text: textContent,
+      html: htmlContent
+    };
+
+    console.log('📤 Sending password reset email with options:', {
+      to: email,
+      subject: subject,
+      from: process.env.GMAIL_USER
+    });
+
+    const result = await transporter.sendMail(mailOptions);
+    console.log('✅ Password reset email sent successfully:', result.messageId);
+    
+    return result;
+  } catch (error) {
+    console.error('❌ Error sending password reset email:', error);
+    throw error;
+  }
+};
+
+// ==================== EMAIL ROUTES ====================
+
+// Send welcome email endpoint
+router.post('/send-welcome-email', async (req, res) => {
   try {
     console.log('📨 Received welcome email request:', req.body);
     
@@ -377,7 +594,6 @@ router.post('/api/send-welcome-email', async (req, res) => {
   } catch (error) {
     console.error('❌ Error sending welcome email:', error);
     
-    // Provide more specific error messages
     let errorMessage = 'Failed to send welcome email';
     
     if (error.code === 'EAUTH') {
@@ -396,18 +612,80 @@ router.post('/api/send-welcome-email', async (req, res) => {
   }
 });
 
-// Test endpoint for welcome email - CHANGED: removed /api prefix
-router.get('/api/send-welcome-email/test', async (req, res) => {
+// Send password reset email endpoint
+router.post('/send-password-reset', async (req, res) => {
   try {
-    // Check if email credentials are available
+    console.log('📨 Received password reset email request:', req.body);
+    
+    const { email, resetToken, name } = req.body;
+
+    // Validate required fields
+    if (!email || !resetToken) {
+      console.error('❌ Email and reset token are required');
+      return res.status(400).json({
+        success: false,
+        message: 'Email and reset token are required'
+      });
+    }
+
+    // Validate email format
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+      console.error('❌ Invalid email format:', email);
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid email format'
+      });
+    }
+
+    console.log('🔄 Sending password reset email to:', { email, resetToken, name });
+
+    // Send the password reset email
+    await sendPasswordResetEmail(
+      email,
+      resetToken,
+      name || ''
+    );
+
+    console.log('✅ Password reset email sent successfully to:', email);
+
+    res.json({
+      success: true,
+      message: 'Password reset email sent successfully'
+    });
+  } catch (error) {
+    console.error('❌ Error sending password reset email:', error);
+    
+    let errorMessage = 'Failed to send password reset email';
+    
+    if (error.code === 'EAUTH') {
+      errorMessage = 'Email authentication failed. Please check email credentials.';
+    } else if (error.code === 'EENVELOPE') {
+      errorMessage = 'Invalid email address.';
+    } else if (error.message.includes('ENOTFOUND')) {
+      errorMessage = 'Network error. Please try again.';
+    }
+
+    res.status(500).json({
+      success: false,
+      message: errorMessage,
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+});
+
+// Test endpoint for email configuration
+router.get('/test', async (req, res) => {
+  try {
     const hasEmailConfig = !!(process.env.GMAIL_USER && process.env.GMAIL_PASS);
     
     res.json({
       success: true,
       email_configured: hasEmailConfig,
-      email_user: process.env.GMAIL_USER ? 'Set' : 'Not set',
+      email_user: process.env.GMAIL_USER ? 'Configured' : 'Not set',
       node_env: process.env.NODE_ENV,
-      timestamp: new Date().toISOString()
+      timestamp: new Date().toISOString(),
+      message: 'Email API endpoint is operational'
     });
   } catch (error) {
     console.error('Test endpoint error:', error);
