@@ -117,6 +117,7 @@ app.get('/api/status', (req, res) => {
       content_ideas: 'active',
       welcome_emails: process.env.GMAIL_USER ? 'active' : 'disabled',
       password_reset: process.env.GMAIL_USER ? 'active' : 'disabled',
+      song_review_notifications: process.env.GMAIL_USER ? 'active' : 'disabled',
       analytics: 'in_development',
       reddit_integration: 'active'
     }
@@ -152,6 +153,7 @@ app.use('*', (req, res) => {
       '/api/status',
       '/api/email/send-welcome-email',
       '/api/email/send-password-reset',
+      '/api/email/send-song-reviewed',
       '/api/email/test',
       '/api/trends/music',
       '/api/trends/content-ideas',
@@ -181,6 +183,7 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`❤️  Health check: http://localhost:${PORT}/health`);
   console.log(`📊 API Status: http://localhost:${PORT}/api/status`);
   console.log(`📧 Email endpoints: http://localhost:${PORT}/api/email/*`);
+  console.log(`🎵 Song review notifications: http://localhost:${PORT}/api/email/send-song-reviewed`);
   console.log(`📈 Trends API: http://localhost:${PORT}/api/trends/music`);
   console.log(`🧪 Dev Trends: http://localhost:${PORT}/api/trends/dev/music`);
   console.log(`🔗 Reddit Admin: http://localhost:${PORT}/api/reddit-admin/admin`);
