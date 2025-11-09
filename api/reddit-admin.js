@@ -1,4 +1,7 @@
+import express from 'express';
 import snoowrap from 'snoowrap';
+
+const router = express.Router();
 
 // Reddit configuration
 const REDDIT_CONFIG = {
@@ -44,8 +47,9 @@ const RESPONSE_TEMPLATES = {
 let reddit;
 try {
   reddit = new snoowrap(REDDIT_CONFIG);
+  console.log('✅ Reddit client initialized successfully');
 } catch (error) {
-  console.warn('⚠️ Reddit client not initialized - check environment variables');
+  console.warn('⚠️ Reddit client not initialized - check environment variables:', error.message);
 }
 
 // Store found posts (in production, use a database)
@@ -79,295 +83,10 @@ function extractPostIdFromUrl(url) {
   return match ? match[1] : null;
 }
 
-// CORS headers
-const setCorsHeaders = (res) => {
-  res.setHeader('Access-Control-Allow-Origin', 'https://www.soundswap.live');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-admin-token');
-  res.setHeader('Access-Control-Allow-Credentials', 'true');
-};
+// ==================== ROUTE HANDLERS ====================
 
-// Main handler function
-export default async function handler(req, res) {
-  // Set CORS headers
-  setCorsHeaders(res);
-  
-  // Handle OPTIONS request for CORS
-  if (req.method === 'OPTIONS') {
-    return res.status(200).end();
-  }
-
-  try {
-    // Authenticate admin for all routes except the admin panel
-    if (!req.url.includes('/admin')) {
-      authenticateAdmin(req);
-    }
-
-    const { method, url } = req;
-    
-    // Route handling
-    if (method === 'GET' && url === '/api/reddit-admin/admin') {
-      return serveAdminPanel(req, res);
-    }
-    
-    if (method === 'POST' && url === '/api/reddit-admin/scan') {
-      return handleScan(req, res);
-    }
-    
-    if (method === 'GET' && url === '/api/reddit-admin/posts') {
-      return handleGetPosts(req, res);
-    }
-    
-    if (method === 'POST' && url.includes('/api/reddit-admin/respond/')) {
-      const postId = url.split('/respond/')[1];
-      return handleRespond(req, res, postId);
-    }
-    
-    if (method === 'GET' && url === '/api/reddit-admin/analytics') {
-      return handleGetAnalytics(req, res);
-    }
-    
-    if (method === 'POST' && url === '/api/reddit-admin/posts/manual') {
-      return handleManualPost(req, res);
-    }
-
-    // If no route matches
-    return res.status(404).json({
-      success: false,
-      message: 'Endpoint not found',
-      availableEndpoints: [
-        'GET /api/reddit-admin/admin',
-        'POST /api/reddit-admin/scan',
-        'GET /api/reddit-admin/posts',
-        'POST /api/reddit-admin/respond/:id',
-        'GET /api/reddit-admin/analytics',
-        'POST /api/reddit-admin/posts/manual'
-      ]
-    });
-
-  } catch (error) {
-    console.error('❌ API Error:', error);
-    
-    if (error.message.includes('Access denied')) {
-      return res.status(403).json({
-        success: false,
-        message: error.message
-      });
-    }
-    
-    return res.status(500).json({
-      success: false,
-      message: 'Internal server error',
-      error: process.env.NODE_ENV === 'production' ? undefined : error.message
-    });
-  }
-}
-
-// Route handlers
-async function handleScan(req, res) {
-  if (!reddit) {
-    return res.status(500).json({
-      success: false,
-      message: 'Reddit client not configured. Check environment variables.'
-    });
-  }
-
-  console.log('🔍 Starting Reddit scan...');
-  const newPosts = [];
-  
-  for (const subreddit of TARGET_SUBREDDITS) {
-    try {
-      console.log(`📊 Scanning r/${subreddit}...`);
-      
-      const posts = await reddit.getSubreddit(subreddit).getNew({ limit: 25 });
-      
-      for (const post of posts) {
-        analytics.totalScanned++;
-        
-        const content = `${post.title} ${post.selftext}`.toLowerCase();
-        const matchedKeywords = KEYWORDS.filter(keyword => 
-          content.includes(keyword.toLowerCase())
-        );
-        
-        if (matchedKeywords.length > 0) {
-          const existingPost = foundPosts.find(p => p.id === post.id);
-          
-          if (!existingPost) {
-            const postData = {
-              id: post.id,
-              title: post.title,
-              url: `https://reddit.com${post.permalink}`,
-              subreddit: subreddit,
-              author: post.author.name,
-              content: post.selftext.substring(0, 500),
-              keywords: matchedKeywords,
-              score: post.score,
-              commentCount: post.num_comments,
-              created: new Date(post.created_utc * 1000),
-              posted: false,
-              responseType: determineResponseType(matchedKeywords)
-            };
-            
-            foundPosts.unshift(postData);
-            newPosts.push(postData);
-            analytics.matchesFound++;
-            
-            console.log(`🎯 Found match in r/${subreddit}: "${post.title}"`);
-          }
-        }
-      }
-      
-      await new Promise(resolve => setTimeout(resolve, 1000));
-      
-    } catch (error) {
-      console.error(`❌ Error scanning r/${subreddit}:`, error.message);
-    }
-  }
-  
-  analytics.lastScan = new Date();
-  foundPosts = foundPosts.slice(0, 100);
-  
-  res.json({
-    success: true,
-    scanned: analytics.totalScanned,
-    newMatches: newPosts.length,
-    newPosts: newPosts,
-    analytics: analytics
-  });
-}
-
-function handleGetPosts(req, res) {
-  const url = new URL(req.url, `http://${req.headers.host}`);
-  const limit = url.searchParams.get('limit') || 50;
-  const posted = url.searchParams.get('posted');
-  
-  let posts = foundPosts;
-  
-  if (posted !== null) {
-    posts = posts.filter(post => post.posted === (posted === 'true'));
-  }
-  
-  posts = posts.slice(0, parseInt(limit));
-  
-  res.json({
-    success: true,
-    posts: posts,
-    total: foundPosts.length,
-    analytics: analytics
-  });
-}
-
-async function handleRespond(req, res, postId) {
-  if (!reddit) {
-    return res.status(500).json({
-      success: false,
-      message: 'Reddit client not configured'
-    });
-  }
-
-  const { responseType, customMessage } = req.body;
-  const post = foundPosts.find(p => p.id === postId);
-  
-  if (!post) {
-    return res.status(404).json({
-      success: false,
-      message: 'Post not found'
-    });
-  }
-  
-  if (post.posted) {
-    return res.status(400).json({
-      success: false,
-      message: 'Response already posted'
-    });
-  }
-  
-  let message = customMessage || RESPONSE_TEMPLATES[responseType] || RESPONSE_TEMPLATES.general;
-  message += '\n\n---\n*I\'m the founder of SoundSwap and built this to help musicians like yourself. Hope it helps!*';
-  
-  console.log(`📝 Posting response to: ${post.title}`);
-  
-  const submission = await reddit.getSubmission(postId);
-  const comment = await submission.reply(message);
-  
-  post.posted = true;
-  post.response = message;
-  post.respondedAt = new Date();
-  post.commentId = comment.id;
-  
-  analytics.responsesSent++;
-  
-  res.json({
-    success: true,
-    message: 'Response posted successfully',
-    commentUrl: `https://reddit.com${comment.permalink}`,
-    post: post
-  });
-}
-
-function handleGetAnalytics(req, res) {
-  res.json({
-    success: true,
-    analytics: analytics,
-    config: {
-      subreddits: TARGET_SUBREDDITS,
-      keywords: KEYWORDS,
-      monitoringSince: analytics.lastScan
-    }
-  });
-}
-
-async function handleManualPost(req, res) {
-  if (!reddit) {
-    return res.status(500).json({
-      success: false,
-      message: 'Reddit client not configured'
-    });
-  }
-
-  const { url } = req.body;
-  const postId = extractPostIdFromUrl(url);
-  
-  if (!postId) {
-    return res.status(400).json({
-      success: false,
-      message: 'Invalid Reddit URL'
-    });
-  }
-  
-  const post = await reddit.getSubmission(postId).fetch();
-  const content = `${post.title} ${post.selftext}`.toLowerCase();
-  const matchedKeywords = KEYWORDS.filter(keyword => 
-    content.includes(keyword.toLowerCase())
-  );
-  
-  const postData = {
-    id: post.id,
-    title: post.title,
-    url: `https://reddit.com${post.permalink}`,
-    subreddit: post.subreddit.display_name,
-    author: post.author.name,
-    content: post.selftext.substring(0, 500),
-    keywords: matchedKeywords,
-    score: post.score,
-    commentCount: post.num_comments,
-    created: new Date(post.created_utc * 1000),
-    posted: false,
-    responseType: determineResponseType(matchedKeywords),
-    manuallyAdded: true
-  };
-  
-  foundPosts.unshift(postData);
-  analytics.matchesFound++;
-  
-  res.json({
-    success: true,
-    post: postData,
-    message: 'Post added manually'
-  });
-}
-
-function serveAdminPanel(req, res) {
+// Admin panel route
+router.get('/admin', (req, res) => {
   const adminToken = process.env.ADMIN_SECRET_TOKEN;
   
   res.setHeader('Content-Type', 'text/html');
@@ -629,4 +348,311 @@ function serveAdminPanel(req, res) {
 </body>
 </html>
   `);
-}
+});
+
+// Scan Reddit for relevant posts
+router.post('/scan', async (req, res) => {
+  try {
+    authenticateAdmin(req);
+
+    if (!reddit) {
+      return res.status(500).json({
+        success: false,
+        message: 'Reddit client not configured. Check environment variables.'
+      });
+    }
+
+    console.log('🔍 Starting Reddit scan...');
+    const newPosts = [];
+    
+    for (const subreddit of TARGET_SUBREDDITS) {
+      try {
+        console.log(`📊 Scanning r/${subreddit}...`);
+        
+        const posts = await reddit.getSubreddit(subreddit).getNew({ limit: 25 });
+        
+        for (const post of posts) {
+          analytics.totalScanned++;
+          
+          const content = `${post.title} ${post.selftext}`.toLowerCase();
+          const matchedKeywords = KEYWORDS.filter(keyword => 
+            content.includes(keyword.toLowerCase())
+          );
+          
+          if (matchedKeywords.length > 0) {
+            const existingPost = foundPosts.find(p => p.id === post.id);
+            
+            if (!existingPost) {
+              const postData = {
+                id: post.id,
+                title: post.title,
+                url: `https://reddit.com${post.permalink}`,
+                subreddit: subreddit,
+                author: post.author.name,
+                content: post.selftext.substring(0, 500),
+                keywords: matchedKeywords,
+                score: post.score,
+                commentCount: post.num_comments,
+                created: new Date(post.created_utc * 1000),
+                posted: false,
+                responseType: determineResponseType(matchedKeywords)
+              };
+              
+              foundPosts.unshift(postData);
+              newPosts.push(postData);
+              analytics.matchesFound++;
+              
+              console.log(`🎯 Found match in r/${subreddit}: "${post.title}"`);
+            }
+          }
+        }
+        
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        
+      } catch (error) {
+        console.error(`❌ Error scanning r/${subreddit}:`, error.message);
+      }
+    }
+    
+    analytics.lastScan = new Date();
+    foundPosts = foundPosts.slice(0, 100);
+    
+    res.json({
+      success: true,
+      scanned: analytics.totalScanned,
+      newMatches: newPosts.length,
+      newPosts: newPosts,
+      analytics: analytics
+    });
+  } catch (error) {
+    console.error('❌ Scan error:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+});
+
+// Get found posts
+router.get('/posts', (req, res) => {
+  try {
+    authenticateAdmin(req);
+
+    const limit = req.query.limit || 50;
+    const posted = req.query.posted;
+    
+    let posts = foundPosts;
+    
+    if (posted !== undefined) {
+      posts = posts.filter(post => post.posted === (posted === 'true'));
+    }
+    
+    posts = posts.slice(0, parseInt(limit));
+    
+    res.json({
+      success: true,
+      posts: posts,
+      total: foundPosts.length,
+      analytics: analytics
+    });
+  } catch (error) {
+    console.error('❌ Get posts error:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+});
+
+// Respond to a post
+router.post('/respond/:postId', async (req, res) => {
+  try {
+    authenticateAdmin(req);
+
+    if (!reddit) {
+      return res.status(500).json({
+        success: false,
+        message: 'Reddit client not configured'
+      });
+    }
+
+    const { postId } = req.params;
+    const { responseType, customMessage } = req.body;
+    const post = foundPosts.find(p => p.id === postId);
+    
+    if (!post) {
+      return res.status(404).json({
+        success: false,
+        message: 'Post not found'
+      });
+    }
+    
+    if (post.posted) {
+      return res.status(400).json({
+        success: false,
+        message: 'Response already posted'
+      });
+    }
+    
+    let message = customMessage || RESPONSE_TEMPLATES[responseType] || RESPONSE_TEMPLATES.general;
+    message += '\n\n---\n*I\'m the founder of SoundSwap and built this to help musicians like yourself. Hope it helps!*';
+    
+    console.log(`📝 Posting response to: ${post.title}`);
+    
+    const submission = await reddit.getSubmission(postId);
+    const comment = await submission.reply(message);
+    
+    post.posted = true;
+    post.response = message;
+    post.respondedAt = new Date();
+    post.commentId = comment.id;
+    
+    analytics.responsesSent++;
+    
+    res.json({
+      success: true,
+      message: 'Response posted successfully',
+      commentUrl: `https://reddit.com${comment.permalink}`,
+      post: post
+    });
+  } catch (error) {
+    console.error('❌ Response error:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+});
+
+// Get analytics
+router.get('/analytics', (req, res) => {
+  try {
+    authenticateAdmin(req);
+
+    res.json({
+      success: true,
+      analytics: analytics,
+      config: {
+        subreddits: TARGET_SUBREDDITS,
+        keywords: KEYWORDS,
+        monitoringSince: analytics.lastScan
+      }
+    });
+  } catch (error) {
+    console.error('❌ Analytics error:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+});
+
+// Add manual post
+router.post('/posts/manual', async (req, res) => {
+  try {
+    authenticateAdmin(req);
+
+    if (!reddit) {
+      return res.status(500).json({
+        success: false,
+        message: 'Reddit client not configured'
+      });
+    }
+
+    const { url } = req.body;
+    const postId = extractPostIdFromUrl(url);
+    
+    if (!postId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid Reddit URL'
+      });
+    }
+    
+    const post = await reddit.getSubmission(postId).fetch();
+    const content = `${post.title} ${post.selftext}`.toLowerCase();
+    const matchedKeywords = KEYWORDS.filter(keyword => 
+      content.includes(keyword.toLowerCase())
+    );
+    
+    const postData = {
+      id: post.id,
+      title: post.title,
+      url: `https://reddit.com${post.permalink}`,
+      subreddit: post.subreddit.display_name,
+      author: post.author.name,
+      content: post.selftext.substring(0, 500),
+      keywords: matchedKeywords,
+      score: post.score,
+      commentCount: post.num_comments,
+      created: new Date(post.created_utc * 1000),
+      posted: false,
+      responseType: determineResponseType(matchedKeywords),
+      manuallyAdded: true
+    };
+    
+    foundPosts.unshift(postData);
+    analytics.matchesFound++;
+    
+    res.json({
+      success: true,
+      post: postData,
+      message: 'Post added manually'
+    });
+  } catch (error) {
+    console.error('❌ Manual post error:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+});
+
+// Health check endpoint
+router.get('/health', (req, res) => {
+  res.json({
+    success: true,
+    service: 'reddit-admin',
+    status: reddit ? 'connected' : 'disconnected',
+    version: '1.0.0',
+    timestamp: new Date().toISOString(),
+    environment: process.env.NODE_ENV || 'development',
+    reddit_configured: !!(process.env.REDDIT_CLIENT_ID && process.env.REDDIT_CLIENT_SECRET),
+    analytics: analytics
+  });
+});
+
+// Service info endpoint
+router.get('/info', (req, res) => {
+  res.json({
+    success: true,
+    service: 'reddit-admin',
+    version: '1.0.0',
+    status: 'operational',
+    environment: process.env.NODE_ENV || 'development',
+    timestamp: new Date().toISOString(),
+    features: {
+      reddit_monitoring: true,
+      automated_responses: true,
+      analytics: true,
+      manual_post_management: true
+    },
+    endpoints: {
+      admin_panel: '/api/reddit-admin/admin',
+      scan: '/api/reddit-admin/scan',
+      posts: '/api/reddit-admin/posts',
+      respond: '/api/reddit-admin/respond/:id',
+      analytics: '/api/reddit-admin/analytics',
+      manual_post: '/api/reddit-admin/posts/manual',
+      health: '/api/reddit-admin/health',
+      info: '/api/reddit-admin/info'
+    },
+    config: {
+      target_subreddits: TARGET_SUBREDDITS.length,
+      keywords: KEYWORDS.length,
+      monitoring_active: true
+    }
+  });
+});
+
+export default router;

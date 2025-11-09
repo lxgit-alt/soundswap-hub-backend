@@ -65,9 +65,14 @@ app.use(cors({
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
-// Mount routes
-app.use('/', trendsRoutes);
+// ==================== REDDIT ADMIN ROUTES ====================
+
+// Mount reddit admin routes at both /reddit-admin and /api/reddit-admin
 app.use('/reddit-admin', redditAdminRoutes);
+app.use('/api/reddit-admin', redditAdminRoutes);
+
+// Mount trends routes
+app.use('/', trendsRoutes);
 
 // Health check endpoint
 app.get('/health', (req, res) => {
@@ -80,7 +85,8 @@ app.get('/health', (req, res) => {
     services: {
       trends: 'operational',
       email: process.env.GMAIL_USER ? 'configured' : 'not_configured',
-      database: 'mock_data'
+      database: 'mock_data',
+      reddit_admin: 'operational'
     }
   });
 });
@@ -98,13 +104,33 @@ app.get('/api/status', (req, res) => {
       trends: '/api/trends/*',
       email: '/api/send-welcome-email',
       health: '/health',
-      status: '/api/status'
+      status: '/api/status',
+      reddit_admin: '/api/reddit-admin/*'
     },
     features: {
       music_trends: 'active',
       content_ideas: 'active',
       welcome_emails: process.env.GMAIL_USER ? 'active' : 'disabled',
-      analytics: 'in_development'
+      analytics: 'in_development',
+      reddit_integration: 'active'
+    }
+  });
+});
+
+// Root endpoint
+app.get('/', (req, res) => {
+  res.json({
+    success: true,
+    message: 'SoundSwap API - Backend service is running',
+    version: '1.0.0',
+    environment: process.env.NODE_ENV || 'development',
+    timestamp: new Date().toISOString(),
+    endpoints: {
+      health: '/health',
+      status: '/api/status',
+      trends: '/api/trends/music',
+      email: '/api/send-welcome-email',
+      reddit_admin: '/api/reddit-admin/admin'
     }
   });
 });
@@ -372,7 +398,7 @@ const sendWelcomeEmail = async (email, name, subscription, isFounder = false) =>
                 padding: 20px;
             }
             .header h1 {
-                font-size: 28px;
+                fontSize: 28px;
             }
         }
     </style>
@@ -527,6 +553,7 @@ You're receiving this email because you signed up for SoundSwap.
 // Handle 404
 app.use('*', (req, res) => {
   res.status(404).json({
+    success: false,
     error: 'Route not found',
     path: req.originalUrl,
     availableEndpoints: [
@@ -538,7 +565,8 @@ app.use('*', (req, res) => {
       '/api/trends/content-ideas',
       '/api/trends/health',
       '/api/trends/dev/music',
-      '/api/trends/dev/test-integration'
+      '/api/trends/dev/test-integration',
+      '/api/reddit-admin/admin'
     ]
   });
 });
@@ -563,5 +591,6 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`📧 Email test: http://localhost:${PORT}/api/send-welcome-email/test`);
   console.log(`📈 Trends API: http://localhost:${PORT}/api/trends/music`);
   console.log(`🧪 Dev Trends: http://localhost:${PORT}/api/trends/dev/music`);
+  console.log(`🔗 Reddit Admin: http://localhost:${PORT}/api/reddit-admin/admin`);
   console.log(`🔧 CORS enabled for production domains`);
 });
