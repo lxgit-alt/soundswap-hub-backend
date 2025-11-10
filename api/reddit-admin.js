@@ -1,657 +1,559 @@
 import express from 'express';
-import snoowrap from 'snoowrap';
+import { GoogleGenerativeAI } from '@google/generative-ai';
 
 const router = express.Router();
 
-// Reddit configuration
-const REDDIT_CONFIG = {
-  clientId: process.env.REDDIT_CLIENT_ID,
-  clientSecret: process.env.REDDIT_CLIENT_SECRET,
-  username: process.env.REDDIT_USERNAME,
-  password: process.env.REDDIT_PASSWORD,
-  userAgent: 'SoundSwapBot/1.0'
-};
+// Initialize Google Gemini AI
+const genAI = new GoogleGenerativeAI(process.env.GOOGLE_GEMINI_API_KEY);
 
-// Target subreddits and keywords
-const TARGET_SUBREDDITS = [
-  'WeAreTheMusicMakers',
-  'IndieMusicFeedback', 
-  'musicmarketing',
-  'ThisIsOurMusic',
-  'promoteyourmusic',
-  'musicians'
-];
+// ==================== REDDIT TARGET CONFIGURATION ====================
 
-const KEYWORDS = [
-  'stuck on mix',
-  'need honest feedback',
-  'where to promote music',
-  'bot streams',
-  'music promotion',
-  'grow audience',
-  'get more listeners',
-  'feedback on my track',
-  'how to promote',
-  'music marketing'
-];
-
-const RESPONSE_TEMPLATES = {
-  feedback: `Hey! I saw you're looking for feedback. We built SoundSwap specifically for this - it's a platform where artists give each other constructive feedback in a gamified system. You might find it helpful: https://www.soundswap.live`,
-
-  promotion: `Sounds like you're looking to promote your music! SoundSwap could help - it's designed to help artists grow organically without bot streams. Check it out: https://www.soundswap.live`,
-
-  general: `This is exactly the problem we're solving with SoundSwap! It's a platform for musicians to share, get feedback, and grow their audience authentically. You might find it useful: https://www.soundswap.live`
-};
-
-// Initialize Reddit client
-let reddit;
-try {
-  reddit = new snoowrap(REDDIT_CONFIG);
-  console.log('✅ Reddit client initialized successfully');
-} catch (error) {
-  console.warn('⚠️ Reddit client not initialized - check environment variables:', error.message);
-}
-
-// Store found posts (in production, use a database)
-let foundPosts = [];
-let analytics = {
-  totalScanned: 0,
-  matchesFound: 0,
-  responsesSent: 0,
-  lastScan: null
-};
-
-// Authentication middleware
-const authenticateAdmin = (req) => {
-  const adminToken = process.env.ADMIN_SECRET_TOKEN;
-  const providedToken = req.headers['x-admin-token'];
-  
-  if (!adminToken || providedToken !== adminToken) {
-    throw new Error('Access denied. Admin token required.');
+const redditTargets = {
+  // Primary music communities
+  'WeAreTheMusicMakers': {
+    name: 'WeAreTheMusicMakers',
+    memberCount: 1800000,
+    description: 'Dedicated to musicians, producers, and enthusiasts',
+    active: true,
+    priority: 'high',
+    postingSchedule: {
+      monday: ['09:00', '14:00', '19:00'],
+      tuesday: ['10:00', '15:00', '20:00'],
+      wednesday: ['09:00', '14:00', '19:00'],
+      thursday: ['10:00', '15:00', '20:00'],
+      friday: ['09:00', '14:00', '19:00'],
+      saturday: ['11:00', '16:00', '21:00'],
+      sunday: ['11:00', '16:00', '21:00']
+    },
+    preferredStyles: ['helpful', 'expert', 'thoughtful'],
+    soundswapMentionRate: 0.3, // 30% of comments can mention SoundSwap
+    dailyCommentLimit: 8,
+    keywords: ['production', 'mixing', 'mastering', 'DAW', 'audio', 'music theory']
+  },
+  'MusicProduction': {
+    name: 'MusicProduction',
+    memberCount: 500000,
+    description: 'Focus on music production techniques and tools',
+    active: true,
+    priority: 'high',
+    postingSchedule: {
+      monday: ['08:00', '13:00', '18:00'],
+      tuesday: ['09:00', '14:00', '19:00'],
+      wednesday: ['08:00', '13:00', '18:00'],
+      thursday: ['09:00', '14:00', '19:00'],
+      friday: ['08:00', '13:00', '18:00'],
+      saturday: ['12:00', '17:00', '22:00'],
+      sunday: ['12:00', '17:00', '22:00']
+    },
+    preferredStyles: ['expert', 'helpful', 'technical'],
+    soundswapMentionRate: 0.4, // 40% of comments can mention SoundSwap
+    dailyCommentLimit: 6,
+    keywords: ['production', 'mixing', 'plugins', 'gear', 'workflow', 'techniques']
+  },
+  'IndieMusicFeedback': {
+    name: 'IndieMusicFeedback',
+    memberCount: 100000,
+    description: 'Community for indie musicians to share and get feedback',
+    active: true,
+    priority: 'medium',
+    postingSchedule: {
+      monday: ['10:00', '16:00'],
+      tuesday: ['11:00', '17:00'],
+      wednesday: ['10:00', '16:00'],
+      thursday: ['11:00', '17:00'],
+      friday: ['10:00', '16:00'],
+      saturday: ['13:00', '19:00'],
+      sunday: ['13:00', '19:00']
+    },
+    preferredStyles: ['supportive', 'helpful', 'enthusiastic'],
+    soundswapMentionRate: 0.5, // 50% of comments can mention SoundSwap
+    dailyCommentLimit: 10,
+    keywords: ['feedback', 'review', 'indie', 'new music', 'critique']
+  },
+  'ThisIsOurMusic': {
+    name: 'ThisIsOurMusic',
+    memberCount: 200000,
+    description: 'Share your original music with the community',
+    active: true,
+    priority: 'medium',
+    postingSchedule: {
+      monday: ['11:00', '17:00'],
+      tuesday: ['12:00', '18:00'],
+      wednesday: ['11:00', '17:00'],
+      thursday: ['12:00', '18:00'],
+      friday: ['11:00', '17:00'],
+      saturday: ['14:00', '20:00'],
+      sunday: ['14:00', '20:00']
+    },
+    preferredStyles: ['enthusiastic', 'supportive', 'casual'],
+    soundswapMentionRate: 0.4, // 40% of comments can mention SoundSwap
+    dailyCommentLimit: 8,
+    keywords: ['original music', 'new release', 'songwriting', 'performance']
+  },
+  'MusicPromotion': {
+    name: 'MusicPromotion',
+    memberCount: 150000,
+    description: 'Promote your music and discover new artists',
+    active: true,
+    priority: 'medium',
+    postingSchedule: {
+      monday: ['09:00', '15:00', '21:00'],
+      tuesday: ['10:00', '16:00', '22:00'],
+      wednesday: ['09:00', '15:00', '21:00'],
+      thursday: ['10:00', '16:00', '22:00'],
+      friday: ['09:00', '15:00', '21:00'],
+      saturday: ['12:00', '18:00'],
+      sunday: ['12:00', '18:00']
+    },
+    preferredStyles: ['enthusiastic', 'casual', 'supportive'],
+    soundswapMentionRate: 0.6, // 60% of comments can mention SoundSwap
+    dailyCommentLimit: 12,
+    keywords: ['promotion', 'marketing', 'streaming', 'social media', 'growth']
+  },
+  'ShareYourMusic': {
+    name: 'ShareYourMusic',
+    memberCount: 80000,
+    description: 'Share your music and connect with other creators',
+    active: true,
+    priority: 'medium',
+    postingSchedule: {
+      monday: ['12:00', '18:00'],
+      tuesday: ['13:00', '19:00'],
+      wednesday: ['12:00', '18:00'],
+      thursday: ['13:00', '19:00'],
+      friday: ['12:00', '18:00'],
+      saturday: ['15:00', '21:00'],
+      sunday: ['15:00', '21:00']
+    },
+    preferredStyles: ['supportive', 'casual', 'enthusiastic'],
+    soundswapMentionRate: 0.5, // 50% of comments can mention SoundSwap
+    dailyCommentLimit: 8,
+    keywords: ['share', 'new track', 'feedback', 'collaboration']
   }
 };
 
-// Helper functions
-function determineResponseType(keywords) {
-  if (keywords.some(k => k.includes('feedback'))) return 'feedback';
-  if (keywords.some(k => k.includes('promote') || k.includes('marketing'))) return 'promotion';
-  return 'general';
-}
+// ==================== CONFIGURATION ENDPOINTS ====================
 
-function extractPostIdFromUrl(url) {
-  const match = url.match(/comments\/([a-z0-9]+)/);
-  return match ? match[1] : null;
-}
-
-// ==================== ROUTE HANDLERS ====================
-
-// Admin panel route
-router.get('/admin', (req, res) => {
-  const adminToken = process.env.ADMIN_SECRET_TOKEN;
-  
-  res.setHeader('Content-Type', 'text/html');
-  res.send(`
-<!DOCTYPE html>
-<html>
-<head>
-    <title>SoundSwap Reddit Monitor</title>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; line-height: 1.6; color: #333; background: #f5f5f5; padding: 20px; }
-        .container { max-width: 1200px; margin: 0 auto; }
-        header { background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); margin-bottom: 20px; }
-        h1 { color: #fd4e2f; margin-bottom: 10px; }
-        .controls { background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); margin-bottom: 20px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
-        button { background: #fd4e2f; color: white; border: none; padding: 10px 20px; border-radius: 5px; cursor: pointer; font-size: 14px; transition: background 0.3s; }
-        button:hover { background: #e63946; }
-        button:disabled { background: #ccc; cursor: not-allowed; }
-        .analytics { background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); margin-bottom: 20px; display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; }
-        .stat { text-align: center; padding: 15px; background: #f8f9fa; border-radius: 5px; }
-        .stat-number { font-size: 24px; font-weight: bold; color: #fd4e2f; }
-        .posts-container { display: grid; gap: 15px; }
-        .post { background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); border-left: 4px solid #fd4e2f; }
-        .post.posted { border-left-color: #28a745; background: #f8fff9; }
-        .post-header { display: flex; justify-content: space-between; align-items: start; margin-bottom: 10px; gap: 10px; }
-        .post-title { font-size: 16px; font-weight: 600; color: #1a1a1a; flex: 1; }
-        .post-meta { font-size: 12px; color: #666; }
-        .post-content { margin: 10px 0; color: #555; line-height: 1.4; }
-        .keywords { display: flex; flex-wrap: wrap; gap: 5px; margin: 10px 0; }
-        .keyword { background: #e9ecef; padding: 2px 8px; border-radius: 12px; font-size: 11px; color: #495057; }
-        .post-actions { display: flex; gap: 10px; margin-top: 15px; flex-wrap: wrap; }
-        .status { padding: 10px; border-radius: 5px; margin: 10px 0; }
-        .status.success { background: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
-        .status.error { background: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
-        .status.info { background: #cce7ff; color: #004085; border: 1px solid #b3d7ff; }
-        .loading { opacity: 0.6; pointer-events: none; }
-        @media (max-width: 768px) {
-            body { padding: 10px; }
-            .controls { flex-direction: column; align-items: stretch; }
-            .post-header { flex-direction: column; }
-            .post-actions { flex-direction: column; }
-        }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <header>
-            <h1>🎯 SoundSwap Reddit Monitor</h1>
-            <p>Monitor music subreddits for promotion opportunities</p>
-        </header>
-        
-        <div class="controls">
-            <button onclick="scanReddit()" id="scanBtn">🔍 Scan Reddit Now</button>
-            <button onclick="loadPosts()">📋 Refresh Posts</button>
-            <button onclick="loadAnalytics()">📊 Refresh Analytics</button>
-            <div style="flex: 1"></div>
-            <span id="status"></span>
-        </div>
-        
-        <div class="analytics" id="analytics">
-            <div class="stat">
-                <div class="stat-number" id="totalScanned">0</div>
-                <div>Posts Scanned</div>
-            </div>
-            <div class="stat">
-                <div class="stat-number" id="matchesFound">0</div>
-                <div>Matches Found</div>
-            </div>
-            <div class="stat">
-                <div class="stat-number" id="responsesSent">0</div>
-                <div>Responses Sent</div>
-            </div>
-            <div class="stat">
-                <div class="stat-number" id="lastScan">-</div>
-                <div>Last Scan</div>
-            </div>
-        </div>
-        
-        <div id="posts" class="posts-container">
-            <div class="status info">Click "Scan Reddit Now" to find posts...</div>
-        </div>
-    </div>
-
-    <script>
-        const ADMIN_TOKEN = '${adminToken}';
-        const API_BASE = '/api/reddit-admin';
-        
-        let isLoading = false;
-        
-        async function apiCall(endpoint, options = {}) {
-            if (isLoading) return;
-            
-            isLoading = true;
-            document.body.classList.add('loading');
-            
-            try {
-                const response = await fetch(API_BASE + endpoint, {
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'x-admin-token': ADMIN_TOKEN
-                    },
-                    ...options
-                });
-                
-                if (!response.ok) {
-                    throw new Error(\`HTTP \${response.status}: \${response.statusText}\`);
-                }
-                
-                return await response.json();
-            } catch (error) {
-                showStatus('Error: ' + error.message, 'error');
-                throw error;
-            } finally {
-                isLoading = false;
-                document.body.classList.remove('loading');
-            }
-        }
-        
-        function showStatus(message, type = 'info') {
-            const statusEl = document.getElementById('status');
-            statusEl.textContent = message;
-            statusEl.className = \`status \${type}\`;
-            setTimeout(() => {
-                statusEl.textContent = '';
-                statusEl.className = 'status';
-            }, 5000);
-        }
-        
-        async function scanReddit() {
-            const btn = document.getElementById('scanBtn');
-            btn.disabled = true;
-            btn.textContent = 'Scanning...';
-            
-            try {
-                const result = await apiCall('/scan', { method: 'POST' });
-                showStatus(\`Scan complete: \${result.newMatches} new matches found!\`, 'success');
-                loadPosts();
-                loadAnalytics();
-            } catch (error) {
-                // Error already handled in apiCall
-            } finally {
-                btn.disabled = false;
-                btn.textContent = '🔍 Scan Reddit Now';
-            }
-        }
-        
-        async function loadPosts() {
-            try {
-                const result = await apiCall('/posts?limit=50');
-                displayPosts(result.posts);
-            } catch (error) {
-                // Error already handled
-            }
-        }
-        
-        async function loadAnalytics() {
-            try {
-                const result = await apiCall('/analytics');
-                const analytics = result.analytics;
-                
-                document.getElementById('totalScanned').textContent = analytics.totalScanned.toLocaleString();
-                document.getElementById('matchesFound').textContent = analytics.matchesFound.toLocaleString();
-                document.getElementById('responsesSent').textContent = analytics.responsesSent.toLocaleString();
-                document.getElementById('lastScan').textContent = analytics.lastScan ? 
-                    new Date(analytics.lastScan).toLocaleTimeString() : 'Never';
-            } catch (error) {
-                // Error already handled
-            }
-        }
-        
-        function displayPosts(posts) {
-            const container = document.getElementById('posts');
-            
-            if (posts.length === 0) {
-                container.innerHTML = '<div class="status info">No posts found. Try scanning Reddit.</div>';
-                return;
-            }
-            
-            container.innerHTML = posts.map(post => \`
-                <div class="post \${post.posted ? 'posted' : ''}">
-                    <div class="post-header">
-                        <div class="post-title">
-                            <a href="\${post.url}" target="_blank" style="color: inherit; text-decoration: none;">
-                                \${post.title}
-                            </a>
-                        </div>
-                        <div class="post-meta">
-                            r/\${post.subreddit} • \${post.score} pts • \${post.commentCount} comments
-                        </div>
-                    </div>
-                    
-                    <div class="post-meta">
-                        by \${post.author} • \${new Date(post.created).toLocaleDateString()}
-                    </div>
-                    
-                    <div class="post-content">
-                        \${post.content}\${post.content.length === 500 ? '...' : ''}
-                    </div>
-                    
-                    <div class="keywords">
-                        \${post.keywords.map(keyword => \`<span class="keyword">\${keyword}</span>\`).join('')}
-                    </div>
-                    
-                    \${!post.posted ? \`
-                        <div class="post-actions">
-                            <button onclick="postResponse('\${post.id}', 'feedback')">
-                                💬 Respond (Feedback)
-                            </button>
-                            <button onclick="postResponse('\${post.id}', 'promotion')">
-                                📢 Respond (Promotion)
-                            </button>
-                            <button onclick="postResponse('\${post.id}', 'general')">
-                                🔗 Respond (General)
-                            </button>
-                        </div>
-                    \` : \`
-                        <div class="status success">
-                            ✓ Response sent on \${new Date(post.respondedAt).toLocaleString()}
-                        </div>
-                    \`}
-                </div>
-            \`).join('');
-        }
-        
-        async function postResponse(postId, responseType) {
-            if (!confirm('Are you sure you want to post this response to Reddit?')) {
-                return;
-            }
-            
-            try {
-                const result = await apiCall(\`/respond/\${postId}\`, {
-                    method: 'POST',
-                    body: JSON.stringify({ responseType })
-                });
-                
-                showStatus('Response posted successfully!', 'success');
-                loadPosts();
-                loadAnalytics();
-                
-                // Open the comment in a new tab
-                if (result.commentUrl) {
-                    window.open(result.commentUrl, '_blank');
-                }
-            } catch (error) {
-                // Error already handled
-            }
-        }
-        
-        // Load initial data
-        loadPosts();
-        loadAnalytics();
-        
-        // Auto-refresh every 2 minutes
-        setInterval(loadPosts, 120000);
-        setInterval(loadAnalytics, 120000);
-    </script>
-</body>
-</html>
-  `);
-});
-
-// Scan Reddit for relevant posts
-router.post('/scan', async (req, res) => {
-  try {
-    authenticateAdmin(req);
-
-    if (!reddit) {
-      return res.status(500).json({
-        success: false,
-        message: 'Reddit client not configured. Check environment variables.'
-      });
-    }
-
-    console.log('🔍 Starting Reddit scan...');
-    const newPosts = [];
-    
-    for (const subreddit of TARGET_SUBREDDITS) {
-      try {
-        console.log(`📊 Scanning r/${subreddit}...`);
-        
-        const posts = await reddit.getSubreddit(subreddit).getNew({ limit: 25 });
-        
-        for (const post of posts) {
-          analytics.totalScanned++;
-          
-          const content = `${post.title} ${post.selftext}`.toLowerCase();
-          const matchedKeywords = KEYWORDS.filter(keyword => 
-            content.includes(keyword.toLowerCase())
-          );
-          
-          if (matchedKeywords.length > 0) {
-            const existingPost = foundPosts.find(p => p.id === post.id);
-            
-            if (!existingPost) {
-              const postData = {
-                id: post.id,
-                title: post.title,
-                url: `https://reddit.com${post.permalink}`,
-                subreddit: subreddit,
-                author: post.author.name,
-                content: post.selftext.substring(0, 500),
-                keywords: matchedKeywords,
-                score: post.score,
-                commentCount: post.num_comments,
-                created: new Date(post.created_utc * 1000),
-                posted: false,
-                responseType: determineResponseType(matchedKeywords)
-              };
-              
-              foundPosts.unshift(postData);
-              newPosts.push(postData);
-              analytics.matchesFound++;
-              
-              console.log(`🎯 Found match in r/${subreddit}: "${post.title}"`);
-            }
-          }
-        }
-        
-        await new Promise(resolve => setTimeout(resolve, 1000));
-        
-      } catch (error) {
-        console.error(`❌ Error scanning r/${subreddit}:`, error.message);
-      }
-    }
-    
-    analytics.lastScan = new Date();
-    foundPosts = foundPosts.slice(0, 100);
-    
-    res.json({
-      success: true,
-      scanned: analytics.totalScanned,
-      newMatches: newPosts.length,
-      newPosts: newPosts,
-      analytics: analytics
-    });
-  } catch (error) {
-    console.error('❌ Scan error:', error);
-    res.status(500).json({
-      success: false,
-      message: error.message
-    });
-  }
-});
-
-// Get found posts
-router.get('/posts', (req, res) => {
-  try {
-    authenticateAdmin(req);
-
-    const limit = req.query.limit || 50;
-    const posted = req.query.posted;
-    
-    let posts = foundPosts;
-    
-    if (posted !== undefined) {
-      posts = posts.filter(post => post.posted === (posted === 'true'));
-    }
-    
-    posts = posts.slice(0, parseInt(limit));
-    
-    res.json({
-      success: true,
-      posts: posts,
-      total: foundPosts.length,
-      analytics: analytics
-    });
-  } catch (error) {
-    console.error('❌ Get posts error:', error);
-    res.status(500).json({
-      success: false,
-      message: error.message
-    });
-  }
-});
-
-// Respond to a post
-router.post('/respond/:postId', async (req, res) => {
-  try {
-    authenticateAdmin(req);
-
-    if (!reddit) {
-      return res.status(500).json({
-        success: false,
-        message: 'Reddit client not configured'
-      });
-    }
-
-    const { postId } = req.params;
-    const { responseType, customMessage } = req.body;
-    const post = foundPosts.find(p => p.id === postId);
-    
-    if (!post) {
-      return res.status(404).json({
-        success: false,
-        message: 'Post not found'
-      });
-    }
-    
-    if (post.posted) {
-      return res.status(400).json({
-        success: false,
-        message: 'Response already posted'
-      });
-    }
-    
-    let message = customMessage || RESPONSE_TEMPLATES[responseType] || RESPONSE_TEMPLATES.general;
-    message += '\n\n---\n*I\'m the founder of SoundSwap and built this to help musicians like yourself. Hope it helps!*';
-    
-    console.log(`📝 Posting response to: ${post.title}`);
-    
-    const submission = await reddit.getSubmission(postId);
-    const comment = await submission.reply(message);
-    
-    post.posted = true;
-    post.response = message;
-    post.respondedAt = new Date();
-    post.commentId = comment.id;
-    
-    analytics.responsesSent++;
-    
-    res.json({
-      success: true,
-      message: 'Response posted successfully',
-      commentUrl: `https://reddit.com${comment.permalink}`,
-      post: post
-    });
-  } catch (error) {
-    console.error('❌ Response error:', error);
-    res.status(500).json({
-      success: false,
-      message: error.message
-    });
-  }
-});
-
-// Get analytics
-router.get('/analytics', (req, res) => {
-  try {
-    authenticateAdmin(req);
-
-    res.json({
-      success: true,
-      analytics: analytics,
-      config: {
-        subreddits: TARGET_SUBREDDITS,
-        keywords: KEYWORDS,
-        monitoringSince: analytics.lastScan
-      }
-    });
-  } catch (error) {
-    console.error('❌ Analytics error:', error);
-    res.status(500).json({
-      success: false,
-      message: error.message
-    });
-  }
-});
-
-// Add manual post
-router.post('/posts/manual', async (req, res) => {
-  try {
-    authenticateAdmin(req);
-
-    if (!reddit) {
-      return res.status(500).json({
-        success: false,
-        message: 'Reddit client not configured'
-      });
-    }
-
-    const { url } = req.body;
-    const postId = extractPostIdFromUrl(url);
-    
-    if (!postId) {
-      return res.status(400).json({
-        success: false,
-        message: 'Invalid Reddit URL'
-      });
-    }
-    
-    const post = await reddit.getSubmission(postId).fetch();
-    const content = `${post.title} ${post.selftext}`.toLowerCase();
-    const matchedKeywords = KEYWORDS.filter(keyword => 
-      content.includes(keyword.toLowerCase())
-    );
-    
-    const postData = {
-      id: post.id,
-      title: post.title,
-      url: `https://reddit.com${post.permalink}`,
-      subreddit: post.subreddit.display_name,
-      author: post.author.name,
-      content: post.selftext.substring(0, 500),
-      keywords: matchedKeywords,
-      score: post.score,
-      commentCount: post.num_comments,
-      created: new Date(post.created_utc * 1000),
-      posted: false,
-      responseType: determineResponseType(matchedKeywords),
-      manuallyAdded: true
-    };
-    
-    foundPosts.unshift(postData);
-    analytics.matchesFound++;
-    
-    res.json({
-      success: true,
-      post: postData,
-      message: 'Post added manually'
-    });
-  } catch (error) {
-    console.error('❌ Manual post error:', error);
-    res.status(500).json({
-      success: false,
-      message: error.message
-    });
-  }
-});
-
-// Health check endpoint
-router.get('/health', (req, res) => {
+// Get all configured Reddit targets
+router.get('/targets', (req, res) => {
   res.json({
     success: true,
-    service: 'reddit-admin',
-    status: reddit ? 'connected' : 'disconnected',
-    version: '1.0.0',
-    timestamp: new Date().toISOString(),
-    environment: process.env.NODE_ENV || 'development',
-    reddit_configured: !!(process.env.REDDIT_CLIENT_ID && process.env.REDDIT_CLIENT_SECRET),
-    analytics: analytics
+    data: redditTargets,
+    totalTargets: Object.keys(redditTargets).length,
+    totalAudience: Object.values(redditTargets).reduce((sum, target) => sum + target.memberCount, 0),
+    timestamp: new Date().toISOString()
   });
 });
 
-// Service info endpoint
-router.get('/info', (req, res) => {
+// Get specific target configuration
+router.get('/targets/:subreddit', (req, res) => {
+  const { subreddit } = req.params;
+  const target = redditTargets[subreddit];
+  
+  if (!target) {
+    return res.status(404).json({
+      success: false,
+      message: `Target configuration for r/${subreddit} not found`
+    });
+  }
+  
   res.json({
     success: true,
+    data: target,
+    timestamp: new Date().toISOString()
+  });
+});
+
+// Get posting schedule for today
+router.get('/schedule/today', (req, res) => {
+  const today = new Date().toLocaleString('en-US', { weekday: 'long' }).toLowerCase();
+  const schedule = {};
+  
+  Object.entries(redditTargets).forEach(([subreddit, config]) => {
+    if (config.active && config.postingSchedule[today]) {
+      schedule[subreddit] = {
+        times: config.postingSchedule[today],
+        preferredStyles: config.preferredStyles,
+        dailyLimit: config.dailyCommentLimit
+      };
+    }
+  });
+  
+  res.json({
+    success: true,
+    day: today,
+    schedule: schedule,
+    timestamp: new Date().toISOString()
+  });
+});
+
+// ==================== AI ENDPOINTS (UPDATED WITH CONFIG) ====================
+
+// Reddit admin health check
+router.get('/admin', (req, res) => {
+  res.json({
+    success: true,
+    message: 'Reddit Admin API is running',
     service: 'reddit-admin',
-    version: '1.0.0',
-    status: 'operational',
-    environment: process.env.NODE_ENV || 'development',
+    version: '2.1.0',
     timestamp: new Date().toISOString(),
+    environment: process.env.NODE_ENV || 'development',
     features: {
-      reddit_monitoring: true,
-      automated_responses: true,
-      analytics: true,
-      manual_post_management: true
+      gemini_ai: process.env.GOOGLE_GEMINI_API_KEY ? 'enabled' : 'disabled',
+      comment_generation: 'active',
+      dm_replies: 'active',
+      content_analysis: 'active',
+      target_configuration: 'active'
+    },
+    targets: {
+      total: Object.keys(redditTargets).length,
+      active: Object.values(redditTargets).filter(t => t.active).length,
+      total_audience: Object.values(redditTargets).reduce((sum, target) => sum + target.memberCount, 0)
     },
     endpoints: {
-      admin_panel: '/api/reddit-admin/admin',
-      scan: '/api/reddit-admin/scan',
-      posts: '/api/reddit-admin/posts',
-      respond: '/api/reddit-admin/respond/:id',
-      analytics: '/api/reddit-admin/analytics',
-      manual_post: '/api/reddit-admin/posts/manual',
-      health: '/api/reddit-admin/health',
-      info: '/api/reddit-admin/info'
-    },
-    config: {
-      target_subreddits: TARGET_SUBREDDITS.length,
-      keywords: KEYWORDS.length,
-      monitoring_active: true
+      health: '/api/reddit-admin/admin',
+      targets: '/api/reddit-admin/targets',
+      schedule: '/api/reddit-admin/schedule/today',
+      generate_comment: '/api/reddit-admin/generate-comment',
+      generate_reply: '/api/reddit-admin/generate-reply',
+      analyze_post: '/api/reddit-admin/analyze-post'
     }
+  });
+});
+
+// Generate AI-powered comment for Reddit posts (updated with config)
+router.post('/generate-comment', async (req, res) => {
+  try {
+    const { postTitle, postContent, subreddit, context, style } = req.body;
+
+    if (!postTitle) {
+      return res.status(400).json({
+        success: false,
+        message: 'postTitle is required'
+      });
+    }
+
+    if (!process.env.GOOGLE_GEMINI_API_KEY) {
+      return res.status(500).json({
+        success: false,
+        message: 'Google Gemini API key not configured'
+      });
+    }
+
+    // Get target configuration for this subreddit
+    const targetConfig = redditTargets[subreddit];
+    const shouldMentionSoundSwap = targetConfig && Math.random() < targetConfig.soundswapMentionRate;
+    
+    // Use configured style or default
+    const selectedStyle = style || (targetConfig ? targetConfig.preferredStyles[0] : 'helpful');
+
+    console.log('🤖 Generating AI comment for post:', { 
+      subreddit, 
+      style: selectedStyle,
+      mentionSoundSwap: shouldMentionSoundSwap,
+      titleLength: postTitle.length,
+      contentLength: postContent?.length || 0
+    });
+
+    const model = genAI.getGenerativeModel({ model: 'gemini-pro' });
+
+    // Different writing styles to avoid detection
+    const stylePrompts = {
+      helpful: `You are a helpful and knowledgeable Reddit user in r/${subreddit}. Write a genuine, helpful comment that adds value to the discussion. Be specific and provide useful insights.`,
+      enthusiastic: `You are an enthusiastic Reddit user who's excited about this topic. Write an engaging comment that shows genuine interest and adds positive energy to the conversation.`,
+      thoughtful: `You are a thoughtful and reflective Reddit user. Write a considerate comment that shows deep understanding and adds meaningful perspective to the discussion.`,
+      casual: `You are a casual Reddit user having a friendly conversation. Write a natural, relaxed comment that feels authentic and human-like.`,
+      expert: `You are an expert in this field sharing valuable insights. Write an informative comment that demonstrates expertise while being accessible to other users.`,
+      supportive: `You are a supportive community member who wants to encourage other creators. Write an uplifting comment that motivates and supports the poster.`,
+      technical: `You are a technically skilled musician/producer. Write a detailed comment that focuses on technical aspects and provides specific, actionable advice.`
+    };
+
+    const systemPrompt = stylePrompts[selectedStyle] || stylePrompts.helpful;
+
+    // Add SoundSwap mention context if applicable
+    const mentionContext = shouldMentionSoundSwap ? 
+      `\nIMPORTANT: Naturally mention SoundSwap (a music community platform for feedback and collaboration) in a helpful, non-promotional way. Focus on how it helps musicians get feedback, collaborate, and grow their audience. Make it sound like a genuine recommendation from personal experience.` : 
+      `\nIMPORTANT: Do NOT mention SoundSwap or any other platforms in this comment. Focus purely on providing value to the discussion.`;
+
+    const prompt = `
+${systemPrompt}
+${mentionContext}
+
+Post Title: "${postTitle}"
+${postContent ? `Post Content: "${postContent.substring(0, 1000)}"` : ''}
+${context ? `Additional Context: ${context}` : ''}
+
+Guidelines:
+- Keep it natural and conversational (1-3 sentences)
+- Add genuine value to the discussion
+- Don't sound like marketing or promotion
+- Use appropriate emojis sparingly (1 max)
+- Sound like a real human user
+- Reference specific points from the post when relevant
+- Avoid generic responses like "great post" or "thanks for sharing"
+- Don't mention that you're an AI
+${shouldMentionSoundSwap ? '- Mention SoundSwap naturally as a helpful resource, not as an advertisement' : '- Do not mention any platforms or services'}
+
+Write a comment that follows these guidelines:
+`;
+
+    const result = await model.generateContent(prompt);
+    const response = await result.response;
+    const comment = response.text().trim();
+
+    console.log('✅ Generated AI comment:', comment);
+
+    res.json({
+      success: true,
+      comment: comment,
+      style: selectedStyle,
+      subreddit: subreddit,
+      mentionSoundSwap: shouldMentionSoundSwap,
+      config: targetConfig ? {
+        dailyLimit: targetConfig.dailyCommentLimit,
+        mentionRate: targetConfig.soundswapMentionRate
+      } : null,
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('❌ Error generating AI comment:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to generate AI comment',
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
+    });
+  }
+});
+
+// Generate AI-powered reply to DMs or comments
+router.post('/generate-reply', async (req, res) => {
+  try {
+    const { message, conversationHistory = [], tone = 'friendly', relationship = 'stranger' } = req.body;
+
+    if (!message) {
+      return res.status(400).json({
+        success: false,
+        message: 'message is required'
+      });
+    }
+
+    if (!process.env.GOOGLE_GEMINI_API_KEY) {
+      return res.status(500).json({
+        success: false,
+        message: 'Google Gemini API key not configured'
+      });
+    }
+
+    console.log('🤖 Generating AI reply to message:', { 
+      messageLength: message.length,
+      historyLength: conversationHistory.length,
+      tone,
+      relationship
+    });
+
+    const model = genAI.getGenerativeModel({ model: 'gemini-pro' });
+
+    // Different tones for different relationships
+    const tonePrompts = {
+      friendly: 'Write a friendly, warm reply that builds rapport',
+      professional: 'Write a professional, helpful reply',
+      casual: 'Write a casual, relaxed reply',
+      supportive: 'Write a supportive, encouraging reply',
+      informative: 'Write an informative, helpful reply'
+    };
+
+    const relationshipPrompts = {
+      stranger: 'You are talking to another Reddit user you just met',
+      acquaintance: 'You are talking to someone you have interacted with before',
+      community_member: 'You are part of the same community and have shared interests'
+    };
+
+    let historyContext = '';
+    if (conversationHistory.length > 0) {
+      historyContext = `Previous conversation:\n${conversationHistory.slice(-3).map(msg => 
+        `${msg.sender === 'user' ? 'Them' : 'You'}: ${msg.content}`
+      ).join('\n')}\n\n`;
+    }
+
+    const prompt = `
+${relationshipPrompts[relationship] || relationshipPrompts.stranger}. 
+${tonePrompts[tone] || tonePrompts.friendly}.
+
+${historyContext}
+Their message: "${message}"
+
+Guidelines:
+- Keep it natural and human-like (1-2 sentences)
+- Match the tone and relationship context
+- Don't sound like a bot or automated response
+- Show genuine interest in the conversation
+- Ask follow-up questions when appropriate
+- Use appropriate emojis sparingly
+- Don't be overly enthusiastic or salesy
+
+Write a reply that follows these guidelines:
+`;
+
+    const result = await model.generateContent(prompt);
+    const response = await result.response;
+    const reply = response.text().trim();
+
+    console.log('✅ Generated AI reply:', reply);
+
+    res.json({
+      success: true,
+      reply: reply,
+      tone: tone,
+      relationship: relationship,
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('❌ Error generating AI reply:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to generate AI reply',
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
+    });
+  }
+});
+
+// Analyze post content for appropriate commenting strategy
+router.post('/analyze-post', async (req, res) => {
+  try {
+    const { postTitle, postContent, subreddit } = req.body;
+
+    if (!postTitle) {
+      return res.status(400).json({
+        success: false,
+        message: 'postTitle is required'
+      });
+    }
+
+    if (!process.env.GOOGLE_GEMINI_API_KEY) {
+      return res.status(500).json({
+        success: false,
+        message: 'Google Gemini API key not configured'
+      });
+    }
+
+    console.log('🔍 Analyzing post for commenting strategy:', { subreddit });
+
+    const model = genAI.getGenerativeModel({ model: 'gemini-pro' });
+
+    const prompt = `
+Analyze this Reddit post and provide guidance on how to engage with it naturally.
+
+Post Title: "${postTitle}"
+${postContent ? `Post Content: "${postContent.substring(0, 800)}"` : ''}
+Subreddit: r/${subreddit || 'unknown'}
+
+Please analyze:
+1. What type of post is this? (question, discussion, sharing, etc.)
+2. What would be a natural, valuable comment to add?
+3. What tone/style would work best? (helpful, enthusiastic, thoughtful, etc.)
+4. Any specific topics or angles to focus on?
+5. Any topics to avoid?
+
+Provide your analysis in a structured way that can be used to generate an appropriate comment.
+`;
+
+    const result = await model.generateContent(prompt);
+    const response = await result.response;
+    const analysis = response.text().trim();
+
+    console.log('✅ Post analysis completed');
+
+    // Extract key insights from analysis
+    const recommendations = {
+      postType: 'discussion', // default
+      suggestedTone: 'helpful',
+      focusAreas: [],
+      avoidTopics: []
+    };
+
+    // Simple parsing of the analysis (you could make this more sophisticated)
+    if (analysis.toLowerCase().includes('question')) {
+      recommendations.postType = 'question';
+      recommendations.suggestedTone = 'helpful';
+    }
+    if (analysis.toLowerCase().includes('share') || analysis.toLowerCase().includes('achievement')) {
+      recommendations.postType = 'sharing';
+      recommendations.suggestedTone = 'enthusiastic';
+    }
+
+    res.json({
+      success: true,
+      analysis: analysis,
+      recommendations: recommendations,
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('❌ Error analyzing post:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to analyze post',
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
+    });
+  }
+});
+
+// Test Gemini AI connection
+router.get('/test-gemini', async (req, res) => {
+  try {
+    if (!process.env.GOOGLE_GEMINI_API_KEY) {
+      return res.status(500).json({
+        success: false,
+        message: 'Google Gemini API key not configured'
+      });
+    }
+
+    const model = genAI.getGenerativeModel({ model: 'gemini-pro' });
+    const result = await model.generateContent('Say "Hello from SoundSwap Reddit AI" in a creative way.');
+    const response = await result.response;
+    const text = response.text();
+
+    res.json({
+      success: true,
+      message: 'Gemini AI is working correctly',
+      response: text,
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('❌ Gemini AI test failed:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Gemini AI test failed',
+      error: error.message
+    });
+  }
+});
+
+// Add more Reddit admin routes as needed
+router.get('/auth', (req, res) => {
+  res.json({
+    success: true,
+    message: 'Reddit authentication endpoint',
+    status: 'active'
+  });
+});
+
+router.get('/posts', (req, res) => {
+  res.json({
+    success: true,
+    message: 'Reddit posts management endpoint',
+    status: 'active'
+  });
+});
+
+router.get('/analytics', (req, res) => {
+  res.json({
+    success: true,
+    message: 'Reddit analytics endpoint',
+    status: 'active'
   });
 });
 

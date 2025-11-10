@@ -13,6 +13,11 @@
       "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
     },
     {
+      "src": "/api/email/(.*)",
+      "dest": "/server.js",
+      "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
+    },
+    {
       "src": "/api/(.*)",
       "dest": "/server.js",
       "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
