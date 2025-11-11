@@ -6,7 +6,6 @@ import helmet from 'helmet';
 import trendsRoutes from './api/trends.js';
 import redditAdminRoutes from './api/reddit-admin.js';
 import emailRoutes from './api/send-welcome-email.js';
-import redditAutomationRoutes from './api/reddit-automation.js';
 
 const app = express();
 const __filename = fileURLToPath(import.meta.url);
@@ -78,9 +77,6 @@ app.use('/api/email', emailRoutes);
 // Mount trends routes
 app.use('/', trendsRoutes);
 
-// Mount reddit automation routes
-app.use('/api/reddit-automation', redditAutomationRoutes);
-
 // ==================== ENDPOINTS ====================
 
 // Health check endpoint
@@ -96,7 +92,6 @@ app.get('/health', (req, res) => {
       email: process.env.GMAIL_USER ? 'configured' : 'not_configured',
       database: 'mock_data',
       reddit_admin: 'operational',
-      reddit_automation: 'operational',
       gemini_ai: process.env.GOOGLE_GEMINI_API_KEY ? 'configured' : 'not_configured'
     }
   });
@@ -116,8 +111,7 @@ app.get('/api/status', (req, res) => {
       email: '/api/email/*',
       health: '/health',
       status: '/api/status',
-      reddit_admin: '/api/reddit-admin/*',
-      reddit_automation: '/api/reddit-automation/*'
+      reddit_admin: '/api/reddit-admin/*'
     },
     features: {
       music_trends: 'active',
@@ -127,7 +121,6 @@ app.get('/api/status', (req, res) => {
       song_review_notifications: process.env.GMAIL_USER ? 'active' : 'disabled',
       analytics: 'in_development',
       reddit_integration: 'active',
-      reddit_automation: 'active',
       gemini_ai: process.env.GOOGLE_GEMINI_API_KEY ? 'active' : 'disabled'
     }
   });
@@ -147,20 +140,12 @@ app.get('/', (req, res) => {
       trends: '/api/trends/music',
       email: '/api/email/send-welcome-email',
       reddit_admin: '/api/reddit-admin/admin',
-      reddit_automation: '/api/reddit-automation/status',
       gemini_ai: '/api/reddit-admin/generate-comment'
     },
     ai_features: {
       comment_generation: process.env.GOOGLE_GEMINI_API_KEY ? 'active' : 'disabled',
       dm_replies: process.env.GOOGLE_GEMINI_API_KEY ? 'active' : 'disabled',
-      post_analysis: process.env.GOOGLE_GEMINI_API_KEY ? 'active' : 'disabled',
-      automated_posting: process.env.GOOGLE_GEMINI_API_KEY ? 'active' : 'disabled'
-    },
-    automation: {
-      target_subreddits: 6,
-      total_audience: '2.8M+',
-      daily_posts: '15-25',
-      status: 'ready_to_start'
+      post_analysis: process.env.GOOGLE_GEMINI_API_KEY ? 'active' : 'disabled'
     }
   });
 });
@@ -187,14 +172,7 @@ app.use('*', (req, res) => {
       '/api/reddit-admin/generate-comment',
       '/api/reddit-admin/generate-reply',
       '/api/reddit-admin/analyze-post',
-      '/api/reddit-admin/test-gemini',
-      '/api/reddit-admin/targets',
-      '/api/reddit-admin/schedule/today',
-      '/api/reddit-automation/start',
-      '/api/reddit-automation/stop',
-      '/api/reddit-automation/status',
-      '/api/reddit-automation/trigger-now',
-      '/api/reddit-automation/test-reddit'
+      '/api/reddit-admin/test-gemini'
     ]
   });
 });
@@ -219,10 +197,8 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`📧 Email endpoints: http://localhost:${PORT}/api/email/*`);
   console.log(`🎵 Song review notifications: http://localhost:${PORT}/api/email/send-song-reviewed`);
   console.log(`🤖 Gemini AI endpoints: http://localhost:${PORT}/api/reddit-admin/generate-comment`);
-  console.log(`🤖 Automation system: http://localhost:${PORT}/api/reddit-automation/status`);
   console.log(`📈 Trends API: http://localhost:${PORT}/api/trends/music`);
   console.log(`🧪 Dev Trends: http://localhost:${PORT}/api/trends/dev/music`);
   console.log(`🔗 Reddit Admin: http://localhost:${PORT}/api/reddit-admin/admin`);
   console.log(`🔧 CORS enabled for production domains`);
-  console.log(`🎯 Reddit Automation: ${process.env.GOOGLE_GEMINI_API_KEY ? 'READY' : 'NEEDS_GEMINI_API_KEY'}`);
 });
