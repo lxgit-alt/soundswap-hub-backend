@@ -186,10 +186,10 @@ const simulateRedditPost = async (subreddit, comment, style) => {
     postingActivity.lastPosted[subreddit] = new Date().toISOString();
     postingActivity.totalComments++;
     
-    console.log(`✅ Posted to r/${subreddit}: ${comment.substring(0, 100)}...`);
+    console.log(`Posted to r/${subreddit}: ${comment.substring(0, 100)}...`);
     return { success: true, comment };
   } else {
-    console.log(`❌ Failed to post to r/${subreddit}`);
+    console.log(`Failed to post to r/${subreddit}`);
     return { success: false, error: 'Simulated failure' };
   }
 };
@@ -200,7 +200,7 @@ cron.schedule('* * * * *', async () => {
     const scheduledPosts = getCurrentSchedule();
     
     if (scheduledPosts.length > 0) {
-      console.log(`🕒 Checking scheduled posts at ${new Date().toLocaleTimeString()}:`, 
+      console.log(`Checking scheduled posts at ${new Date().toLocaleTimeString()}:`, 
         scheduledPosts.map(p => `r/${p.subreddit}`).join(', '));
       
       for (const scheduled of scheduledPosts) {
@@ -208,7 +208,7 @@ cron.schedule('* * * * *', async () => {
         
         // Check daily limit
         if (currentCount >= dailyLimit) {
-          console.log(`⏸️  Daily limit reached for r/${subreddit} (${currentCount}/${dailyLimit})`);
+          console.log(`Daily limit reached for r/${subreddit} (${currentCount}/${dailyLimit})`);
           continue;
         }
         
@@ -217,12 +217,12 @@ cron.schedule('* * * * *', async () => {
         if (lastPost) {
           const timeSinceLastPost = Date.now() - new Date(lastPost).getTime();
           if (timeSinceLastPost < 30 * 60 * 1000) { // 30 minutes cooldown
-            console.log(`⏸️  Cooldown active for r/${subreddit}`);
+            console.log(`Cooldown active for r/${subreddit}`);
             continue;
           }
         }
         
-        console.log(`🚀 Preparing to post to r/${subreddit} with style: ${style}`);
+        console.log(`Preparing to post to r/${subreddit} with style: ${style}`);
         
         // Generate sample post content based on subreddit
         const samplePosts = {
@@ -254,7 +254,7 @@ cron.schedule('* * * * *', async () => {
           const postResult = await simulateRedditPost(subreddit, commentResponse.comment, style);
           
           if (postResult.success) {
-            console.log(`🎉 Successfully posted to r/${subreddit}`);
+            console.log(`Successfully posted to r/${subreddit}`);
           }
         }
         
@@ -263,11 +263,11 @@ cron.schedule('* * * * *', async () => {
       }
     }
   } catch (error) {
-    console.error('❌ Error in cron job:', error);
+    console.error('Error in cron job:', error);
   }
 });
 
-console.log('⏰ Reddit Auto-Poster cron scheduler started');
+console.log('Reddit Auto-Poster cron scheduler started');
 
 // ==================== HELPER FUNCTIONS ====================
 
@@ -311,7 +311,7 @@ Guidelines:
 - Keep it natural and conversational (1-3 sentences)
 - Add genuine value to the discussion
 - Don't sound like marketing or promotion
-- Use appropriate emojis sparingly (1 max)
+- Do NOT use any emojis or emoticons
 - Sound like a real human user
 - Reference specific points from the post when relevant
 - Avoid generic responses like "great post" or "thanks for sharing"
@@ -334,7 +334,7 @@ Write a comment that follows these guidelines:
     };
 
   } catch (error) {
-    console.error('❌ Error generating AI comment:', error);
+    console.error('Error generating AI comment:', error);
     return {
       success: false,
       message: 'Failed to generate AI comment',
@@ -388,7 +388,7 @@ router.post('/manual-post', async (req, res) => {
       });
     }
     
-    console.log(`🔄 Manual post requested for r/${subreddit}`);
+    console.log(`Manual post requested for r/${subreddit}`);
     
     const commentResponse = await generateAICommentInternal(
       postTitle || "Check out this music discussion!",
@@ -415,7 +415,7 @@ router.post('/manual-post', async (req, res) => {
     });
     
   } catch (error) {
-    console.error('❌ Error in manual post:', error);
+    console.error('Error in manual post:', error);
     res.status(500).json({
       success: false,
       message: 'Manual post failed',
@@ -496,7 +496,7 @@ router.post('/generate-comment', async (req, res) => {
       });
     }
 
-    console.log('🤖 Generating AI comment for post:', { 
+    console.log('Generating AI comment for post:', { 
       subreddit, 
       style,
       titleLength: postTitle.length,
@@ -523,7 +523,7 @@ router.post('/generate-comment', async (req, res) => {
     }
 
   } catch (error) {
-    console.error('❌ Error generating AI comment:', error);
+    console.error('Error generating AI comment:', error);
     res.status(500).json({
       success: false,
       message: 'Failed to generate AI comment',
@@ -532,7 +532,6 @@ router.post('/generate-comment', async (req, res) => {
   }
 });
 
-// ... (Keep all the existing endpoints below unchanged - generate-reply, analyze-post, test-gemini, targets, schedule, etc.)
 // Generate AI-powered reply to DMs or comments
 router.post('/generate-reply', async (req, res) => {
   try {
@@ -552,7 +551,7 @@ router.post('/generate-reply', async (req, res) => {
       });
     }
 
-    console.log('🤖 Generating AI reply to message:', { 
+    console.log('Generating AI reply to message:', { 
       messageLength: message.length,
       historyLength: conversationHistory.length,
       tone,
@@ -596,7 +595,7 @@ Guidelines:
 - Don't sound like a bot or automated response
 - Show genuine interest in the conversation
 - Ask follow-up questions when appropriate
-- Use appropriate emojis sparingly
+- Do NOT use any emojis or emoticons
 - Don't be overly enthusiastic or salesy
 
 Write a reply that follows these guidelines:
@@ -606,7 +605,7 @@ Write a reply that follows these guidelines:
     const response = await result.response;
     const reply = response.text().trim();
 
-    console.log('✅ Generated AI reply:', reply);
+    console.log('Generated AI reply:', reply);
 
     res.json({
       success: true,
@@ -617,7 +616,7 @@ Write a reply that follows these guidelines:
     });
 
   } catch (error) {
-    console.error('❌ Error generating AI reply:', error);
+    console.error('Error generating AI reply:', error);
     res.status(500).json({
       success: false,
       message: 'Failed to generate AI reply',
@@ -645,7 +644,7 @@ router.post('/analyze-post', async (req, res) => {
       });
     }
 
-    console.log('🔍 Analyzing post for commenting strategy:', { subreddit });
+    console.log('Analyzing post for commenting strategy:', { subreddit });
 
     const model = genAI.getGenerativeModel({ model: 'gemini-pro' });
 
@@ -670,7 +669,7 @@ Provide your analysis in a structured way that can be used to generate an approp
     const response = await result.response;
     const analysis = response.text().trim();
 
-    console.log('✅ Post analysis completed');
+    console.log('Post analysis completed');
 
     // Extract key insights from analysis
     const recommendations = {
@@ -698,7 +697,7 @@ Provide your analysis in a structured way that can be used to generate an approp
     });
 
   } catch (error) {
-    console.error('❌ Error analyzing post:', error);
+    console.error('Error analyzing post:', error);
     res.status(500).json({
       success: false,
       message: 'Failed to analyze post',
@@ -730,7 +729,7 @@ router.get('/test-gemini', async (req, res) => {
     });
 
   } catch (error) {
-    console.error('❌ Gemini AI test failed:', error);
+    console.error('Gemini AI test failed:', error);
     res.status(500).json({
       success: false,
       message: 'Gemini AI test failed',
