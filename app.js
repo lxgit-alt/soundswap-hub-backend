@@ -64,7 +64,8 @@ app.get('/api/health', (req, res) => {
       founder_activation: 'operational',
       email: process.env.GMAIL_USER ? 'configured' : 'not_configured',
       trends: 'operational',
-      reddit_admin: 'operational'
+      reddit_admin: 'operational',
+      reddit_automation: 'active'
     }
   });
 });
@@ -94,6 +95,13 @@ app.get('/', (req, res) => {
       password_reset: 'POST /api/email/send-password-reset',
       song_reviewed: 'POST /api/email/send-song-reviewed',
       test: 'GET /api/email/test'
+    },
+    reddit_automation: {
+      status: 'GET /api/reddit-admin/automation/status',
+      start: 'POST /api/reddit-admin/automation/start',
+      trigger: 'GET /api/reddit-admin/automation/trigger',
+      targets: 'GET /api/reddit-admin/targets',
+      schedule: 'GET /api/reddit-admin/schedule/today'
     }
   });
 });
@@ -118,7 +126,12 @@ app.use('*', (req, res) => {
       '/api/email/test',
       '/api/trends/music',
       '/api/trends/content-ideas',
-      '/api/reddit-admin/admin'
+      '/api/reddit-admin/admin',
+      '/api/reddit-admin/automation/status',
+      '/api/reddit-admin/automation/start',
+      '/api/reddit-admin/automation/trigger',
+      '/api/reddit-admin/targets',
+      '/api/reddit-admin/schedule/today'
     ]
   });
 });
@@ -146,5 +159,6 @@ if (process.env.NODE_ENV !== 'production') {
     console.log(`📧 Email endpoints: http://localhost:${PORT}/api/email/*`);
     console.log(`📈 Trends API: http://localhost:${PORT}/api/trends/music`);
     console.log(`🔗 Reddit Admin: http://localhost:${PORT}/api/reddit-admin/admin`);
+    console.log(`🤖 Reddit Automation: http://localhost:${PORT}/api/reddit-admin/automation/status`);
   });
 }
