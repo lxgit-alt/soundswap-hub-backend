@@ -1,6 +1,6 @@
 import express from 'express';
 import { GoogleGenerativeAI } from '@google/generative-ai';
-import fetch from 'node-fetch';
+import cron from 'node-cron';
 
 const router = express.Router();
 
@@ -10,6 +10,7 @@ const genAI = new GoogleGenerativeAI(process.env.GOOGLE_GEMINI_API_KEY);
 // ==================== REDDIT TARGET CONFIGURATION ====================
 
 const redditTargets = {
+  // Primary music communities
   'WeAreTheMusicMakers': {
     name: 'WeAreTheMusicMakers',
     memberCount: 1800000,
@@ -132,107 +133,179 @@ const redditTargets = {
   }
 };
 
-// ==================== AUTOMATION SYSTEM ====================
+// ==================== CRON SCHEDULER ====================
 
-// In-memory storage for automation state (in production, use a database)
-const automationState = {
-  isRunning: false,
-  lastRun: null,
-  totalComments: 0,
-  subredditStats: {},
-  errorCount: 0
+// Track posting activity
+const postingActivity = {
+  dailyCounts: {},
+  lastPosted: {},
+  totalComments: 0
 };
 
-// Get current time in format needed for scheduling
-const getCurrentTime = () => {
+// Initialize daily counts
+Object.keys(redditTargets).forEach(subreddit => {
+  postingActivity.dailyCounts[subreddit] = 0;
+});
+
+// Function to get current schedule for all active subreddits
+const getCurrentSchedule = () => {
   const now = new Date();
-  return {
-    hour: now.getHours().toString().padStart(2, '0'),
-    minute: now.getMinutes().toString().padStart(2, '0'),
-    timeString: `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`,
-    day: now.toLocaleString('en-US', { weekday: 'long' }).toLowerCase()
-  };
-};
-
-// Check if it's time to post for a subreddit
-const shouldPostForSubreddit = (subreddit) => {
-  const current = getCurrentTime();
-  const schedule = redditTargets[subreddit]?.postingSchedule;
+  const day = now.toLocaleString('en-US', { weekday: 'long' }).toLowerCase();
+  const time = now.toTimeString().slice(0, 5); // HH:MM format
   
-  if (!schedule || !schedule[current.day]) {
-    return false;
-  }
+  const scheduledPosts = [];
   
-  return schedule[current.day].some(scheduleTime => {
-    const [scheduleHour, scheduleMinute] = scheduleTime.split(':');
-    return current.hour === scheduleHour && current.minute === scheduleMinute;
-  });
-};
-
-// Get active subreddits for current time
-const getActiveSubreddits = () => {
-  const active = [];
-  Object.keys(redditTargets).forEach(subreddit => {
-    if (redditTargets[subreddit].active && shouldPostForSubreddit(subreddit)) {
-      active.push(subreddit);
+  Object.entries(redditTargets).forEach(([subreddit, config]) => {
+    if (config.active && config.postingSchedule[day]) {
+      const times = config.postingSchedule[day];
+      if (times.includes(time)) {
+        scheduledPosts.push({
+          subreddit,
+          time,
+          style: config.preferredStyles[Math.floor(Math.random() * config.preferredStyles.length)],
+          dailyLimit: config.dailyCommentLimit,
+          currentCount: postingActivity.dailyCounts[subreddit] || 0
+        });
+      }
     }
   });
-  return active;
+  
+  return scheduledPosts;
 };
 
-// Simulate Reddit API interaction (replace with actual Reddit API)
-const simulateRedditPost = async (subreddit, comment) => {
-  // In production, integrate with actual Reddit API using:
-  // - snoowrap (Node.js Reddit API wrapper)
-  // - Proper OAuth authentication
-  // - Rate limiting handling
-  
-  console.log(`📮 [SIMULATED] Posting to r/${subreddit}: ${comment}`);
-  
-  // Simulate API delay
-  await new Promise(resolve => setTimeout(resolve, 2000));
+// Function to simulate posting to Reddit (you'll integrate with actual Reddit API)
+const simulateRedditPost = async (subreddit, comment, style) => {
+  // Simulate API call delay
+  await new Promise(resolve => setTimeout(resolve, 2000 + Math.random() * 3000));
   
   // Simulate success (90% success rate)
   const success = Math.random() > 0.1;
   
   if (success) {
-    return { success: true, postId: `t3_${Math.random().toString(36).substr(2, 9)}` };
+    postingActivity.dailyCounts[subreddit] = (postingActivity.dailyCounts[subreddit] || 0) + 1;
+    postingActivity.lastPosted[subreddit] = new Date().toISOString();
+    postingActivity.totalComments++;
+    
+    console.log(`✅ Posted to r/${subreddit}: ${comment.substring(0, 100)}...`);
+    return { success: true, comment };
   } else {
-    throw new Error('Simulated Reddit API error');
+    console.log(`❌ Failed to post to r/${subreddit}`);
+    return { success: false, error: 'Simulated failure' };
   }
 };
 
-// Generate AI-powered comment for Reddit posts
-const generateAIContent = async (postTitle, postContent, subreddit, style = 'helpful') => {
-  if (!process.env.GOOGLE_GEMINI_API_KEY) {
-    throw new Error('Google Gemini API key not configured');
+// Cron job that runs every minute to check for scheduled posts
+cron.schedule('* * * * *', async () => {
+  try {
+    const scheduledPosts = getCurrentSchedule();
+    
+    if (scheduledPosts.length > 0) {
+      console.log(`🕒 Checking scheduled posts at ${new Date().toLocaleTimeString()}:`, 
+        scheduledPosts.map(p => `r/${p.subreddit}`).join(', '));
+      
+      for (const scheduled of scheduledPosts) {
+        const { subreddit, style, dailyLimit, currentCount } = scheduled;
+        
+        // Check daily limit
+        if (currentCount >= dailyLimit) {
+          console.log(`⏸️  Daily limit reached for r/${subreddit} (${currentCount}/${dailyLimit})`);
+          continue;
+        }
+        
+        // Check if we recently posted to this subreddit (avoid rapid posting)
+        const lastPost = postingActivity.lastPosted[subreddit];
+        if (lastPost) {
+          const timeSinceLastPost = Date.now() - new Date(lastPost).getTime();
+          if (timeSinceLastPost < 30 * 60 * 1000) { // 30 minutes cooldown
+            console.log(`⏸️  Cooldown active for r/${subreddit}`);
+            continue;
+          }
+        }
+        
+        console.log(`🚀 Preparing to post to r/${subreddit} with style: ${style}`);
+        
+        // Generate sample post content based on subreddit
+        const samplePosts = {
+          'WeAreTheMusicMakers': [
+            "Just finished my first EP after 6 months of work!",
+            "Struggling with vocal mixing - any tips?",
+            "What's your favorite piece of music production equipment?"
+          ],
+          'MusicProduction': [
+            "How do you deal with ear fatigue during long sessions?",
+            "Just got new studio monitors - game changer!",
+            "Best VST plugins for electronic music?"
+          ],
+          'IndieMusicFeedback': [
+            "Would love some feedback on my new indie rock track",
+            "Just released my first single, nervous but excited!",
+            "Looking for constructive criticism on my songwriting"
+          ]
+        };
+        
+        const posts = samplePosts[subreddit] || ["Just shared some new music, would love your thoughts!"];
+        const postTitle = posts[Math.floor(Math.random() * posts.length)];
+        
+        // Generate AI comment
+        const commentResponse = await generateAICommentInternal(postTitle, "", subreddit, "", style);
+        
+        if (commentResponse.success) {
+          // Simulate posting to Reddit
+          const postResult = await simulateRedditPost(subreddit, commentResponse.comment, style);
+          
+          if (postResult.success) {
+            console.log(`🎉 Successfully posted to r/${subreddit}`);
+          }
+        }
+        
+        // Add delay between posts to avoid rate limiting
+        await new Promise(resolve => setTimeout(resolve, 10000));
+      }
+    }
+  } catch (error) {
+    console.error('❌ Error in cron job:', error);
   }
+});
 
-  const model = genAI.getGenerativeModel({ model: 'gemini-pro' });
-  const targetConfig = redditTargets[subreddit];
-  const shouldMentionSoundSwap = targetConfig && Math.random() < targetConfig.soundswapMentionRate;
+console.log('⏰ Reddit Auto-Poster cron scheduler started');
 
-  const stylePrompts = {
-    helpful: `You are a helpful and knowledgeable Reddit user in r/${subreddit}. Write a genuine, helpful comment that adds value to the discussion. Be specific and provide useful insights.`,
-    enthusiastic: `You are an enthusiastic Reddit user who's excited about this topic. Write an engaging comment that shows genuine interest and adds positive energy to the conversation.`,
-    thoughtful: `You are a thoughtful and reflective Reddit user. Write a considerate comment that shows deep understanding and adds meaningful perspective to the discussion.`,
-    casual: `You are a casual Reddit user having a friendly conversation. Write a natural, relaxed comment that feels authentic and human-like.`,
-    expert: `You are an expert in this field sharing valuable insights. Write an informative comment that demonstrates expertise while being accessible to other users.`,
-    supportive: `You are a supportive community member who wants to encourage other creators. Write an uplifting comment that motivates and supports the poster.`,
-    technical: `You are a technically skilled musician/producer. Write a detailed comment that focuses on technical aspects and provides specific, actionable advice.`
-  };
+// ==================== HELPER FUNCTIONS ====================
 
-  const systemPrompt = stylePrompts[style] || stylePrompts.helpful;
-  const mentionContext = shouldMentionSoundSwap ? 
-    `\nIMPORTANT: Naturally mention SoundSwap (a music community platform for feedback and collaboration) in a helpful, non-promotional way. Focus on how it helps musicians get feedback, collaborate, and grow their audience. Make it sound like a genuine recommendation from personal experience.` : 
-    `\nIMPORTANT: Do NOT mention SoundSwap or any other platforms in this comment. Focus purely on providing value to the discussion.`;
+// Internal function for AI comment generation
+const generateAICommentInternal = async (postTitle, postContent, subreddit, context, style) => {
+  try {
+    if (!process.env.GOOGLE_GEMINI_API_KEY) {
+      return { success: false, message: 'Google Gemini API key not configured' };
+    }
 
-  const prompt = `
+    const targetConfig = redditTargets[subreddit];
+    const shouldMentionSoundSwap = targetConfig && Math.random() < targetConfig.soundswapMentionRate;
+    const selectedStyle = style || (targetConfig ? targetConfig.preferredStyles[0] : 'helpful');
+
+    const model = genAI.getGenerativeModel({ model: 'gemini-pro' });
+
+    const stylePrompts = {
+      helpful: `You are a helpful and knowledgeable Reddit user in r/${subreddit}. Write a genuine, helpful comment that adds value to the discussion. Be specific and provide useful insights.`,
+      enthusiastic: `You are an enthusiastic Reddit user who's excited about this topic. Write an engaging comment that shows genuine interest and adds positive energy to the conversation.`,
+      thoughtful: `You are a thoughtful and reflective Reddit user. Write a considerate comment that shows deep understanding and adds meaningful perspective to the discussion.`,
+      casual: `You are a casual Reddit user having a friendly conversation. Write a natural, relaxed comment that feels authentic and human-like.`,
+      expert: `You are an expert in this field sharing valuable insights. Write an informative comment that demonstrates expertise while being accessible to other users.`,
+      supportive: `You are a supportive community member who wants to encourage other creators. Write an uplifting comment that motivates and supports the poster.`,
+      technical: `You are a technically skilled musician/producer. Write a detailed comment that focuses on technical aspects and provides specific, actionable advice.`
+    };
+
+    const systemPrompt = stylePrompts[selectedStyle] || stylePrompts.helpful;
+    const mentionContext = shouldMentionSoundSwap ? 
+      `\nIMPORTANT: Naturally mention SoundSwap (a music community platform for feedback and collaboration) in a helpful, non-promotional way. Focus on how it helps musicians get feedback, collaborate, and grow their audience. Make it sound like a genuine recommendation from personal experience.` : 
+      `\nIMPORTANT: Do NOT mention SoundSwap or any other platforms in this comment. Focus purely on providing value to the discussion.`;
+
+    const prompt = `
 ${systemPrompt}
 ${mentionContext}
 
 Post Title: "${postTitle}"
 ${postContent ? `Post Content: "${postContent.substring(0, 1000)}"` : ''}
+${context ? `Additional Context: ${context}` : ''}
 
 Guidelines:
 - Keep it natural and conversational (1-3 sentences)
@@ -248,263 +321,132 @@ ${shouldMentionSoundSwap ? '- Mention SoundSwap naturally as a helpful resource,
 Write a comment that follows these guidelines:
 `;
 
-  const result = await model.generateContent(prompt);
-  const response = await result.response;
-  return response.text().trim();
-};
+    const result = await model.generateContent(prompt);
+    const response = await result.response;
+    const comment = response.text().trim();
 
-// Main automation function
-const runAutomation = async () => {
-  if (automationState.isRunning) {
-    console.log('🔄 Automation already running, skipping...');
-    return { success: false, message: 'Automation already running' };
-  }
-
-  automationState.isRunning = true;
-  automationState.lastRun = new Date();
-  
-  console.log('🚀 Starting Reddit automation...');
-  
-  const activeSubreddits = getActiveSubreddits();
-  
-  if (activeSubreddits.length === 0) {
-    console.log('⏰ No active subreddits for current time');
-    automationState.isRunning = false;
-    return { success: true, message: 'No active subreddits for current time' };
-  }
-
-  console.log(`🎯 Active subreddits: ${activeSubreddits.join(', ')}`);
-  
-  const results = [];
-  
-  for (const subreddit of activeSubreddits) {
-    try {
-      console.log(`🔍 Processing r/${subreddit}...`);
-      
-      // Simulate finding relevant posts (in production, fetch from Reddit API)
-      const simulatedPosts = [
-        {
-          title: "Just released my first EP after years of producing!",
-          content: "Finally gathered the courage to release my electronic EP. Would love some feedback on the mixing and overall sound design.",
-          id: "post_1"
-        },
-        {
-          title: "Struggling with vocal mixing - any tips?",
-          content: "I've been having trouble making my vocals sit well in the mix. They either sound too dry or too washed out with reverb.",
-          id: "post_2"
-        },
-        {
-          title: "What's your favorite piece of music production gear under $500?",
-          content: "Looking to expand my home studio setup without breaking the bank. Curious what everyone recommends!",
-          id: "post_3"
-        }
-      ];
-      
-      const targetConfig = redditTargets[subreddit];
-      const selectedStyle = targetConfig.preferredStyles[
-        Math.floor(Math.random() * targetConfig.preferredStyles.length)
-      ];
-      
-      // Select a random post to comment on
-      const selectedPost = simulatedPosts[Math.floor(Math.random() * simulatedPosts.length)];
-      
-      console.log(`🤖 Generating AI comment for r/${subreddit}...`);
-      const aiComment = await generateAIContent(
-        selectedPost.title,
-        selectedPost.content,
-        subreddit,
-        selectedStyle
-      );
-      
-      console.log(`📮 Posting to r/${subreddit}...`);
-      const postResult = await simulateRedditPost(subreddit, aiComment);
-      
-      // Update statistics
-      automationState.totalComments++;
-      automationState.subredditStats[subreddit] = (automationState.subredditStats[subreddit] || 0) + 1;
-      
-      results.push({
-        subreddit,
-        success: true,
-        comment: aiComment,
-        postId: selectedPost.id,
-        style: selectedStyle
-      });
-      
-      console.log(`✅ Successfully posted to r/${subreddit}`);
-      
-      // Add delay between posts to avoid rate limiting
-      await new Promise(resolve => setTimeout(resolve, 5000));
-      
-    } catch (error) {
-      console.error(`❌ Error processing r/${subreddit}:`, error.message);
-      automationState.errorCount++;
-      results.push({
-        subreddit,
-        success: false,
-        error: error.message
-      });
-    }
-  }
-  
-  automationState.isRunning = false;
-  console.log(`🎉 Automation completed. Processed ${results.length} subreddits`);
-  
-  return {
-    success: true,
-    message: `Automation completed for ${results.length} subreddits`,
-    results,
-    statistics: {
-      totalComments: automationState.totalComments,
-      errorCount: automationState.errorCount,
-      subredditStats: automationState.subredditStats
-    }
-  };
-};
-
-// ==================== AUTOMATION ENDPOINTS ====================
-
-// Start automation manually
-router.post('/automation/start', async (req, res) => {
-  try {
-    console.log('🚀 Manual automation trigger received');
-    const result = await runAutomation();
-    
-    res.json({
+    return {
       success: true,
-      ...result,
-      timestamp: new Date().toISOString()
-    });
-    
-  } catch (error) {
-    console.error('❌ Automation error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Automation failed',
-      error: error.message,
-      timestamp: new Date().toISOString()
-    });
-  }
-});
+      comment: comment,
+      style: selectedStyle,
+      subreddit: subreddit,
+      mentionSoundSwap: shouldMentionSoundSwap
+    };
 
-// Get automation status
-router.get('/automation/status', (req, res) => {
-  const activeSubreddits = getActiveSubreddits();
+  } catch (error) {
+    console.error('❌ Error generating AI comment:', error);
+    return {
+      success: false,
+      message: 'Failed to generate AI comment',
+      error: error.message
+    };
+  }
+};
+
+// ==================== CRON MANAGEMENT ENDPOINTS ====================
+
+// Get cron job status and activity
+router.get('/cron-status', (req, res) => {
+  const now = new Date();
+  const scheduledPosts = getCurrentSchedule();
   
   res.json({
     success: true,
-    automation: {
-      isRunning: automationState.isRunning,
-      lastRun: automationState.lastRun,
-      totalComments: automationState.totalComments,
-      errorCount: automationState.errorCount,
-      subredditStats: automationState.subredditStats
+    cron: {
+      status: 'active',
+      nextCheck: new Date(now.getTime() + 60000).toISOString(), // Next minute
+      totalComments: postingActivity.totalComments,
+      dailyActivity: postingActivity.dailyCounts,
+      lastPosted: postingActivity.lastPosted
     },
-    currentTime: getCurrentTime(),
-    activeSubreddits: activeSubreddits,
-    nextRun: 'Scheduled via serverless functions',
+    scheduled: {
+      currentTime: now.toTimeString().slice(0, 5),
+      scheduledPosts: scheduledPosts.length,
+      details: scheduledPosts
+    },
     timestamp: new Date().toISOString()
   });
 });
 
-// Serverless automation trigger (for Vercel cron jobs)
-router.get('/automation/trigger', async (req, res) => {
+// Manually trigger posting for a subreddit
+router.post('/manual-post', async (req, res) => {
   try {
-    console.log('⏰ Serverless automation trigger received');
+    const { subreddit, postTitle, postContent, style } = req.body;
     
-    // This endpoint is designed to be called by Vercel cron jobs
-    // It runs the automation and returns immediately (fire and forget)
+    if (!subreddit) {
+      return res.status(400).json({
+        success: false,
+        message: 'subreddit is required'
+      });
+    }
     
-    // Run automation in background
-    runAutomation().catch(error => {
-      console.error('❌ Background automation error:', error);
-    });
+    const targetConfig = redditTargets[subreddit];
+    if (!targetConfig) {
+      return res.status(404).json({
+        success: false,
+        message: `Subreddit r/${subreddit} not found in targets`
+      });
+    }
     
-    // Return immediate response
+    console.log(`🔄 Manual post requested for r/${subreddit}`);
+    
+    const commentResponse = await generateAICommentInternal(
+      postTitle || "Check out this music discussion!",
+      postContent || "",
+      subreddit,
+      "",
+      style
+    );
+    
+    if (!commentResponse.success) {
+      return res.status(500).json(commentResponse);
+    }
+    
+    // Simulate posting
+    const postResult = await simulateRedditPost(subreddit, commentResponse.comment, style);
+    
     res.json({
-      success: true,
-      message: 'Automation triggered successfully',
-      triggeredAt: new Date().toISOString(),
-      activeSubreddits: getActiveSubreddits()
+      success: postResult.success,
+      comment: commentResponse.comment,
+      subreddit: subreddit,
+      posted: postResult.success,
+      activity: postingActivity.dailyCounts[subreddit],
+      timestamp: new Date().toISOString()
     });
     
   } catch (error) {
-    console.error('❌ Automation trigger error:', error);
+    console.error('❌ Error in manual post:', error);
     res.status(500).json({
       success: false,
-      message: 'Automation trigger failed',
-      error: error.message,
-      timestamp: new Date().toISOString()
+      message: 'Manual post failed',
+      error: error.message
     });
   }
 });
 
-// ==================== CONFIGURATION ENDPOINTS ====================
-
-// Get all configured Reddit targets
-router.get('/targets', (req, res) => {
-  res.json({
-    success: true,
-    data: redditTargets,
-    totalTargets: Object.keys(redditTargets).length,
-    totalAudience: Object.values(redditTargets).reduce((sum, target) => sum + target.memberCount, 0),
-    timestamp: new Date().toISOString()
-  });
-});
-
-// Get specific target configuration
-router.get('/targets/:subreddit', (req, res) => {
-  const { subreddit } = req.params;
-  const target = redditTargets[subreddit];
-  
-  if (!target) {
-    return res.status(404).json({
-      success: false,
-      message: `Target configuration for r/${subreddit} not found`
-    });
-  }
-  
-  res.json({
-    success: true,
-    data: target,
-    timestamp: new Date().toISOString()
-  });
-});
-
-// Get posting schedule for today
-router.get('/schedule/today', (req, res) => {
-  const today = new Date().toLocaleString('en-US', { weekday: 'long' }).toLowerCase();
-  const schedule = {};
-  
-  Object.entries(redditTargets).forEach(([subreddit, config]) => {
-    if (config.active && config.postingSchedule[today]) {
-      schedule[subreddit] = {
-        times: config.postingSchedule[today],
-        preferredStyles: config.preferredStyles,
-        dailyLimit: config.dailyCommentLimit
-      };
-    }
+// Reset daily counts
+router.post('/reset-counts', (req, res) => {
+  Object.keys(postingActivity.dailyCounts).forEach(key => {
+    postingActivity.dailyCounts[key] = 0;
   });
   
   res.json({
     success: true,
-    day: today,
-    schedule: schedule,
+    message: 'Daily counts reset',
+    counts: postingActivity.dailyCounts,
     timestamp: new Date().toISOString()
   });
 });
 
-// ==================== AI ENDPOINTS ====================
+// ==================== EXISTING ENDPOINTS (UPDATED) ====================
 
-// Reddit admin health check
+// Reddit admin health check (updated with cron info)
 router.get('/admin', (req, res) => {
-  const activeSubreddits = getActiveSubreddits();
-  
   res.json({
     success: true,
     message: 'Reddit Admin API is running',
     service: 'reddit-admin',
-    version: '3.0.0',
+    version: '2.2.0',
     timestamp: new Date().toISOString(),
     environment: process.env.NODE_ENV || 'development',
     features: {
@@ -513,27 +455,28 @@ router.get('/admin', (req, res) => {
       dm_replies: 'active',
       content_analysis: 'active',
       target_configuration: 'active',
-      automation_system: 'active',
-      serverless_functions: 'active'
+      auto_posting: 'active',
+      cron_scheduler: 'active'
     },
     targets: {
       total: Object.keys(redditTargets).length,
       active: Object.values(redditTargets).filter(t => t.active).length,
-      total_audience: Object.values(redditTargets).reduce((sum, target) => sum + target.memberCount, 0),
-      currently_active: activeSubreddits.length
+      total_audience: Object.values(redditTargets).reduce((sum, target) => sum + target.memberCount, 0)
     },
-    automation: {
-      status: automationState.isRunning ? 'running' : 'idle',
-      last_run: automationState.lastRun,
-      total_comments: automationState.totalComments
+    cron: {
+      status: 'running',
+      total_comments: postingActivity.totalComments,
+      daily_limits: Object.fromEntries(
+        Object.entries(redditTargets).map(([k, v]) => [k, v.dailyCommentLimit])
+      )
     },
     endpoints: {
       health: '/api/reddit-admin/admin',
       targets: '/api/reddit-admin/targets',
       schedule: '/api/reddit-admin/schedule/today',
-      automation_status: '/api/reddit-admin/automation/status',
-      automation_start: '/api/reddit-admin/automation/start',
-      automation_trigger: '/api/reddit-admin/automation/trigger',
+      cron_status: '/api/reddit-admin/cron-status',
+      manual_post: '/api/reddit-admin/manual-post',
+      reset_counts: '/api/reddit-admin/reset-counts',
       generate_comment: '/api/reddit-admin/generate-comment',
       generate_reply: '/api/reddit-admin/generate-reply',
       analyze_post: '/api/reddit-admin/analyze-post'
@@ -541,7 +484,7 @@ router.get('/admin', (req, res) => {
   });
 });
 
-// Generate AI-powered comment for Reddit posts
+// Generate AI-powered comment for Reddit posts (uses internal function)
 router.post('/generate-comment', async (req, res) => {
   try {
     const { postTitle, postContent, subreddit, context, style } = req.body;
@@ -553,27 +496,31 @@ router.post('/generate-comment', async (req, res) => {
       });
     }
 
-    const targetConfig = redditTargets[subreddit];
-    const selectedStyle = style || (targetConfig ? targetConfig.preferredStyles[0] : 'helpful');
-
     console.log('🤖 Generating AI comment for post:', { 
       subreddit, 
-      style: selectedStyle,
+      style,
       titleLength: postTitle.length,
       contentLength: postContent?.length || 0
     });
 
-    const comment = await generateAIContent(postTitle, postContent, subreddit, selectedStyle);
-
-    console.log('✅ Generated AI comment:', comment);
-
-    res.json({
-      success: true,
-      comment: comment,
-      style: selectedStyle,
-      subreddit: subreddit,
-      timestamp: new Date().toISOString()
-    });
+    const result = await generateAICommentInternal(postTitle, postContent, subreddit, context, style);
+    
+    if (result.success) {
+      res.json({
+        success: true,
+        comment: result.comment,
+        style: result.style,
+        subreddit: result.subreddit,
+        mentionSoundSwap: result.mentionSoundSwap,
+        config: redditTargets[subreddit] ? {
+          dailyLimit: redditTargets[subreddit].dailyCommentLimit,
+          mentionRate: redditTargets[subreddit].soundswapMentionRate
+        } : null,
+        timestamp: new Date().toISOString()
+      });
+    } else {
+      res.status(500).json(result);
+    }
 
   } catch (error) {
     console.error('❌ Error generating AI comment:', error);
@@ -585,6 +532,7 @@ router.post('/generate-comment', async (req, res) => {
   }
 });
 
+// ... (Keep all the existing endpoints below unchanged - generate-reply, analyze-post, test-gemini, targets, schedule, etc.)
 // Generate AI-powered reply to DMs or comments
 router.post('/generate-reply', async (req, res) => {
   try {
@@ -613,6 +561,7 @@ router.post('/generate-reply', async (req, res) => {
 
     const model = genAI.getGenerativeModel({ model: 'gemini-pro' });
 
+    // Different tones for different relationships
     const tonePrompts = {
       friendly: 'Write a friendly, warm reply that builds rapport',
       professional: 'Write a professional, helpful reply',
@@ -723,13 +672,15 @@ Provide your analysis in a structured way that can be used to generate an approp
 
     console.log('✅ Post analysis completed');
 
+    // Extract key insights from analysis
     const recommendations = {
-      postType: 'discussion',
+      postType: 'discussion', // default
       suggestedTone: 'helpful',
       focusAreas: [],
       avoidTopics: []
     };
 
+    // Simple parsing of the analysis (you could make this more sophisticated)
     if (analysis.toLowerCase().includes('question')) {
       recommendations.postType = 'question';
       recommendations.suggestedTone = 'helpful';
@@ -786,6 +737,61 @@ router.get('/test-gemini', async (req, res) => {
       error: error.message
     });
   }
+});
+
+// Get all configured Reddit targets
+router.get('/targets', (req, res) => {
+  res.json({
+    success: true,
+    data: redditTargets,
+    totalTargets: Object.keys(redditTargets).length,
+    totalAudience: Object.values(redditTargets).reduce((sum, target) => sum + target.memberCount, 0),
+    timestamp: new Date().toISOString()
+  });
+});
+
+// Get specific target configuration
+router.get('/targets/:subreddit', (req, res) => {
+  const { subreddit } = req.params;
+  const target = redditTargets[subreddit];
+  
+  if (!target) {
+    return res.status(404).json({
+      success: false,
+      message: `Target configuration for r/${subreddit} not found`
+    });
+  }
+  
+  res.json({
+    success: true,
+    data: target,
+    timestamp: new Date().toISOString()
+  });
+});
+
+// Get posting schedule for today
+router.get('/schedule/today', (req, res) => {
+  const today = new Date().toLocaleString('en-US', { weekday: 'long' }).toLowerCase();
+  const schedule = {};
+  
+  Object.entries(redditTargets).forEach(([subreddit, config]) => {
+    if (config.active && config.postingSchedule[today]) {
+      schedule[subreddit] = {
+        times: config.postingSchedule[today],
+        preferredStyles: config.preferredStyles,
+        dailyLimit: config.dailyCommentLimit,
+        currentCount: postingActivity.dailyCounts[subreddit] || 0
+      };
+    }
+  });
+  
+  res.json({
+    success: true,
+    day: today,
+    schedule: schedule,
+    activity: postingActivity.dailyCounts,
+    timestamp: new Date().toISOString()
+  });
 });
 
 // Add more Reddit admin routes as needed
