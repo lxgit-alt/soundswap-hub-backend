@@ -65,7 +65,8 @@ app.get('/api/health', (req, res) => {
       email: process.env.GMAIL_USER ? 'configured' : 'not_configured',
       trends: 'operational',
       reddit_admin: 'operational',
-      reddit_automation: 'active'
+      reddit_automation: 'active',
+      gemini_ai: process.env.GOOGLE_GEMINI_API_KEY ? 'configured' : 'not_configured'
     }
   });
 });
@@ -97,11 +98,15 @@ app.get('/', (req, res) => {
       test: 'GET /api/email/test'
     },
     reddit_automation: {
-      status: 'GET /api/reddit-admin/automation/status',
-      start: 'POST /api/reddit-admin/automation/start',
-      trigger: 'GET /api/reddit-admin/automation/trigger',
+      status: 'GET /api/reddit-admin/cron-status',
+      manual_post: 'POST /api/reddit-admin/manual-post',
+      reset_counts: 'POST /api/reddit-admin/reset-counts',
       targets: 'GET /api/reddit-admin/targets',
-      schedule: 'GET /api/reddit-admin/schedule/today'
+      schedule: 'GET /api/reddit-admin/schedule/today',
+      generate_comment: 'POST /api/reddit-admin/generate-comment',
+      generate_reply: 'POST /api/reddit-admin/generate-reply',
+      analyze_post: 'POST /api/reddit-admin/analyze-post',
+      test_gemini: 'GET /api/reddit-admin/test-gemini'
     }
   });
 });
@@ -126,12 +131,22 @@ app.use('*', (req, res) => {
       '/api/email/test',
       '/api/trends/music',
       '/api/trends/content-ideas',
+      '/api/trends/health',
+      '/api/trends/dev/music',
+      '/api/trends/dev/test-integration',
       '/api/reddit-admin/admin',
-      '/api/reddit-admin/automation/status',
-      '/api/reddit-admin/automation/start',
-      '/api/reddit-admin/automation/trigger',
+      '/api/reddit-admin/cron-status',
+      '/api/reddit-admin/manual-post',
+      '/api/reddit-admin/reset-counts',
       '/api/reddit-admin/targets',
-      '/api/reddit-admin/schedule/today'
+      '/api/reddit-admin/schedule/today',
+      '/api/reddit-admin/generate-comment',
+      '/api/reddit-admin/generate-reply',
+      '/api/reddit-admin/analyze-post',
+      '/api/reddit-admin/test-gemini',
+      '/api/reddit-admin/auth',
+      '/api/reddit-admin/posts',
+      '/api/reddit-admin/analytics'
     ]
   });
 });
@@ -159,6 +174,7 @@ if (process.env.NODE_ENV !== 'production') {
     console.log(`📧 Email endpoints: http://localhost:${PORT}/api/email/*`);
     console.log(`📈 Trends API: http://localhost:${PORT}/api/trends/music`);
     console.log(`🔗 Reddit Admin: http://localhost:${PORT}/api/reddit-admin/admin`);
-    console.log(`🤖 Reddit Automation: http://localhost:${PORT}/api/reddit-admin/automation/status`);
+    console.log(`🤖 Reddit Automation: http://localhost:${PORT}/api/reddit-admin/cron-status`);
+    console.log(`🤖 Gemini AI: http://localhost:${PORT}/api/reddit-admin/test-gemini`);
   });
 }

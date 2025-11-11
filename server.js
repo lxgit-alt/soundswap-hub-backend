@@ -93,7 +93,8 @@ app.get('/health', (req, res) => {
       database: 'mock_data',
       reddit_admin: 'operational',
       gemini_ai: process.env.GOOGLE_GEMINI_API_KEY ? 'configured' : 'not_configured',
-      reddit_automation: 'active'
+      reddit_automation: 'active',
+      cron_scheduler: 'running'
     }
   });
 });
@@ -123,7 +124,8 @@ app.get('/api/status', (req, res) => {
       analytics: 'in_development',
       reddit_integration: 'active',
       gemini_ai: process.env.GOOGLE_GEMINI_API_KEY ? 'active' : 'disabled',
-      reddit_automation: 'active'
+      reddit_automation: 'active',
+      cron_scheduler: 'running'
     }
   });
 });
@@ -143,13 +145,14 @@ app.get('/', (req, res) => {
       email: '/api/email/send-welcome-email',
       reddit_admin: '/api/reddit-admin/admin',
       gemini_ai: '/api/reddit-admin/generate-comment',
-      automation: '/api/reddit-admin/automation/status'
+      automation: '/api/reddit-admin/cron-status'
     },
     ai_features: {
       comment_generation: process.env.GOOGLE_GEMINI_API_KEY ? 'active' : 'disabled',
       dm_replies: process.env.GOOGLE_GEMINI_API_KEY ? 'active' : 'disabled',
       post_analysis: process.env.GOOGLE_GEMINI_API_KEY ? 'active' : 'disabled',
-      automation_system: 'active'
+      automation_system: 'active',
+      cron_scheduler: 'running'
     }
   });
 });
@@ -177,11 +180,14 @@ app.use('*', (req, res) => {
       '/api/reddit-admin/generate-reply',
       '/api/reddit-admin/analyze-post',
       '/api/reddit-admin/test-gemini',
-      '/api/reddit-admin/automation/status',
-      '/api/reddit-admin/automation/start',
-      '/api/reddit-admin/automation/trigger',
+      '/api/reddit-admin/cron-status',
+      '/api/reddit-admin/manual-post',
+      '/api/reddit-admin/reset-counts',
       '/api/reddit-admin/targets',
-      '/api/reddit-admin/schedule/today'
+      '/api/reddit-admin/schedule/today',
+      '/api/reddit-admin/auth',
+      '/api/reddit-admin/posts',
+      '/api/reddit-admin/analytics'
     ]
   });
 });
@@ -206,7 +212,8 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`📧 Email endpoints: http://localhost:${PORT}/api/email/*`);
   console.log(`🎵 Song review notifications: http://localhost:${PORT}/api/email/send-song-reviewed`);
   console.log(`🤖 Gemini AI endpoints: http://localhost:${PORT}/api/reddit-admin/generate-comment`);
-  console.log(`🤖 Automation system: http://localhost:${PORT}/api/reddit-admin/automation/status`);
+  console.log(`🤖 Automation system: http://localhost:${PORT}/api/reddit-admin/cron-status`);
+  console.log(`⏰ Cron scheduler: http://localhost:${PORT}/api/reddit-admin/cron-status`);
   console.log(`📈 Trends API: http://localhost:${PORT}/api/trends/music`);
   console.log(`🧪 Dev Trends: http://localhost:${PORT}/api/trends/dev/music`);
   console.log(`🔗 Reddit Admin: http://localhost:${PORT}/api/reddit-admin/admin`);
