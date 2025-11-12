@@ -7,6 +7,31 @@ const router = express.Router();
 // Initialize Google Gemini AI
 const genAI = new GoogleGenerativeAI(process.env.GOOGLE_GEMINI_API_KEY);
 
+// ==================== TIMEZONE CONFIGURATION ====================
+
+// Set your preferred timezone (e.g., 'America/New_York', 'Europe/London', 'UTC')
+const APP_TIMEZONE = process.env.APP_TIMEZONE || 'UTC';
+
+// Helper function to get current time in app timezone
+const getCurrentTimeInAppTimezone = () => {
+  const now = new Date();
+  return now.toLocaleTimeString('en-US', { 
+    timeZone: APP_TIMEZONE,
+    hour12: false,
+    hour: '2-digit',
+    minute: '2-digit'
+  }).slice(0, 5); // Returns "HH:MM"
+};
+
+// Helper function to get current day in app timezone
+const getCurrentDayInAppTimezone = () => {
+  const now = new Date();
+  return now.toLocaleDateString('en-US', { 
+    timeZone: APP_TIMEZONE,
+    weekday: 'long'
+  }).toLowerCase();
+};
+
 // ==================== REDDIT TARGET CONFIGURATION ====================
 
 const redditTargets = {
@@ -139,7 +164,8 @@ const redditTargets = {
 const postingActivity = {
   dailyCounts: {},
   lastPosted: {},
-  totalComments: 0
+  totalComments: 0,
+  lastCronRun: null
 };
 
 // Initialize daily counts
@@ -149,19 +175,19 @@ Object.keys(redditTargets).forEach(subreddit => {
 
 // Function to get current schedule for all active subreddits
 const getCurrentSchedule = () => {
-  const now = new Date();
-  const day = now.toLocaleString('en-US', { weekday: 'long' }).toLowerCase();
-  const time = now.toTimeString().slice(0, 5); // HH:MM format
+  const currentDay = getCurrentDayInAppTimezone();
+  const currentTime = getCurrentTimeInAppTimezone();
   
   const scheduledPosts = [];
   
   Object.entries(redditTargets).forEach(([subreddit, config]) => {
-    if (config.active && config.postingSchedule[day]) {
-      const times = config.postingSchedule[day];
-      if (times.includes(time)) {
+    if (config.active && config.postingSchedule[currentDay]) {
+      const times = config.postingSchedule[currentDay];
+      if (times.includes(currentTime)) {
         scheduledPosts.push({
           subreddit,
-          time,
+          time: currentTime,
+          day: currentDay,
           style: config.preferredStyles[Math.floor(Math.random() * config.preferredStyles.length)],
           dailyLimit: config.dailyCommentLimit,
           currentCount: postingActivity.dailyCounts[subreddit] || 0
@@ -173,7 +199,7 @@ const getCurrentSchedule = () => {
   return scheduledPosts;
 };
 
-// Function to simulate posting to Reddit (you'll integrate with actual Reddit API)
+// Function to simulate posting to Reddit
 const simulateRedditPost = async (subreddit, comment, style) => {
   // Simulate API call delay
   await new Promise(resolve => setTimeout(resolve, 2000 + Math.random() * 3000));
@@ -186,10 +212,10 @@ const simulateRedditPost = async (subreddit, comment, style) => {
     postingActivity.lastPosted[subreddit] = new Date().toISOString();
     postingActivity.totalComments++;
     
-    console.log(`Posted to r/${subreddit}: ${comment.substring(0, 100)}...`);
+    console.log(`✅ Posted to r/${subreddit} at ${getCurrentTimeInAppTimezone()}: ${comment.substring(0, 100)}...`);
     return { success: true, comment };
   } else {
-    console.log(`Failed to post to r/${subreddit}`);
+    console.log(`❌ Failed to post to r/${subreddit}`);
     return { success: false, error: 'Simulated failure' };
   }
 };
@@ -197,18 +223,24 @@ const simulateRedditPost = async (subreddit, comment, style) => {
 // Cron job that runs every minute to check for scheduled posts
 cron.schedule('* * * * *', async () => {
   try {
+    postingActivity.lastCronRun = new Date().toISOString();
+    const currentTime = getCurrentTimeInAppTimezone();
+    const currentDay = getCurrentDayInAppTimezone();
+    
+    console.log(`⏰ Cron running at ${currentTime} on ${currentDay} (${APP_TIMEZONE})`);
+    
     const scheduledPosts = getCurrentSchedule();
     
     if (scheduledPosts.length > 0) {
-      console.log(`Checking scheduled posts at ${new Date().toLocaleTimeString()}:`, 
-        scheduledPosts.map(p => `r/${p.subreddit}`).join(', '));
+      console.log(`📅 Found ${scheduledPosts.length} scheduled posts:`, 
+        scheduledPosts.map(p => `r/${p.subreddit} at ${p.time}`).join(', '));
       
       for (const scheduled of scheduledPosts) {
         const { subreddit, style, dailyLimit, currentCount } = scheduled;
         
         // Check daily limit
         if (currentCount >= dailyLimit) {
-          console.log(`Daily limit reached for r/${subreddit} (${currentCount}/${dailyLimit})`);
+          console.log(`⏹️ Daily limit reached for r/${subreddit} (${currentCount}/${dailyLimit})`);
           continue;
         }
         
@@ -217,12 +249,12 @@ cron.schedule('* * * * *', async () => {
         if (lastPost) {
           const timeSinceLastPost = Date.now() - new Date(lastPost).getTime();
           if (timeSinceLastPost < 30 * 60 * 1000) { // 30 minutes cooldown
-            console.log(`Cooldown active for r/${subreddit}`);
+            console.log(`⏳ Cooldown active for r/${subreddit}`);
             continue;
           }
         }
         
-        console.log(`Preparing to post to r/${subreddit} with style: ${style}`);
+        console.log(`🚀 Preparing to post to r/${subreddit} with style: ${style}`);
         
         // Generate sample post content based on subreddit
         const samplePosts = {
@@ -240,6 +272,21 @@ cron.schedule('* * * * *', async () => {
             "Would love some feedback on my new indie rock track",
             "Just released my first single, nervous but excited!",
             "Looking for constructive criticism on my songwriting"
+          ],
+          'ThisIsOurMusic': [
+            "Just shared my latest composition, would love your thoughts!",
+            "Working on a new album, here's a preview track",
+            "Experimenting with new sounds, what do you think?"
+          ],
+          'MusicPromotion': [
+            "Looking for ways to promote my music effectively",
+            "Just hit a streaming milestone, so grateful!",
+            "Best platforms for independent artists?"
+          ],
+          'ShareYourMusic': [
+            "Sharing my latest track, feedback welcome!",
+            "Just uploaded a new demo, let me know what you think",
+            "Collaborating with other artists, here's our work"
           ]
         };
         
@@ -254,20 +301,28 @@ cron.schedule('* * * * *', async () => {
           const postResult = await simulateRedditPost(subreddit, commentResponse.comment, style);
           
           if (postResult.success) {
-            console.log(`Successfully posted to r/${subreddit}`);
+            console.log(`✅ Successfully posted to r/${subreddit}`);
+          } else {
+            console.log(`❌ Failed to post to r/${subreddit}: ${postResult.error}`);
           }
+        } else {
+          console.log(`❌ Failed to generate comment for r/${subreddit}: ${commentResponse.message}`);
         }
         
         // Add delay between posts to avoid rate limiting
         await new Promise(resolve => setTimeout(resolve, 10000));
       }
+    } else {
+      console.log('⏰ No scheduled posts for this time slot');
     }
   } catch (error) {
-    console.error('Error in cron job:', error);
+    console.error('❌ Error in cron job:', error);
   }
 });
 
-console.log('Reddit Auto-Poster cron scheduler started');
+console.log('🚀 Reddit Auto-Poster cron scheduler started');
+console.log(`⏰ Timezone: ${APP_TIMEZONE}`);
+console.log(`📅 Current time: ${getCurrentTimeInAppTimezone()} on ${getCurrentDayInAppTimezone()}`);
 
 // ==================== HELPER FUNCTIONS ====================
 
@@ -334,7 +389,7 @@ Write a comment that follows these guidelines:
     };
 
   } catch (error) {
-    console.error('Error generating AI comment:', error);
+    console.error('❌ Error generating AI comment:', error);
     return {
       success: false,
       message: 'Failed to generate AI comment',
@@ -347,23 +402,66 @@ Write a comment that follows these guidelines:
 
 // Get cron job status and activity
 router.get('/cron-status', (req, res) => {
-  const now = new Date();
+  const currentTime = getCurrentTimeInAppTimezone();
+  const currentDay = getCurrentDayInAppTimezone();
   const scheduledPosts = getCurrentSchedule();
+  
+  // Calculate next minute in app timezone
+  const now = new Date();
+  const nextMinute = new Date(now.getTime() + 60000);
+  const nextCheck = nextMinute.toLocaleTimeString('en-US', { 
+    timeZone: APP_TIMEZONE,
+    hour12: false,
+    hour: '2-digit',
+    minute: '2-digit'
+  }).slice(0, 5);
   
   res.json({
     success: true,
     cron: {
       status: 'active',
-      nextCheck: new Date(now.getTime() + 60000).toISOString(), // Next minute
+      timezone: APP_TIMEZONE,
+      currentTime: currentTime,
+      currentDay: currentDay,
+      nextCheck: nextCheck,
       totalComments: postingActivity.totalComments,
       dailyActivity: postingActivity.dailyCounts,
-      lastPosted: postingActivity.lastPosted
+      lastPosted: postingActivity.lastPosted,
+      lastCronRun: postingActivity.lastCronRun
     },
     scheduled: {
-      currentTime: now.toTimeString().slice(0, 5),
+      currentTime: currentTime,
       scheduledPosts: scheduledPosts.length,
       details: scheduledPosts
     },
+    timestamp: new Date().toISOString()
+  });
+});
+
+// Get posting schedule for today
+router.get('/schedule/today', (req, res) => {
+  const today = getCurrentDayInAppTimezone();
+  const currentTime = getCurrentTimeInAppTimezone();
+  const schedule = {};
+  
+  Object.entries(redditTargets).forEach(([subreddit, config]) => {
+    if (config.active && config.postingSchedule[today]) {
+      schedule[subreddit] = {
+        times: config.postingSchedule[today],
+        preferredStyles: config.preferredStyles,
+        dailyLimit: config.dailyCommentLimit,
+        currentCount: postingActivity.dailyCounts[subreddit] || 0
+      };
+    }
+  });
+  
+  res.json({
+    success: true,
+    day: today,
+    currentTime: currentTime,
+    timezone: APP_TIMEZONE,
+    schedule: schedule,
+    activity: postingActivity.dailyCounts,
     timestamp: new Date().toISOString()
   });
 });
@@ -388,7 +486,7 @@ router.post('/manual-post', async (req, res) => {
       });
     }
     
-    console.log(`Manual post requested for r/${subreddit}`);
+    console.log(`🔄 Manual post requested for r/${subreddit}`);
     
     const commentResponse = await generateAICommentInternal(
       postTitle || "Check out this music discussion!",
@@ -415,7 +513,7 @@ router.post('/manual-post', async (req, res) => {
     });
     
   } catch (error) {
-    console.error('Error in manual post:', error);
+    console.error('❌ Error in manual post:', error);
     res.status(500).json({
       success: false,
       message: 'Manual post failed',
@@ -430,6 +528,9 @@ router.post('/reset-counts', (req, res) => {
     postingActivity.dailyCounts[key] = 0;
   });
   
+  postingActivity.totalComments = 0;
+  postingActivity.lastPosted = {};
+  
   res.json({
     success: true,
     message: 'Daily counts reset',
@@ -442,13 +543,19 @@ router.post('/reset-counts', (req, res) => {
 
 // Reddit admin health check (updated with cron info)
 router.get('/admin', (req, res) => {
+  const currentTime = getCurrentTimeInAppTimezone();
+  const currentDay = getCurrentDayInAppTimezone();
+  
   res.json({
     success: true,
     message: 'Reddit Admin API is running',
     service: 'reddit-admin',
-    version: '2.2.0',
+    version: '2.3.0',
     timestamp: new Date().toISOString(),
     environment: process.env.NODE_ENV || 'development',
+    timezone: APP_TIMEZONE,
+    currentTime: currentTime,
+    currentDay: currentDay,
     features: {
       gemini_ai: process.env.GOOGLE_GEMINI_API_KEY ? 'enabled' : 'disabled',
       comment_generation: 'active',
@@ -466,6 +573,7 @@ router.get('/admin', (req, res) => {
     cron: {
       status: 'running',
       total_comments: postingActivity.totalComments,
+      last_run: postingActivity.lastCronRun,
       daily_limits: Object.fromEntries(
         Object.entries(redditTargets).map(([k, v]) => [k, v.dailyCommentLimit])
       )
@@ -496,7 +604,7 @@ router.post('/generate-comment', async (req, res) => {
       });
     }
 
-    console.log('Generating AI comment for post:', { 
+    console.log('🤖 Generating AI comment for post:', { 
       subreddit, 
       style,
       titleLength: postTitle.length,
@@ -523,7 +631,7 @@ router.post('/generate-comment', async (req, res) => {
     }
 
   } catch (error) {
-    console.error('Error generating AI comment:', error);
+    console.error('❌ Error generating AI comment:', error);
     res.status(500).json({
       success: false,
       message: 'Failed to generate AI comment',
@@ -551,7 +659,7 @@ router.post('/generate-reply', async (req, res) => {
       });
     }
 
-    console.log('Generating AI reply to message:', { 
+    console.log('🤖 Generating AI reply to message:', { 
       messageLength: message.length,
       historyLength: conversationHistory.length,
       tone,
@@ -605,7 +713,7 @@ Write a reply that follows these guidelines:
     const response = await result.response;
     const reply = response.text().trim();
 
-    console.log('Generated AI reply:', reply);
+    console.log('✅ Generated AI reply:', reply);
 
     res.json({
       success: true,
@@ -616,7 +724,7 @@ Write a reply that follows these guidelines:
     });
 
   } catch (error) {
-    console.error('Error generating AI reply:', error);
+    console.error('❌ Error generating AI reply:', error);
     res.status(500).json({
       success: false,
       message: 'Failed to generate AI reply',
@@ -644,7 +752,7 @@ router.post('/analyze-post', async (req, res) => {
       });
     }
 
-    console.log('Analyzing post for commenting strategy:', { subreddit });
+    console.log('🔍 Analyzing post for commenting strategy:', { subreddit });
 
     const model = genAI.getGenerativeModel({ model: 'gemini-pro' });
 
@@ -669,7 +777,7 @@ Provide your analysis in a structured way that can be used to generate an approp
     const response = await result.response;
     const analysis = response.text().trim();
 
-    console.log('Post analysis completed');
+    console.log('✅ Post analysis completed');
 
     // Extract key insights from analysis
     const recommendations = {
@@ -697,7 +805,7 @@ Provide your analysis in a structured way that can be used to generate an approp
     });
 
   } catch (error) {
-    console.error('Error analyzing post:', error);
+    console.error('❌ Error analyzing post:', error);
     res.status(500).json({
       success: false,
       message: 'Failed to analyze post',
@@ -729,7 +837,7 @@ router.get('/test-gemini', async (req, res) => {
     });
 
   } catch (error) {
-    console.error('Gemini AI test failed:', error);
+    console.error('❌ Gemini AI test failed:', error);
     res.status(500).json({
       success: false,
       message: 'Gemini AI test failed',
@@ -764,31 +872,6 @@ router.get('/targets/:subreddit', (req, res) => {
   res.json({
     success: true,
     data: target,
-    timestamp: new Date().toISOString()
-  });
-});
-
-// Get posting schedule for today
-router.get('/schedule/today', (req, res) => {
-  const today = new Date().toLocaleString('en-US', { weekday: 'long' }).toLowerCase();
-  const schedule = {};
-  
-  Object.entries(redditTargets).forEach(([subreddit, config]) => {
-    if (config.active && config.postingSchedule[today]) {
-      schedule[subreddit] = {
-        times: config.postingSchedule[today],
-        preferredStyles: config.preferredStyles,
-        dailyLimit: config.dailyCommentLimit,
-        currentCount: postingActivity.dailyCounts[subreddit] || 0
-      };
-    }
-  });
-  
-  res.json({
-    success: true,
-    day: today,
-    schedule: schedule,
-    activity: postingActivity.dailyCounts,
     timestamp: new Date().toISOString()
   });
 });
