@@ -10,7 +10,7 @@ const genAI = new GoogleGenerativeAI(process.env.GOOGLE_GEMINI_API_KEY);
 // ==================== TIMEZONE CONFIGURATION ====================
 
 // Set your preferred timezone (e.g., 'America/New_York', 'Europe/London', 'UTC')
-const APP_TIMEZONE = process.env.APP_TIMEZONE || 'UTC';
+const APP_TIMEZONE = process.env.APP_TIMEZONE || 'America/New_York';
 
 // Helper function to get current time in app timezone
 const getCurrentTimeInAppTimezone = () => {
