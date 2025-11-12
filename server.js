@@ -11,6 +11,31 @@ const app = express();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
+// ==================== TIMEZONE CONFIGURATION ====================
+
+// Set your preferred timezone (e.g., 'America/New_York', 'Europe/London', 'UTC')
+const APP_TIMEZONE = process.env.APP_TIMEZONE || 'America/New_York';
+
+// Helper function to get current time in app timezone
+const getCurrentTimeInAppTimezone = () => {
+  const now = new Date();
+  return now.toLocaleTimeString('en-US', { 
+    timeZone: APP_TIMEZONE,
+    hour12: false,
+    hour: '2-digit',
+    minute: '2-digit'
+  }).slice(0, 5); // Returns "HH:MM"
+};
+
+// Helper function to get current day in app timezone
+const getCurrentDayInAppTimezone = () => {
+  const now = new Date();
+  return now.toLocaleDateString('en-US', { 
+    timeZone: APP_TIMEZONE,
+    weekday: 'long'
+  }).toLowerCase();
+};
+
 // Trust proxy - important for HTTPS behind reverse proxy
 app.set('trust proxy', 1);
 
@@ -81,10 +106,16 @@ app.use('/', trendsRoutes);
 
 // Health check endpoint
 app.get('/health', (req, res) => {
+  const currentTime = getCurrentTimeInAppTimezone();
+  const currentDay = getCurrentDayInAppTimezone();
+  
   res.status(200).json({
     status: 'OK',
     timestamp: new Date().toISOString(),
     environment: process.env.NODE_ENV || 'development',
+    timezone: APP_TIMEZONE,
+    currentTime: currentTime,
+    currentDay: currentDay,
     secure: req.secure,
     version: '1.0.0',
     services: {
@@ -101,12 +132,18 @@ app.get('/health', (req, res) => {
 
 // Enhanced API status endpoint
 app.get('/api/status', (req, res) => {
+  const currentTime = getCurrentTimeInAppTimezone();
+  const currentDay = getCurrentDayInAppTimezone();
+  
   res.json({
     success: true,
     service: 'soundswap-backend',
     status: 'operational',
     version: '1.0.0',
     environment: process.env.NODE_ENV || 'development',
+    timezone: APP_TIMEZONE,
+    currentTime: currentTime,
+    currentDay: currentDay,
     timestamp: new Date().toISOString(),
     endpoints: {
       trends: '/api/trends/*',
@@ -132,11 +169,17 @@ app.get('/api/status', (req, res) => {
 
 // Root endpoint
 app.get('/', (req, res) => {
+  const currentTime = getCurrentTimeInAppTimezone();
+  const currentDay = getCurrentDayInAppTimezone();
+  
   res.json({
     success: true,
     message: 'SoundSwap API - Backend service is running',
     version: '1.0.0',
     environment: process.env.NODE_ENV || 'development',
+    timezone: APP_TIMEZONE,
+    currentTime: currentTime,
+    currentDay: currentDay,
     timestamp: new Date().toISOString(),
     endpoints: {
       health: '/health',
@@ -159,10 +202,16 @@ app.get('/', (req, res) => {
 
 // Handle 404
 app.use('*', (req, res) => {
+  const currentTime = getCurrentTimeInAppTimezone();
+  const currentDay = getCurrentDayInAppTimezone();
+  
   res.status(404).json({
     success: false,
     error: 'Route not found',
     path: req.originalUrl,
+    timezone: APP_TIMEZONE,
+    currentTime: currentTime,
+    currentDay: currentDay,
     availableEndpoints: [
       '/health',
       '/api/status',
@@ -205,8 +254,13 @@ app.use((error, req, res, next) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', () => {
+  const currentTime = getCurrentTimeInAppTimezone();
+  const currentDay = getCurrentDayInAppTimezone();
+  
   console.log(`🚀 Server running on port ${PORT}`);
   console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
+  console.log(`⏰ Timezone: ${APP_TIMEZONE}`);
+  console.log(`📅 Current time: ${currentTime} on ${currentDay}`);
   console.log(`❤️  Health check: http://localhost:${PORT}/health`);
   console.log(`📊 API Status: http://localhost:${PORT}/api/status`);
   console.log(`📧 Email endpoints: http://localhost:${PORT}/api/email/*`);
