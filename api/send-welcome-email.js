@@ -903,10 +903,10 @@ You're receiving this email because you have song notifications enabled.
   }
 };
 
-// ==================== EMAIL ROUTES ====================
+// ==================== SERVERLESS FUNCTION HANDLERS ====================
 
-// Send welcome email endpoint
-router.post('/send-welcome-email', async (req, res) => {
+// Send welcome email serverless function
+export const sendWelcomeEmailHandler = async (req, res) => {
   try {
     console.log('📨 Received welcome email request:', req.body);
     
@@ -966,10 +966,10 @@ router.post('/send-welcome-email', async (req, res) => {
       error: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
-});
+};
 
-// Send password reset email endpoint
-router.post('/send-password-reset', async (req, res) => {
+// Send password reset email serverless function
+export const sendPasswordResetHandler = async (req, res) => {
   try {
     console.log('📨 Received password reset email request:', req.body);
     
@@ -1028,10 +1028,10 @@ router.post('/send-password-reset', async (req, res) => {
       error: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
-});
+};
 
-// Send song reviewed notification endpoint
-router.post('/send-song-reviewed', async (req, res) => {
+// Send song reviewed notification serverless function
+export const sendSongReviewedHandler = async (req, res) => {
   try {
     console.log('📨 Received song reviewed notification request:', req.body);
     
@@ -1105,10 +1105,10 @@ router.post('/send-song-reviewed', async (req, res) => {
       error: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
-});
+};
 
 // Test endpoint for email configuration
-router.get('/test', async (req, res) => {
+export const testEmailHandler = async (req, res) => {
   try {
     const hasEmailConfig = !!(process.env.GMAIL_USER && process.env.GMAIL_PASS);
     
@@ -1133,6 +1133,21 @@ router.get('/test', async (req, res) => {
       error: error.message
     });
   }
-});
+};
 
+// ==================== EXPRESS ROUTES (FOR BACKWARD COMPATIBILITY) ====================
+
+// Send welcome email endpoint
+router.post('/send-welcome-email', sendWelcomeEmailHandler);
+
+// Send password reset email endpoint
+router.post('/send-password-reset', sendPasswordResetHandler);
+
+// Send song reviewed notification endpoint
+router.post('/send-song-reviewed', sendSongReviewedHandler);
+
+// Test endpoint for email configuration
+router.get('/test', testEmailHandler);
+
+// Export both the router (for Express) and individual handlers (for serverless)
 export default router;
