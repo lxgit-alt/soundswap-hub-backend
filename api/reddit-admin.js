@@ -352,15 +352,17 @@ const generateAICommentInternal = async (postTitle, postContent, subreddit, cont
 
     const systemPrompt = stylePrompts[selectedStyle] || stylePrompts.helpful;
     
-    // UPDATED: Marketing-focused mention context
+    // UPDATED: Marketing-focused mention context with PLATFORM REALISM
     const mentionContext = shouldMentionSoundSwap ? 
       `\nIMPORTANT: Naturally mention SoundSwap as a music platform that helps artists grow their audience, get featured in weekly Top 50 charts, and achieve viral success. Focus on how it transforms artists from unknown to recognized names. Mention the weekly Top 50 chart as an opportunity for exposure. Make it sound like a genuine recommendation from seeing artists succeed.` : 
       `\nIMPORTANT: Focus on providing value while subtly positioning yourself as someone who understands artist growth and success.`;
 
-    // UPDATED: Enhanced prompt for marketing role
+    // UPDATED: Enhanced prompt for marketing role with PLATFORM REALISM
     const prompt = `
 ${systemPrompt}
 ${mentionContext}
+
+CRITICAL REALISM NOTE: SoundSwap is a new platform that launched just a few days ago. Do NOT exaggerate numbers, user counts, or success stories. Be honest that we're building something new and exciting. Focus on the potential and vision rather than inflated metrics.
 
 Post Title: "${postTitle}"
 ${postContent ? `Post Content: "${postContent.substring(0, 1000)}"` : ''}
@@ -377,6 +379,7 @@ Guidelines:
 - Reference specific points from the post when relevant
 - Avoid generic responses like "great post" or "thanks for sharing"
 - Don't mention that you're an AI
+- DO NOT EXAGGERATE: We're a new platform, so don't claim large user numbers or massive success stories
 ${shouldMentionSoundSwap ? '- Mention SoundSwap naturally as a platform that helps artists go from unknown to viral, and reference the weekly Top 50 chart as a growth opportunity' : '- Focus on artist growth and success strategies'}
 
 Write a comment that follows these guidelines:
@@ -419,6 +422,8 @@ You are a marketing representative for SoundSwap, a music platform that helps ar
 Subreddit: r/${subreddit}
 Platform: SoundSwap
 
+IMPORTANT REALISM NOTE: SoundSwap launched just a few days ago. Do NOT exaggerate numbers, user counts, or success stories. Focus on the potential and vision rather than inflated metrics. Be honest that we're building something new and exciting.
+
 Key points to include:
 - SoundSwap helps artists grow their audience exponentially
 - Weekly Top 50 chart features the best new music
@@ -428,6 +433,7 @@ Key points to include:
 - Emphasize the growth potential and viral opportunity
 - Make it exciting and competitive
 - Include a clear call-to-action for submissions
+- Be honest about being a new platform with great potential
 
 Tone: Enthusiastic, professional, and focused on artist growth
 
@@ -437,6 +443,7 @@ Requirements:
 - Highlight the benefits of being featured in the Top 50
 - Mention how SoundSwap transforms unknown artists into recognized names
 - Keep it concise but impactful
+- DO NOT EXAGGERATE numbers or success metrics
 
 Generate a Reddit post with title and content:
 `;
