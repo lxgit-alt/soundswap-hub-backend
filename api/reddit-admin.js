@@ -326,7 +326,7 @@ console.log(`📅 Current time: ${getCurrentTimeInAppTimezone()} on ${getCurrent
 
 // ==================== HELPER FUNCTIONS ====================
 
-// Internal function for AI comment generation
+// Internal function for AI comment generation (UPDATED FOR MARKETING ROLE)
 const generateAICommentInternal = async (postTitle, postContent, subreddit, context, style) => {
   try {
     if (!process.env.GOOGLE_GEMINI_API_KEY) {
@@ -339,21 +339,25 @@ const generateAICommentInternal = async (postTitle, postContent, subreddit, cont
 
     const model = genAI.getGenerativeModel({ model: 'gemini-pro' });
 
+    // UPDATED: Marketing-focused style prompts
     const stylePrompts = {
-      helpful: `You are a helpful and knowledgeable Reddit user in r/${subreddit}. Write a genuine, helpful comment that adds value to the discussion. Be specific and provide useful insights.`,
-      enthusiastic: `You are an enthusiastic Reddit user who's excited about this topic. Write an engaging comment that shows genuine interest and adds positive energy to the conversation.`,
-      thoughtful: `You are a thoughtful and reflective Reddit user. Write a considerate comment that shows deep understanding and adds meaningful perspective to the discussion.`,
-      casual: `You are a casual Reddit user having a friendly conversation. Write a natural, relaxed comment that feels authentic and human-like.`,
-      expert: `You are an expert in this field sharing valuable insights. Write an informative comment that demonstrates expertise while being accessible to other users.`,
-      supportive: `You are a supportive community member who wants to encourage other creators. Write an uplifting comment that motivates and supports the poster.`,
-      technical: `You are a technically skilled musician/producer. Write a detailed comment that focuses on technical aspects and provides specific, actionable advice.`
+      helpful: `You are a marketing representative for SoundSwap, a music platform that helps artists grow their audience. Write a genuine, helpful comment that shows how SoundSwap can help musicians achieve their goals.`,
+      enthusiastic: `You are an enthusiastic marketing representative for SoundSwap. Write an engaging comment that shows genuine excitement about helping artists grow and achieve success through SoundSwap's platform.`,
+      thoughtful: `You are a thoughtful marketing representative for SoundSwap. Write a considerate comment that shows deep understanding of artists' challenges and how SoundSwap provides solutions for growth.`,
+      casual: `You are a casual marketing representative for SoundSwap having a friendly conversation. Write a natural, relaxed comment that authentically represents how SoundSwap helps artists succeed.`,
+      expert: `You are an expert marketing representative for SoundSwap sharing valuable insights about music promotion. Write an informative comment that demonstrates expertise in artist growth while showcasing SoundSwap's benefits.`,
+      supportive: `You are a supportive marketing representative who wants to help artists succeed. Write an uplifting comment that motivates artists and shows how SoundSwap can help them reach their potential.`,
+      technical: `You are a technically skilled marketing representative for SoundSwap. Write a detailed comment that focuses on the technical aspects of music promotion and how SoundSwap's platform drives results.`
     };
 
     const systemPrompt = stylePrompts[selectedStyle] || stylePrompts.helpful;
+    
+    // UPDATED: Marketing-focused mention context
     const mentionContext = shouldMentionSoundSwap ? 
-      `\nIMPORTANT: Naturally mention SoundSwap (a music community platform for feedback and collaboration) in a helpful, non-promotional way. Focus on how it helps musicians get feedback, collaborate, and grow their audience. Make it sound like a genuine recommendation from personal experience.` : 
-      `\nIMPORTANT: Do NOT mention SoundSwap or any other platforms in this comment. Focus purely on providing value to the discussion.`;
+      `\nIMPORTANT: Naturally mention SoundSwap as a music platform that helps artists grow their audience, get featured in weekly Top 50 charts, and achieve viral success. Focus on how it transforms artists from unknown to recognized names. Mention the weekly Top 50 chart as an opportunity for exposure. Make it sound like a genuine recommendation from seeing artists succeed.` : 
+      `\nIMPORTANT: Focus on providing value while subtly positioning yourself as someone who understands artist growth and success.`;
 
+    // UPDATED: Enhanced prompt for marketing role
     const prompt = `
 ${systemPrompt}
 ${mentionContext}
@@ -364,14 +368,16 @@ ${context ? `Additional Context: ${context}` : ''}
 
 Guidelines:
 - Keep it natural and conversational (1-3 sentences)
-- Add genuine value to the discussion
-- Don't sound like marketing or promotion
+- Add genuine value to the discussion while representing SoundSwap
+- Focus on how artists can achieve growth and recognition
+- Mention the weekly Top 50 chart opportunity when relevant
+- Don't sound like aggressive marketing or promotion
 - Do NOT use any emojis or emoticons
-- Sound like a real human user
+- Sound like a real marketing representative who believes in the product
 - Reference specific points from the post when relevant
 - Avoid generic responses like "great post" or "thanks for sharing"
 - Don't mention that you're an AI
-${shouldMentionSoundSwap ? '- Mention SoundSwap naturally as a helpful resource, not as an advertisement' : '- Do not mention any platforms or services'}
+${shouldMentionSoundSwap ? '- Mention SoundSwap naturally as a platform that helps artists go from unknown to viral, and reference the weekly Top 50 chart as a growth opportunity' : '- Focus on artist growth and success strategies'}
 
 Write a comment that follows these guidelines:
 `;
@@ -393,6 +399,117 @@ Write a comment that follows these guidelines:
     return {
       success: false,
       message: 'Failed to generate AI comment',
+      error: error.message
+    };
+  }
+};
+
+// NEW: Function to generate Top 50 chart promotion post
+const generateTop50PromotionPost = async (subreddit) => {
+  try {
+    if (!process.env.GOOGLE_GEMINI_API_KEY) {
+      return { success: false, message: 'Google Gemini API key not configured' };
+    }
+
+    const model = genAI.getGenerativeModel({ model: 'gemini-pro' });
+
+    const prompt = `
+You are a marketing representative for SoundSwap, a music platform that helps artists grow from unknown to viral sensations. Create a compelling Reddit post inviting artists to submit their best songs for the weekly Top 50 chart.
+
+Subreddit: r/${subreddit}
+Platform: SoundSwap
+
+Key points to include:
+- SoundSwap helps artists grow their audience exponentially
+- Weekly Top 50 chart features the best new music
+- Top 10 artists get featured promotion and visibility
+- This is a competition to discover who deserves to be in the Top 10
+- Artists should submit their BEST work for consideration
+- Emphasize the growth potential and viral opportunity
+- Make it exciting and competitive
+- Include a clear call-to-action for submissions
+
+Tone: Enthusiastic, professional, and focused on artist growth
+
+Requirements:
+- Create an engaging title that stands out
+- Write compelling post content that motivates artists to participate
+- Highlight the benefits of being featured in the Top 50
+- Mention how SoundSwap transforms unknown artists into recognized names
+- Keep it concise but impactful
+
+Generate a Reddit post with title and content:
+`;
+
+    const result = await model.generateContent(prompt);
+    const response = await result.response;
+    const text = response.text().trim();
+
+    // Parse the response to separate title and content
+    const lines = text.split('\n');
+    let title = '';
+    let content = '';
+    let foundContent = false;
+
+    for (const line of lines) {
+      if (line.startsWith('Title:') || line.startsWith('title:')) {
+        title = line.replace(/^(Title:|title:)\s*/i, '').trim();
+      } else if (line.startsWith('Content:') || line.startsWith('content:') || foundContent) {
+        foundContent = true;
+        if (!line.match(/^(Content:|content:)/i)) {
+          content += line + '\n';
+        }
+      } else if (line.trim() && !title) {
+        // If no title marker, first non-empty line is title
+        title = line.trim();
+        foundContent = true;
+      } else if (foundContent) {
+        content += line + '\n';
+      }
+    }
+
+    // Fallback if parsing fails
+    if (!title) {
+      title = `🎵 Weekly Top 50 Chart Submission - r/${subreddit} Artists Wanted!`;
+      content = text;
+    }
+
+    if (!content.trim()) {
+      content = `We're looking for the most talented artists in r/${subreddit} to feature in our weekly SoundSwap Top 50 Chart!
+
+This is your chance to get discovered and grow your audience exponentially. SoundSwap has helped countless artists go from unknown to viral sensations, and you could be next!
+
+**How it works:**
+1. Submit your BEST track in the comments below
+2. Our team will review all submissions this week
+3. Top 10 artists will be featured in our Weekly Top 50 Chart
+4. Featured artists get promoted across our platform and social media
+
+**Why participate?**
+- Get featured in front of thousands of new listeners
+- Potential to go viral and grow your fanbase
+- Connect with other talented artists
+- Get recognition for your hard work
+
+We've seen artists gain thousands of followers overnight after being featured. Don't miss this opportunity to take your music career to the next level!
+
+Submit your best work below and let's see who deserves to be in the Top 10! 🚀
+
+*Brought to you by SoundSwap - Where Artists Become Legends*`;
+    }
+
+    return {
+      success: true,
+      title: title,
+      content: content.trim(),
+      subreddit: subreddit
+    };
+
+  } catch (error) {
+    console.error('❌ Error generating Top 50 promotion post:', error);
+    return {
+      success: false,
+      message: 'Failed to generate Top 50 promotion post',
       error: error.message
     };
   }
@@ -464,6 +581,56 @@ router.get('/schedule/today', (req, res) => {
     activity: postingActivity.dailyCounts,
     timestamp: new Date().toISOString()
   });
+});
+
+// NEW: Create Top 50 chart promotion post
+router.post('/create-top50-post', async (req, res) => {
+  try {
+    const { subreddit } = req.body;
+    
+    if (!subreddit) {
+      return res.status(400).json({
+        success: false,
+        message: 'subreddit is required'
+      });
+    }
+    
+    const targetConfig = redditTargets[subreddit];
+    if (!targetConfig) {
+      return res.status(404).json({
+        success: false,
+        message: `Subreddit r/${subreddit} not found in targets`
+      });
+    }
+    
+    console.log(`🔄 Creating Top 50 promotion post for r/${subreddit}`);
+    
+    const postResponse = await generateTop50PromotionPost(subreddit);
+    
+    if (!postResponse.success) {
+      return res.status(500).json(postResponse);
+    }
+    
+    // Simulate posting the created post
+    const postResult = await simulateRedditPost(subreddit, `POST: ${postResponse.title}\n\n${postResponse.content}`, 'enthusiastic');
+    
+    res.json({
+      success: postResponse.success,
+      title: postResponse.title,
+      content: postResponse.content,
+      subreddit: subreddit,
+      posted: postResult.success,
+      timestamp: new Date().toISOString()
+    });
+    
+  } catch (error) {
+    console.error('❌ Error creating Top 50 post:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to create Top 50 promotion post',
+      error: error.message
+    });
+  }
 });
 
 // Manually trigger posting for a subreddit
@@ -563,7 +730,8 @@ router.get('/admin', (req, res) => {
       content_analysis: 'active',
       target_configuration: 'active',
       auto_posting: 'active',
-      cron_scheduler: 'active'
+      cron_scheduler: 'active',
+      top50_promotion: 'active'
     },
     targets: {
       total: Object.keys(redditTargets).length,
@@ -584,6 +752,7 @@ router.get('/admin', (req, res) => {
       schedule: '/api/reddit-admin/schedule/today',
       cron_status: '/api/reddit-admin/cron-status',
       manual_post: '/api/reddit-admin/manual-post',
+      create_top50_post: '/api/reddit-admin/create-top50-post',
       reset_counts: '/api/reddit-admin/reset-counts',
       generate_comment: '/api/reddit-admin/generate-comment',
       generate_reply: '/api/reddit-admin/generate-reply',
