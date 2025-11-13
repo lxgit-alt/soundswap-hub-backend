@@ -3,8 +3,8 @@ import { sendWelcomeEmail, sendPasswordResetEmail } from '../utils/emailService.
 
 const router = express.Router();
 
-// Send welcome email endpoint
-router.post('/send-welcome-email', async (req, res) => {
+// Send welcome email serverless function
+export const sendWelcomeEmailHandler = async (req, res) => {
   try {
     console.log('📨 Received welcome email request:', req.body);
     
@@ -64,10 +64,10 @@ router.post('/send-welcome-email', async (req, res) => {
       error: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
-});
+};
 
-// Send password reset email endpoint
-router.post('/send-password-reset', async (req, res) => {
+// Send password reset email serverless function
+export const sendPasswordResetHandler = async (req, res) => {
   try {
     console.log('📨 Received password reset email request:', req.body);
     
@@ -133,10 +133,10 @@ router.post('/send-password-reset', async (req, res) => {
       error: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
-});
+};
 
-// Test endpoint for email configuration
-router.get('/test', async (req, res) => {
+// Test endpoint for email configuration serverless function
+export const testEmailHandler = async (req, res) => {
   try {
     const hasEmailConfig = !!(process.env.GMAIL_USER && process.env.GMAIL_PASS);
     
@@ -160,6 +160,17 @@ router.get('/test', async (req, res) => {
       error: error.message
     });
   }
-});
+};
+
+// ==================== EXPRESS ROUTES (FOR BACKWARD COMPATIBILITY) ====================
+
+// Send welcome email endpoint
+router.post('/send-welcome-email', sendWelcomeEmailHandler);
+
+// Send password reset email endpoint
+router.post('/send-password-reset', sendPasswordResetHandler);
+
+// Test endpoint for email configuration
+router.get('/test', testEmailHandler);
 
 export default router;

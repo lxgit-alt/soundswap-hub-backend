@@ -668,6 +668,30 @@ export const sendPasswordResetEmail = async (email, resetUrl, name = '') => {
   }
 };
 
+// Serverless function to test email configuration
+export const testEmailServiceHandler = async (req, res) => {
+  try {
+    const hasEmailConfig = !!(process.env.GMAIL_USER && process.env.GMAIL_PASS);
+    const connectionVerified = await testEmailConnection();
+    
+    res.json({
+      success: true,
+      email_configured: hasEmailConfig,
+      connection_verified: connectionVerified,
+      email_user: process.env.GMAIL_USER ? 'Configured' : 'Not set',
+      node_env: process.env.NODE_ENV,
+      timestamp: new Date().toISOString(),
+      message: 'Email service is operational'
+    });
+  } catch (error) {
+    console.error('Email service test error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+};
+
 // Simple email queue with retry for production
 class EmailQueue {
   constructor() {
