@@ -27,5 +27,11 @@
       "dest": "/server.js",
       "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
     }
+  ],
+  "crons": [
+    {
+      "path": "/api/reddit-admin/cron",
+      "schedule": "*/2 * * * *"
+    }
   ]
 }
