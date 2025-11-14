@@ -326,7 +326,7 @@ export const runScheduledPosts = async () => {
   }
 };
 
-console.log('🚀 Reddit Auto-Poster initialized');
+console.log('🚀 Reddit Auto-Poster initialized (Vercel Cron Only)');
 console.log(`⏰ Timezone: ${APP_TIMEZONE}`);
 console.log(`📅 Current time: ${getCurrentTimeInAppTimezone()} on ${getCurrentDayInAppTimezone()}`);
 console.log(`🔐 Vercel Cron: ${process.env.CRON_SECRET ? 'Configured' : 'Not configured'}`);
