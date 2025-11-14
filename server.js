@@ -105,36 +105,47 @@ app.use('/', trendsRoutes);
 // ==================== CRON ENDPOINT WITH AUTHORIZATION ====================
 
 // Cron endpoint with Vercel cron secret authorization
-app.post('/api/reddit-admin/cron', (req, res) => {
-  // Check for cron secret authorization
-  const authHeader = req.headers.authorization;
-  if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
-    console.log('Unauthorized cron attempt - missing or invalid CRON_SECRET');
-    return res.status(401).json({ success: false, error: 'Unauthorized' });
-  }
+app.post('/api/reddit-admin/cron', async (req, res) => {
+  try {
+    // Check for cron secret authorization
+    const authHeader = req.headers.authorization;
+    if (!authHeader || authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
+      console.log('❌ Unauthorized cron attempt - missing or invalid CRON_SECRET');
+      return res.status(401).json({ 
+        success: false, 
+        error: 'Unauthorized',
+        message: 'Invalid or missing CRON_SECRET'
+      });
+    }
 
-  // Forward to the existing cron handler in redditAdminRoutes
-  // This ensures the cron logic executes while maintaining security
-  console.log('Authorized cron execution triggered');
-  
-  // Import and use the existing cron handler from reddit-admin routes
-  // Note: This assumes your redditAdminRoutes has a cron handler
-  // If not, you'll need to implement the cron logic here
-  const cronHandler = redditAdminRoutes.stack.find(layer => 
-    layer.route && layer.route.path === '/cron' && layer.route.methods.post
-  );
-  
-  if (cronHandler) {
-    return cronHandler.handle(req, res);
-  } else {
-    // Fallback if no cron handler found in routes
-    res.json({ 
-      success: true, 
-      message: 'Cron executed - authorization verified',
-      timestamp: new Date().toISOString(),
-      timezone: APP_TIMEZONE,
-      currentTime: getCurrentTimeInAppTimezone(),
-      currentDay: getCurrentDayInAppTimezone()
+    console.log('✅ Authorized cron execution triggered via Vercel');
+    
+    // Import the runScheduledPosts function from reddit-admin
+    const { runScheduledPosts } = await import('./api/reddit-admin.js');
+    
+    if (typeof runScheduledPosts === 'function') {
+      // Execute the scheduled posts
+      await runScheduledPosts();
+      
+      res.json({ 
+        success: true, 
+        message: 'Cron executed successfully - authorization verified',
+        timestamp: new Date().toISOString(),
+        timezone: APP_TIMEZONE,
+        currentTime: getCurrentTimeInAppTimezone(),
+        currentDay: getCurrentDayInAppTimezone()
+      });
+    } else {
+      throw new Error('runScheduledPosts function not found in reddit-admin module');
+    }
+    
+  } catch (error) {
+    console.error('❌ Error in cron endpoint:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Cron execution failed',
+      message: error.message,
+      timestamp: new Date().toISOString()
     });
   }
 });
@@ -162,7 +173,8 @@ app.get('/health', (req, res) => {
       reddit_admin: 'operational',
       gemini_ai: process.env.GOOGLE_GEMINI_API_KEY ? 'configured' : 'not_configured',
       reddit_automation: 'active',
-      cron_scheduler: 'running'
+      cron_scheduler: 'running',
+      vercel_cron: process.env.CRON_SECRET ? 'configured' : 'not_configured'
     }
   });
 });
@@ -187,7 +199,8 @@ app.get('/api/status', (req, res) => {
       email: '/api/email/*',
       health: '/health',
       status: '/api/status',
-      reddit_admin: '/api/reddit-admin/*'
+      reddit_admin: '/api/reddit-admin/*',
+      cron: '/api/reddit-admin/cron (POST)'
     },
     features: {
       music_trends: 'active',
@@ -199,7 +212,8 @@ app.get('/api/status', (req, res) => {
       reddit_integration: 'active',
       gemini_ai: process.env.GOOGLE_GEMINI_API_KEY ? 'active' : 'disabled',
       reddit_automation: 'active',
-      cron_scheduler: 'running'
+      cron_scheduler: 'running',
+      vercel_cron: process.env.CRON_SECRET ? 'active' : 'disabled'
     }
   });
 });
@@ -225,14 +239,16 @@ app.get('/', (req, res) => {
       email: '/api/email/send-welcome-email',
       reddit_admin: '/api/reddit-admin/admin',
       gemini_ai: '/api/reddit-admin/generate-comment',
-      automation: '/api/reddit-admin/cron-status'
+      automation: '/api/reddit-admin/cron-status',
+      cron: '/api/reddit-admin/cron (POST)'
     },
     ai_features: {
       comment_generation: process.env.GOOGLE_GEMINI_API_KEY ? 'active' : 'disabled',
       dm_replies: process.env.GOOGLE_GEMINI_API_KEY ? 'active' : 'disabled',
       post_analysis: process.env.GOOGLE_GEMINI_API_KEY ? 'active' : 'disabled',
       automation_system: 'active',
-      cron_scheduler: 'running'
+      cron_scheduler: 'running',
+      vercel_cron: process.env.CRON_SECRET ? 'active' : 'disabled'
     }
   });
 });
@@ -273,7 +289,8 @@ app.use('*', (req, res) => {
       '/api/reddit-admin/schedule/today',
       '/api/reddit-admin/auth',
       '/api/reddit-admin/posts',
-      '/api/reddit-admin/analytics'
+      '/api/reddit-admin/analytics',
+      '/api/reddit-admin/cron (POST)'
     ]
   });
 });
@@ -301,12 +318,9 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`❤️  Health check: http://localhost:${PORT}/health`);
   console.log(`📊 API Status: http://localhost:${PORT}/api/status`);
   console.log(`📧 Email endpoints: http://localhost:${PORT}/api/email/*`);
-  console.log(`🎵 Song review notifications: http://localhost:${PORT}/api/email/send-song-reviewed`);
-  console.log(`🤖 Gemini AI endpoints: http://localhost:${PORT}/api/reddit-admin/generate-comment`);
-  console.log(`🤖 Automation system: http://localhost:${PORT}/api/reddit-admin/cron-status`);
-  console.log(`⏰ Cron scheduler: http://localhost:${PORT}/api/reddit-admin/cron-status`);
-  console.log(`📈 Trends API: http://localhost:${PORT}/api/trends/music`);
-  console.log(`🧪 Dev Trends: http://localhost:${PORT}/api/trends/dev/music`);
-  console.log(`🔗 Reddit Admin: http://localhost:${PORT}/api/reddit-admin/admin`);
+  console.log(`🤖 Reddit Admin: http://localhost:${PORT}/api/reddit-admin/admin`);
+  console.log(`⏰ Cron Status: http://localhost:${PORT}/api/reddit-admin/cron-status`);
+  console.log(`🔐 Vercel Cron: http://localhost:${PORT}/api/reddit-admin/cron (POST)`);
   console.log(`🔧 CORS enabled for production domains`);
+  console.log(`🔐 CRON_SECRET: ${process.env.CRON_SECRET ? 'Configured' : 'Not configured'}`);
 });

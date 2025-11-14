@@ -1,6 +1,5 @@
 import express from 'express';
 import { GoogleGenerativeAI } from '@google/generative-ai';
-import cron from 'node-cron';
 
 const router = express.Router();
 
@@ -220,14 +219,14 @@ const simulateRedditPost = async (subreddit, comment, style) => {
   }
 };
 
-// Cron job that runs every minute to check for scheduled posts
-cron.schedule('* * * * *', async () => {
+// Main function to run scheduled posts (called by Vercel cron)
+export const runScheduledPosts = async () => {
   try {
     postingActivity.lastCronRun = new Date().toISOString();
     const currentTime = getCurrentTimeInAppTimezone();
     const currentDay = getCurrentDayInAppTimezone();
     
-    console.log(`⏰ Cron running at ${currentTime} on ${currentDay} (${APP_TIMEZONE})`);
+    console.log(`⏰ Vercel Cron running at ${currentTime} on ${currentDay} (${APP_TIMEZONE})`);
     
     const scheduledPosts = getCurrentSchedule();
     
@@ -315,14 +314,22 @@ cron.schedule('* * * * *', async () => {
     } else {
       console.log('⏰ No scheduled posts for this time slot');
     }
+    
+    return {
+      success: true,
+      scheduledPosts: scheduledPosts.length,
+      timestamp: new Date().toISOString()
+    };
   } catch (error) {
-    console.error('❌ Error in cron job:', error);
+    console.error('❌ Error in runScheduledPosts:', error);
+    throw error;
   }
-});
+};
 
-console.log('🚀 Reddit Auto-Poster cron scheduler started');
+console.log('🚀 Reddit Auto-Poster initialized');
 console.log(`⏰ Timezone: ${APP_TIMEZONE}`);
 console.log(`📅 Current time: ${getCurrentTimeInAppTimezone()} on ${getCurrentDayInAppTimezone()}`);
+console.log(`🔐 Vercel Cron: ${process.env.CRON_SECRET ? 'Configured' : 'Not configured'}`);
 
 // ==================== HELPER FUNCTIONS ====================
 
@@ -562,6 +569,26 @@ router.get('/cron-status', (req, res) => {
   });
 });
 
+// Manual cron trigger endpoint (for testing)
+router.post('/cron', async (req, res) => {
+  try {
+    console.log('🔄 Manual cron trigger requested');
+    const result = await runScheduledPosts();
+    res.json({
+      success: true,
+      message: 'Manual cron execution completed',
+      ...result
+    });
+  } catch (error) {
+    console.error('❌ Error in manual cron:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Manual cron execution failed',
+      error: error.message
+    });
+  }
+});
+
 // Get posting schedule for today
 router.get('/schedule/today', (req, res) => {
   const today = getCurrentDayInAppTimezone();
@@ -738,7 +765,8 @@ router.get('/admin', (req, res) => {
       target_configuration: 'active',
       auto_posting: 'active',
       cron_scheduler: 'active',
-      top50_promotion: 'active'
+      top50_promotion: 'active',
+      vercel_cron: process.env.CRON_SECRET ? 'enabled' : 'disabled'
     },
     targets: {
       total: Object.keys(redditTargets).length,
@@ -763,7 +791,8 @@ router.get('/admin', (req, res) => {
       reset_counts: '/api/reddit-admin/reset-counts',
       generate_comment: '/api/reddit-admin/generate-comment',
       generate_reply: '/api/reddit-admin/generate-reply',
-      analyze_post: '/api/reddit-admin/analyze-post'
+      analyze_post: '/api/reddit-admin/analyze-post',
+      cron: '/api/reddit-admin/cron (POST)'
     }
   });
 });
