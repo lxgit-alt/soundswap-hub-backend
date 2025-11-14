@@ -219,6 +219,35 @@ const simulateRedditPost = async (subreddit, comment, style) => {
   }
 };
 
+// Function to get ALL scheduled posts for the current day
+const getAllScheduledPostsForToday = () => {
+  const currentDay = getCurrentDayInAppTimezone();
+  const currentTime = getCurrentTimeInAppTimezone();
+  
+  const allPosts = [];
+  
+  Object.entries(redditTargets).forEach(([subreddit, config]) => {
+    if (config.active && config.postingSchedule[currentDay]) {
+      const times = config.postingSchedule[currentDay];
+      times.forEach(time => {
+        allPosts.push({
+          subreddit,
+          time: time,
+          day: currentDay,
+          style: config.preferredStyles[Math.floor(Math.random() * config.preferredStyles.length)],
+          dailyLimit: config.dailyCommentLimit,
+          currentCount: postingActivity.dailyCounts[subreddit] || 0,
+          isPastTime: time < currentTime,
+          isFutureTime: time > currentTime
+        });
+      });
+    }
+  });
+  
+  // Sort by time
+  return allPosts.sort((a, b) => a.time.localeCompare(b.time));
+};
+
 // Main function to run scheduled posts (called by Vercel cron)
 export const runScheduledPosts = async () => {
   try {
@@ -226,16 +255,25 @@ export const runScheduledPosts = async () => {
     const currentTime = getCurrentTimeInAppTimezone();
     const currentDay = getCurrentDayInAppTimezone();
     
-    console.log(`⏰ Vercel Cron running at ${currentTime} on ${currentDay} (${APP_TIMEZONE})`);
+    console.log(`⏰ DAILY Vercel Cron running at ${currentTime} on ${currentDay} (${APP_TIMEZONE})`);
+    console.log(`📊 Processing ALL scheduled posts for today...`);
     
-    const scheduledPosts = getCurrentSchedule();
+    // Get ALL posts for today (past, present, and future)
+    const allPosts = getAllScheduledPostsForToday();
     
-    if (scheduledPosts.length > 0) {
-      console.log(`📅 Found ${scheduledPosts.length} scheduled posts:`, 
-        scheduledPosts.map(p => `r/${p.subreddit} at ${p.time}`).join(', '));
-      
-      for (const scheduled of scheduledPosts) {
-        const { subreddit, style, dailyLimit, currentCount } = scheduled;
+    console.log(`📅 Found ${allPosts.length} total scheduled posts for ${currentDay}:`);
+    allPosts.forEach(post => {
+      console.log(`   - r/${post.subreddit} at ${post.time} (${post.isPastTime ? 'PAST' : post.isFutureTime ? 'FUTURE' : 'CURRENT'})`);
+    });
+    
+    // Process posts that are due (past or current time)
+    const postsToProcess = allPosts.filter(post => post.isPastTime || !post.isFutureTime);
+    
+    console.log(`🚀 Processing ${postsToProcess.length} posts that are due...`);
+    
+    if (postsToProcess.length > 0) {
+      for (const scheduled of postsToProcess) {
+        const { subreddit, style, dailyLimit, currentCount, time } = scheduled;
         
         // Check daily limit
         if (currentCount >= dailyLimit) {
@@ -253,7 +291,7 @@ export const runScheduledPosts = async () => {
           }
         }
         
-        console.log(`🚀 Preparing to post to r/${subreddit} with style: ${style}`);
+        console.log(`🚀 Processing scheduled post for r/${subreddit} at ${time} with style: ${style}`);
         
         // Generate sample post content based on subreddit
         const samplePosts = {
@@ -300,7 +338,7 @@ export const runScheduledPosts = async () => {
           const postResult = await simulateRedditPost(subreddit, commentResponse.comment, style);
           
           if (postResult.success) {
-            console.log(`✅ Successfully posted to r/${subreddit}`);
+            console.log(`✅ Successfully posted to r/${subreddit} for scheduled time ${time}`);
           } else {
             console.log(`❌ Failed to post to r/${subreddit}: ${postResult.error}`);
           }
@@ -309,15 +347,29 @@ export const runScheduledPosts = async () => {
         }
         
         // Add delay between posts to avoid rate limiting
-        await new Promise(resolve => setTimeout(resolve, 10000));
+        await new Promise(resolve => setTimeout(resolve, 15000)); // 15 seconds between posts
       }
     } else {
-      console.log('⏰ No scheduled posts for this time slot');
+      console.log('⏰ No posts to process at this time');
+    }
+    
+    // Reset daily counts if it's a new day (after midnight)
+    const now = new Date();
+    const hours = now.getHours();
+    const minutes = now.getMinutes();
+    
+    // Reset at 1:00 AM (or adjust as needed)
+    if (hours === 1 && minutes < 10) {
+      console.log('🔄 Resetting daily counts for new day...');
+      Object.keys(postingActivity.dailyCounts).forEach(key => {
+        postingActivity.dailyCounts[key] = 0;
+      });
     }
     
     return {
       success: true,
-      scheduledPosts: scheduledPosts.length,
+      processedPosts: postsToProcess.length,
+      totalScheduled: allPosts.length,
       timestamp: new Date().toISOString()
     };
   } catch (error) {
@@ -326,10 +378,10 @@ export const runScheduledPosts = async () => {
   }
 };
 
-console.log('🚀 Reddit Auto-Poster initialized (Vercel Cron Only)');
+console.log('🚀 Reddit Auto-Poster initialized (DAILY Vercel Cron)');
 console.log(`⏰ Timezone: ${APP_TIMEZONE}`);
 console.log(`📅 Current time: ${getCurrentTimeInAppTimezone()} on ${getCurrentDayInAppTimezone()}`);
-console.log(`🔐 Vercel Cron: ${process.env.CRON_SECRET ? 'Configured' : 'Not configured'}`);
+console.log(`🔐 Vercel Cron: ${process.env.CRON_SECRET ? 'Configured - Runs daily at 9:00 AM' : 'Not configured'}`);
 
 // ==================== HELPER FUNCTIONS ====================
 
@@ -536,11 +588,14 @@ router.get('/cron-status', (req, res) => {
   const currentTime = getCurrentTimeInAppTimezone();
   const currentDay = getCurrentDayInAppTimezone();
   const scheduledPosts = getCurrentSchedule();
+  const allPostsToday = getAllScheduledPostsForToday();
   
-  // Calculate next minute in app timezone
+  // Calculate next daily cron run (9:00 AM next day)
   const now = new Date();
-  const nextMinute = new Date(now.getTime() + 60000);
-  const nextCheck = nextMinute.toLocaleTimeString('en-US', { 
+  const nextCron = new Date(now);
+  nextCron.setDate(nextCron.getDate() + 1);
+  nextCron.setHours(9, 0, 0, 0);
+  const nextCronFormatted = nextCron.toLocaleTimeString('en-US', { 
     timeZone: APP_TIMEZONE,
     hour12: false,
     hour: '2-digit',
@@ -554,7 +609,7 @@ router.get('/cron-status', (req, res) => {
       timezone: APP_TIMEZONE,
       currentTime: currentTime,
       currentDay: currentDay,
-      nextCheck: nextCheck,
+      nextCron: nextCronFormatted,
       totalComments: postingActivity.totalComments,
       dailyActivity: postingActivity.dailyCounts,
       lastPosted: postingActivity.lastPosted,
@@ -563,8 +618,12 @@ router.get('/cron-status', (req, res) => {
     scheduled: {
       currentTime: currentTime,
       scheduledPosts: scheduledPosts.length,
-      details: scheduledPosts
+      totalPostsToday: allPostsToday.length,
+      details: scheduledPosts,
+      allPostsToday: allPostsToday
     },
+    plan: 'hobby',
+    dailyLimit: '1 cron job per day',
     timestamp: new Date().toISOString()
   });
 });
@@ -594,6 +653,7 @@ router.get('/schedule/today', (req, res) => {
   const today = getCurrentDayInAppTimezone();
   const currentTime = getCurrentTimeInAppTimezone();
   const schedule = {};
+  const allPostsToday = getAllScheduledPostsForToday();
   
   Object.entries(redditTargets).forEach(([subreddit, config]) => {
     if (config.active && config.postingSchedule[today]) {
@@ -613,6 +673,8 @@ router.get('/schedule/today', (req, res) => {
     timezone: APP_TIMEZONE,
     schedule: schedule,
     activity: postingActivity.dailyCounts,
+    allPostsToday: allPostsToday,
+    totalPostsToday: allPostsToday.length,
     timestamp: new Date().toISOString()
   });
 });
@@ -779,7 +841,9 @@ router.get('/admin', (req, res) => {
       last_run: postingActivity.lastCronRun,
       daily_limits: Object.fromEntries(
         Object.entries(redditTargets).map(([k, v]) => [k, v.dailyCommentLimit])
-      )
+      ),
+      plan: 'hobby',
+      schedule: 'daily at 9:00 AM'
     },
     endpoints: {
       health: '/api/reddit-admin/admin',
