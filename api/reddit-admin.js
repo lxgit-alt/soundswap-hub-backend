@@ -616,6 +616,38 @@ router.post('/cron', async (req, res) => {
   }
 });
 
+// Add GET endpoint for /cron to show available endpoints
+router.get('/cron', (req, res) => {
+  const currentTime = getCurrentTimeInAppTimezone();
+  const currentDay = getCurrentDayInAppTimezone();
+  
+  res.json({
+    success: true,
+    message: 'Reddit Automation Cron Endpoint',
+    timezone: APP_TIMEZONE,
+    currentTime: currentTime,
+    currentDay: currentDay,
+    availableMethods: {
+      POST: 'Trigger cron execution (requires CRON_SECRET)',
+      GET: 'Show cron information'
+    },
+    endpoints: [
+      '/api/reddit-admin/cron-status',
+      '/api/reddit-admin/schedule/today',
+      '/api/reddit-admin/manual-post',
+      '/api/reddit-admin/reset-counts',
+      '/api/reddit-admin/targets',
+      '/api/reddit-admin/create-top50-post',
+      '/api/reddit-admin/generate-comment',
+      '/api/reddit-admin/generate-reply',
+      '/api/reddit-admin/analyze-post',
+      '/api/reddit-admin/test-gemini',
+      '/api/reddit-admin/admin'
+    ],
+    timestamp: new Date().toISOString()
+  });
+});
+
 // Get posting schedule for today
 router.get('/schedule/today', (req, res) => {
   const today = getCurrentDayInAppTimezone();

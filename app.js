@@ -106,7 +106,8 @@ app.get('/', (req, res) => {
       generate_comment: 'POST /api/reddit-admin/generate-comment',
       generate_reply: 'POST /api/reddit-admin/generate-reply',
       analyze_post: 'POST /api/reddit-admin/analyze-post',
-      test_gemini: 'GET /api/reddit-admin/test-gemini'
+      test_gemini: 'GET /api/reddit-admin/test-gemini',
+      cron: 'POST /api/reddit-admin/cron'
     }
   });
 });
@@ -146,7 +147,8 @@ app.use('*', (req, res) => {
       '/api/reddit-admin/test-gemini',
       '/api/reddit-admin/auth',
       '/api/reddit-admin/posts',
-      '/api/reddit-admin/analytics'
+      '/api/reddit-admin/analytics',
+      '/api/reddit-admin/cron'
     ]
   });
 });
@@ -176,5 +178,6 @@ if (process.env.NODE_ENV !== 'production') {
     console.log(`🔗 Reddit Admin: http://localhost:${PORT}/api/reddit-admin/admin`);
     console.log(`🤖 Reddit Automation: http://localhost:${PORT}/api/reddit-admin/cron-status`);
     console.log(`🤖 Gemini AI: http://localhost:${PORT}/api/reddit-admin/test-gemini`);
+    console.log(`⏰ Cron Endpoint: http://localhost:${PORT}/api/reddit-admin/cron`);
   });
 }

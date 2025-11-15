@@ -102,54 +102,6 @@ app.use('/api/email', emailRoutes);
 // Mount trends routes
 app.use('/', trendsRoutes);
 
-// ==================== CRON ENDPOINT WITH AUTHORIZATION ====================
-
-// Cron endpoint with Vercel cron secret authorization
-app.post('/api/reddit-admin/cron', async (req, res) => {
-  try {
-    // Check for cron secret authorization
-    const authHeader = req.headers.authorization;
-    if (!authHeader || authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
-      console.log('❌ Unauthorized cron attempt - missing or invalid CRON_SECRET');
-      return res.status(401).json({ 
-        success: false, 
-        error: 'Unauthorized',
-        message: 'Invalid or missing CRON_SECRET'
-      });
-    }
-
-    console.log('✅ Authorized cron execution triggered via Vercel');
-    
-    // Import the runScheduledPosts function from reddit-admin
-    const { runScheduledPosts } = await import('./api/reddit-admin.js');
-    
-    if (typeof runScheduledPosts === 'function') {
-      // Execute the scheduled posts
-      await runScheduledPosts();
-      
-      res.json({ 
-        success: true, 
-        message: 'Cron executed successfully - authorization verified',
-        timestamp: new Date().toISOString(),
-        timezone: APP_TIMEZONE,
-        currentTime: getCurrentTimeInAppTimezone(),
-        currentDay: getCurrentDayInAppTimezone()
-      });
-    } else {
-      throw new Error('runScheduledPosts function not found in reddit-admin module');
-    }
-    
-  } catch (error) {
-    console.error('❌ Error in cron endpoint:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Cron execution failed',
-      message: error.message,
-      timestamp: new Date().toISOString()
-    });
-  }
-});
-
 // ==================== ENDPOINTS ====================
 
 // Health check endpoint
