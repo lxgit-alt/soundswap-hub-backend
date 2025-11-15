@@ -178,11 +178,17 @@ const getCurrentSchedule = () => {
   const currentDay = getCurrentDayInAppTimezone();
   const currentTime = getCurrentTimeInAppTimezone();
   
+  console.log(`🔍 Checking schedule for ${currentDay} at ${currentTime} (${APP_TIMEZONE})`);
+  
   const scheduledPosts = [];
   
   Object.entries(redditTargets).forEach(([subreddit, config]) => {
     if (config.active && config.postingSchedule[currentDay]) {
       const times = config.postingSchedule[currentDay];
+      
+      // Log for debugging
+      console.log(`📅 ${subreddit} scheduled times: ${times.join(', ')}`);
+      
       if (times.includes(currentTime)) {
         scheduledPosts.push({
           subreddit,
@@ -192,10 +198,12 @@ const getCurrentSchedule = () => {
           dailyLimit: config.dailyCommentLimit,
           currentCount: postingActivity.dailyCounts[subreddit] || 0
         });
+        console.log(`✅ Found scheduled post for r/${subreddit} at ${currentTime}`);
       }
     }
   });
   
+  console.log(`📊 Total scheduled posts found: ${scheduledPosts.length}`);
   return scheduledPosts;
 };
 
