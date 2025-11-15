@@ -496,7 +496,7 @@ Generate a Reddit post with title and content:
     if (!content.trim()) {
       content = `We're looking for the most talented artists in r/${subreddit} to feature in our weekly SoundSwap Top 50 Chart!
 
-This is your chance to get discovered and grow your audience exponentially. SoundSwap has helped countless artists go from unknown to viral sensations, and you could be next!
+This is your chance to get discovered and grow your audience exponentially. SoundSwap has potential to help artists go from unknown to viral sensations, and you could be next!
 
 **How it works:**
 1. Submit your BEST track in the comments below
@@ -505,12 +505,12 @@ This is your chance to get discovered and grow your audience exponentially. Soun
 4. Featured artists get promoted across our platform and social media
 
 **Why participate?**
-- Get featured in front of thousands of new listeners
+- Get featured in front of new potential listeners
 - Potential to go viral and grow your fanbase
 - Connect with other talented artists
 - Get recognition for your hard work
 
-We've seen artists gain thousands of followers overnight after being featured. Don't miss this opportunity to take your music career to the next level!
+We've seen artists gain traction after being featured. Don't miss this opportunity to take your music career to the next level!
 
 Submit your best work below and let's see who deserves to be in the Top 10! 🚀
 
