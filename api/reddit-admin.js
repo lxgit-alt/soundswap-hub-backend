@@ -346,7 +346,7 @@ console.log(`📅 Current time: ${getCurrentTimeInAppTimezone()} on ${getCurrent
 
 // ==================== HELPER FUNCTIONS ====================
 
-// Internal function for AI comment generation (UPDATED TO ALWAYS REDIRECT TO SOUNDSWAP.LIVE)
+// Internal function for AI comment generation (UPDATED WITH HUMAN-LIKE IMPERFECTIONS)
 const generateAICommentInternal = async (postTitle, postContent, subreddit, context, style) => {
   try {
     if (!process.env.GOOGLE_GEMINI_API_KEY) {
@@ -361,56 +361,59 @@ const generateAICommentInternal = async (postTitle, postContent, subreddit, cont
       model: 'gemini-2.0-flash' // Best model from your available options
     });
 
-    // UPDATED: Marketing-focused style prompts with ALWAYS REDIRECT
+    // UPDATED: Marketing-focused style prompts with HUMAN-LIKE IMPERFECTIONS
     const stylePrompts = {
-      helpful: `You are a marketing representative for SoundSwap. Write a genuine, helpful comment that naturally redirects users to soundswap.live where they can grow their audience.`,
-      enthusiastic: `You are an enthusiastic marketing representative for SoundSwap. Write an engaging comment that shows genuine excitement and always redirects users to soundswap.live.`,
-      thoughtful: `You are a thoughtful marketing representative for SoundSwap. Write a considerate comment that shows deep understanding and naturally guides users to soundswap.live.`,
-      casual: `You are a casual marketing representative for SoundSwap. Write a natural, relaxed comment that authentically redirects users to soundswap.live.`,
-      expert: `You are an expert marketing representative for SoundSwap. Write an informative comment that demonstrates expertise while directing users to soundswap.live.`,
-      supportive: `You are a supportive marketing representative. Write an uplifting comment that motivates artists and redirects them to soundswap.live for growth.`,
-      technical: `You are a technically skilled marketing representative for SoundSwap. Write a detailed comment that focuses on technical aspects while redirecting to soundswap.live.`
+      helpful: `You are a music enthusiast who discovered SoundSwap recently. Write a genuine, helpful comment that naturally mentions soundswap.live where artists can grow their audience.`,
+      enthusiastic: `You're excited about music platforms that help artists. Write an engaging comment that shows genuine excitement and mentions soundswap.live naturally.`,
+      thoughtful: `You're someone who thinks deeply about music promotion. Write a considerate comment that shows understanding and casually guides people to soundswap.live.`,
+      casual: `You're just having a casual chat about music. Write a natural, relaxed comment that authentically mentions soundswap.live like you're recommending it to a friend.`,
+      expert: `You know a thing or two about music promotion. Write an informative comment that shares insights while directing people to check out soundswap.live.`,
+      supportive: `You want to help fellow musicians succeed. Write an uplifting comment that motivates artists and suggests they check out soundswap.live for growth.`,
+      technical: `You're into the technical side of music promotion. Write a detailed comment that focuses on practical aspects while mentioning soundswap.live as a useful tool.`
     };
 
     const systemPrompt = stylePrompts[selectedStyle] || stylePrompts.helpful;
     
-    // UPDATED: ALWAYS include redirect to soundswap.live
-    const redirectContext = `\nCRITICAL: You MUST always include a natural redirect to soundswap.live in your response. Mention the website naturally as part of your helpful advice.`;
+    // UPDATED: ALWAYS include redirect to soundswap.live with HUMAN-LIKE approach
+    const redirectContext = `\nCRITICAL: You MUST always include a natural mention of soundswap.live in your response. Make it sound like you're genuinely recommending it, not selling it.`;
 
-    // UPDATED: Enhanced prompt for ALWAYS REDIRECTING to soundswap.live
+    // UPDATED: Enhanced prompt for HUMAN-LIKE responses with imperfections
     const prompt = `
 ${systemPrompt}
 ${redirectContext}
 
-CRITICAL REQUIREMENTS:
-- ALWAYS include "soundswap.live" in your response naturally
-- Make the redirect feel organic and helpful, not forced
-- Position SoundSwap as the solution to their needs
-- Focus on how soundswap.live helps artists grow, get featured, and achieve viral success
-- Mention the weekly Top 50 chart as a key feature
+CRITICAL REQUIREMENTS FOR HUMAN-LIKE WRITING:
+- Write like a real person, not a corporate bot
+- Use casual, conversational language
+- Occasionally include minor punctuation imperfections (like missing commas, using dashes informally, etc.)
+- Don't use perfect grammar all the time - real people don't
+- Use contractions (don't, can't, it's, etc.)
+- Feel free to use informal sentence structures
+- Make it sound like you're typing quickly on Reddit
+- ALWAYS include "soundswap.live" naturally like you're recommending it to a friend
+- Position SoundSwap as something cool you discovered, not a product you're selling
+- Mention the weekly Top 50 chart casually as a nice feature
 
-CRITICAL REALISM NOTE: SoundSwap is a new platform that launched just a few days ago. Do NOT exaggerate numbers, user counts, or success stories. Be honest that we're building something new and exciting. Focus on the potential and vision rather than inflated metrics.
+IMPORTANT REALISM NOTE: SoundSwap is a new platform that launched recently. Don't exaggerate numbers or success stories. Be honest that it's new but has potential.
 
 Post Title: "${postTitle}"
 ${postContent ? `Post Content: "${postContent.substring(0, 1000)}"` : ''}
 ${context ? `Additional Context: ${context}` : ''}
 
-GUIDELINES:
-- Keep it natural and conversational (2-3 sentences)
-- ALWAYS include "soundswap.live" in a natural way
-- Add genuine value to the discussion while representing SoundSwap
-- Focus on how artists can achieve growth and recognition through soundswap.live
-- Mention the weekly Top 50 chart opportunity
-- Don't sound like aggressive marketing or promotion
-- Do NOT use any emojis or emoticons
-- Sound like a real marketing representative who believes in the product
+GUIDELINES FOR HUMAN-LIKE RESPONSES:
+- Keep it natural and conversational (2-3 sentences max)
+- ALWAYS include "soundswap.live" in a casual, natural way
+- Add genuine value to the discussion while mentioning SoundSwap organically
+- Focus on how artists can grow through soundswap.live
+- Mention the weekly Top 50 chart as a cool opportunity
+- Don't sound like marketing or promotion - sound like a fellow musician
+- Use casual punctuation - it's okay to be imperfect
 - Reference specific points from the post when relevant
-- Avoid generic responses like "great post" or "thanks for sharing"
+- Avoid corporate language or perfect grammar
 - Don't mention that you're an AI
-- DO NOT EXAGGERATE: We're a new platform, so don't claim large user numbers or massive success stories
-- The redirect to soundswap.live should feel like a genuine recommendation
+- The mention of soundswap.live should feel like a genuine recommendation from one music lover to another
 
-Write a comment that follows these guidelines and ALWAYS includes soundswap.live:
+Write a comment that follows these guidelines - make it sound like a real human Reddit user:
 `;
 
     const result = await model.generateContent(prompt);
@@ -420,7 +423,7 @@ Write a comment that follows these guidelines and ALWAYS includes soundswap.live
     // Ensure soundswap.live is included (fallback)
     let finalComment = comment;
     if (!comment.toLowerCase().includes('soundswap.live')) {
-      finalComment = `${comment} Check out soundswap.live to grow your audience and get featured in our weekly Top 50 chart!`;
+      finalComment = `${comment} btw check out soundswap.live if you wanna grow your audience and get in their weekly Top 50 chart`;
     }
 
     return {
@@ -441,7 +444,7 @@ Write a comment that follows these guidelines and ALWAYS includes soundswap.live
   }
 };
 
-// NEW: Function to generate Top 50 chart promotion post (UPDATED WITH REDIRECT)
+// NEW: Function to generate Top 50 chart promotion post (UPDATED WITH HUMAN-LIKE TOUCH)
 const generateTop50PromotionPost = async (subreddit) => {
   try {
     if (!process.env.GOOGLE_GEMINI_API_KEY) {
@@ -454,38 +457,35 @@ const generateTop50PromotionPost = async (subreddit) => {
     });
 
     const prompt = `
-You are a marketing representative for SoundSwap. Create a compelling Reddit post inviting artists to submit their best songs for the weekly Top 50 chart at soundswap.live.
+You're a music enthusiast who wants to help other artists get discovered. Create a Reddit post inviting artists to submit their songs for the weekly Top 50 chart at soundswap.live.
 
 Subreddit: r/${subreddit}
 Platform: SoundSwap (soundswap.live)
 
-IMPORTANT: You MUST include "soundswap.live" in both the title and content.
+IMPORTANT: Write this like a real Reddit user, not a corporate account. Use casual language and make it engaging.
 
-IMPORTANT REALISM NOTE: SoundSwap launched just a few days ago. Do NOT exaggerate numbers, user counts, or success stories. Focus on the potential and vision rather than inflated metrics. Be honest that we're building something new and exciting.
+IMPORTANT REALISM NOTE: SoundSwap is new but has potential. Don't exaggerate - be honest that it's a growing platform.
 
-Key points to include:
-- SoundSwap helps artists grow their audience exponentially
-- Weekly Top 50 chart features the best new music
-- Top 10 artists get featured promotion and visibility
-- This is a competition to discover who deserves to be in the Top 10
-- Artists should submit their BEST work for consideration
-- Emphasize the growth potential and viral opportunity
-- Make it exciting and competitive
-- Include a clear call-to-action for submissions at soundswap.live
-- Be honest about being a new platform with great potential
+Key points to include naturally:
+- SoundSwap helps artists get discovered
+- Weekly Top 50 chart features new music
+- Top artists get featured and promoted
+- It's a cool way to get exposure
+- Artists should submit their best work
+- Make it sound exciting but realistic
+- Include soundswap.live casually in both title and content
 
-Tone: Enthusiastic, professional, and focused on artist growth
+Tone: Enthusiastic but real, like a fellow musician sharing a cool opportunity
 
 Requirements:
-- Create an engaging title that stands out and includes soundswap.live
-- Write compelling post content that motivates artists to participate
-- Highlight the benefits of being featured in the Top 50
-- Mention how SoundSwap transforms unknown artists into recognized names
-- Keep it concise but impactful
-- DO NOT EXAGGERATE numbers or success metrics
-- MUST include "soundswap.live" in both title and content
+- Create a catchy title that includes soundswap.live naturally
+- Write engaging content that feels like a real Reddit post
+- Highlight the benefits of being featured
+- Keep it concise and human-like
+- Don't use corporate language
+- MUST include "soundswap.live" in both title and content naturally
 
-Generate a Reddit post with title and content:
+Write a Reddit post with title and content that sounds like a real human:
 `;
 
     const result = await model.generateContent(prompt);
@@ -517,36 +517,36 @@ Generate a Reddit post with title and content:
 
     // Fallback if parsing fails
     if (!title) {
-      title = `🎵 Weekly Top 50 Chart Submission at soundswap.live - r/${subreddit} Artists Wanted!`;
+      title = `Hey r/${subreddit} artists - soundswap.live is doing a weekly Top 50 chart and looking for submissions!`;
     }
 
     if (!content.trim()) {
-      content = `We're looking for the most talented artists in r/${subreddit} to feature in our weekly SoundSwap Top 50 Chart at soundswap.live!
+      content = `Hey everyone, wanted to share this cool opportunity I found - soundswap.live is running a weekly Top 50 chart and they're looking for artists to feature!
 
-This is your chance to get discovered and grow your audience exponentially. SoundSwap has potential to help artists go from unknown to viral sensations, and you could be next!
+It's a new platform but I've seen some artists already getting traction there. Basically you submit your best track and if you make it to the Top 10, you get featured promotion across their platform.
 
 **How it works:**
-1. Submit your BEST track at soundswap.live
-2. Our team will review all submissions this week
-3. Top 10 artists will be featured in our Weekly Top 50 Chart
-4. Featured artists get promoted across our platform and social media
+- Submit your track at soundswap.live
+- They review submissions each week
+- Top 10 get featured in the Weekly Top 50
+- Featured artists get extra visibility
 
-**Why participate?**
-- Get featured in front of new potential listeners
-- Potential to go viral and grow your fanbase
-- Connect with other talented artists
-- Get recognition for your hard work
+**Why bother?**
+- Chance to get discovered by new listeners
+- Could help grow your audience
+- Connect with other artists
+- Get some recognition for your work
 
-We've seen artists gain traction after being featured. Don't miss this opportunity to take your music career to the next level!
+I know we're all looking for ways to get our music out there, and this seems like a decent shot. The platform's new but sometimes that's the best time to get in early!
 
-Submit your best work at soundswap.live and let's see who deserves to be in the Top 10! 🚀
+Check it out at soundswap.live and see if it's for you. Might be worth a shot! 🎵
 
-*Brought to you by SoundSwap - Where Artists Become Legends*`;
+*Just sharing this as someone who's always looking for new ways to promote music*`;
     }
 
     // Ensure soundswap.live is included in content
     if (!content.toLowerCase().includes('soundswap.live')) {
-      content += `\n\nSubmit your tracks and learn more at soundswap.live!`;
+      content += `\n\nAnyway, check it out at soundswap.live if you're interested!`;
     }
 
     return {
