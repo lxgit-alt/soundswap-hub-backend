@@ -126,7 +126,8 @@ app.get('/health', (req, res) => {
       gemini_ai: process.env.GOOGLE_GEMINI_API_KEY ? 'configured' : 'not_configured',
       reddit_automation: 'active',
       cron_scheduler: 'running',
-      vercel_cron: process.env.CRON_SECRET ? 'configured' : 'not_configured'
+      vercel_cron: process.env.CRON_SECRET ? 'configured' : 'not_configured',
+      educational_posts: 'active' // NEW: Added educational posts service
     }
   });
 });
@@ -140,7 +141,7 @@ app.get('/api/status', (req, res) => {
     success: true,
     service: 'soundswap-backend',
     status: 'operational',
-    version: '1.0.0',
+    version: '1.1.0', // Updated version
     environment: process.env.NODE_ENV || 'development',
     timezone: APP_TIMEZONE,
     currentTime: currentTime,
@@ -165,7 +166,9 @@ app.get('/api/status', (req, res) => {
       gemini_ai: process.env.GOOGLE_GEMINI_API_KEY ? 'active' : 'disabled',
       reddit_automation: 'active',
       cron_scheduler: 'running',
-      vercel_cron: process.env.CRON_SECRET ? 'active' : 'disabled'
+      vercel_cron: process.env.CRON_SECRET ? 'active' : 'disabled',
+      educational_posts: 'active', // NEW: Added educational posts feature
+      top50_promotion: 'active'
     }
   });
 });
@@ -178,7 +181,7 @@ app.get('/', (req, res) => {
   res.json({
     success: true,
     message: 'SoundSwap API - Backend service is running',
-    version: '1.0.0',
+    version: '1.1.0', // Updated version
     environment: process.env.NODE_ENV || 'development',
     timezone: APP_TIMEZONE,
     currentTime: currentTime,
@@ -200,7 +203,16 @@ app.get('/', (req, res) => {
       post_analysis: process.env.GOOGLE_GEMINI_API_KEY ? 'active' : 'disabled',
       automation_system: 'active',
       cron_scheduler: 'running',
-      vercel_cron: process.env.CRON_SECRET ? 'active' : 'disabled'
+      vercel_cron: process.env.CRON_SECRET ? 'active' : 'disabled',
+      educational_posts: 'active', // NEW: Added educational posts
+      top50_promotion: 'active'
+    },
+    reddit_automation: {
+      comments: '52 posts/day across 6 subreddits',
+      educational_posts: '2-3 posts/week per subreddit', // NEW: Added educational posts info
+      top50_promotion: 'Weekly chart submissions',
+      total_reach: '2.8M+ musicians',
+      features: 'Always redirects to soundswap.live'
     }
   });
 });
@@ -236,6 +248,8 @@ app.use('*', (req, res) => {
       '/api/reddit-admin/test-gemini',
       '/api/reddit-admin/cron-status',
       '/api/reddit-admin/manual-post',
+      '/api/reddit-admin/create-educational-post', // NEW: Added educational post endpoint
+      '/api/reddit-admin/create-top50-post',
       '/api/reddit-admin/reset-counts',
       '/api/reddit-admin/targets',
       '/api/reddit-admin/schedule/today',
@@ -272,7 +286,11 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`📧 Email endpoints: http://localhost:${PORT}/api/email/*`);
   console.log(`🤖 Reddit Admin: http://localhost:${PORT}/api/reddit-admin/admin`);
   console.log(`⏰ Cron Status: http://localhost:${PORT}/api/reddit-admin/cron-status`);
+  console.log(`📚 Educational Posts: http://localhost:${PORT}/api/reddit-admin/create-educational-post`); // NEW: Added educational posts
+  console.log(`🎵 Top 50 Promotion: http://localhost:${PORT}/api/reddit-admin/create-top50-post`);
   console.log(`🔐 Vercel Cron: http://localhost:${PORT}/api/reddit-admin/cron (POST)`);
   console.log(`🔧 CORS enabled for production domains`);
   console.log(`🔐 CRON_SECRET: ${process.env.CRON_SECRET ? 'Configured' : 'Not configured'}`);
+  console.log(`🤖 Gemini AI: ${process.env.GOOGLE_GEMINI_API_KEY ? 'Configured' : 'Not configured'}`);
+  console.log(`📈 Reddit Automation: 52 comments/day + 2-3 educational posts/week`); // NEW: Added stats
 });

@@ -53,7 +53,7 @@ app.get('/api/health', (req, res) => {
   res.json({
     success: true,
     message: 'SoundSwap API - Backend service is running',
-    version: '1.0.0',
+    version: '1.1.0', // Updated version
     timestamp: new Date().toISOString(),
     environment: process.env.NODE_ENV || 'development',
     services: {
@@ -66,7 +66,17 @@ app.get('/api/health', (req, res) => {
       trends: 'operational',
       reddit_admin: 'operational',
       reddit_automation: 'active',
-      gemini_ai: process.env.GOOGLE_GEMINI_API_KEY ? 'configured' : 'not_configured'
+      gemini_ai: process.env.GOOGLE_GEMINI_API_KEY ? 'configured' : 'not_configured',
+      educational_posts: 'active', // NEW: Added educational posts service
+      top50_promotion: 'active'
+    },
+    reddit_stats: {
+      total_subreddits: 6,
+      total_audience: '2.8M+',
+      daily_comments: 52,
+      weekly_educational_posts: '2-3 per subreddit',
+      weekly_top50_posts: 'Weekly promotions',
+      features: 'Always redirects to soundswap.live'
     }
   });
 });
@@ -76,7 +86,7 @@ app.get('/', (req, res) => {
   res.json({
     success: true,
     message: 'SoundSwap API - Backend service is running',
-    version: '1.0.0',
+    version: '1.1.0', // Updated version
     timestamp: new Date().toISOString(),
     endpoints: {
       health: '/api/health',
@@ -100,6 +110,8 @@ app.get('/', (req, res) => {
     reddit_automation: {
       status: 'GET /api/reddit-admin/cron-status',
       manual_post: 'POST /api/reddit-admin/manual-post',
+      educational_post: 'POST /api/reddit-admin/create-educational-post', // NEW: Added educational post
+      top50_post: 'POST /api/reddit-admin/create-top50-post',
       reset_counts: 'POST /api/reddit-admin/reset-counts',
       targets: 'GET /api/reddit-admin/targets',
       schedule: 'GET /api/reddit-admin/schedule/today',
@@ -108,6 +120,13 @@ app.get('/', (req, res) => {
       analyze_post: 'POST /api/reddit-admin/analyze-post',
       test_gemini: 'GET /api/reddit-admin/test-gemini',
       cron: 'POST /api/reddit-admin/cron'
+    },
+    automation_stats: {
+      daily_comments: 52,
+      weekly_educational_posts: '12-18 total',
+      audience_reach: '2.8M+ musicians',
+      subreddits: 6,
+      features: 'AI-powered, always redirects to soundswap.live'
     }
   });
 });
@@ -138,6 +157,8 @@ app.use('*', (req, res) => {
       '/api/reddit-admin/admin',
       '/api/reddit-admin/cron-status',
       '/api/reddit-admin/manual-post',
+      '/api/reddit-admin/create-educational-post', // NEW: Added educational post
+      '/api/reddit-admin/create-top50-post',
       '/api/reddit-admin/reset-counts',
       '/api/reddit-admin/targets',
       '/api/reddit-admin/schedule/today',
@@ -177,7 +198,10 @@ if (process.env.NODE_ENV !== 'production') {
     console.log(`📈 Trends API: http://localhost:${PORT}/api/trends/music`);
     console.log(`🔗 Reddit Admin: http://localhost:${PORT}/api/reddit-admin/admin`);
     console.log(`🤖 Reddit Automation: http://localhost:${PORT}/api/reddit-admin/cron-status`);
+    console.log(`📚 Educational Posts: http://localhost:${PORT}/api/reddit-admin/create-educational-post`); // NEW: Added educational posts
+    console.log(`🎵 Top 50 Promotion: http://localhost:${PORT}/api/reddit-admin/create-top50-post`);
     console.log(`🤖 Gemini AI: http://localhost:${PORT}/api/reddit-admin/test-gemini`);
     console.log(`⏰ Cron Endpoint: http://localhost:${PORT}/api/reddit-admin/cron`);
+    console.log(`📊 Stats: 52 comments/day + 2-3 educational posts/week across 6 subreddits (2.8M+ audience)`); // NEW: Added stats
   });
 }

@@ -50,9 +50,15 @@ const redditTargets = {
       saturday: ['11:00', '16:00', '21:00'],
       sunday: ['11:00', '16:00', '21:00']
     },
+    educationalPostSchedule: {
+      monday: ['11:00'],
+      wednesday: ['15:00'],
+      friday: ['13:00']
+    },
     preferredStyles: ['helpful', 'expert', 'thoughtful'],
-    soundswapMentionRate: 1.0, // UPDATED: Always mention SoundSwap
+    soundswapMentionRate: 1.0,
     dailyCommentLimit: 8,
+    educationalPostLimit: 1,
     keywords: ['production', 'mixing', 'mastering', 'DAW', 'audio', 'music theory']
   },
   'MusicProduction': {
@@ -70,9 +76,14 @@ const redditTargets = {
       saturday: ['12:00', '17:00', '22:00'],
       sunday: ['12:00', '17:00', '22:00']
     },
+    educationalPostSchedule: {
+      tuesday: ['12:00'],
+      thursday: ['16:00']
+    },
     preferredStyles: ['expert', 'helpful', 'technical'],
-    soundswapMentionRate: 1.0, // UPDATED: Always mention SoundSwap
+    soundswapMentionRate: 1.0,
     dailyCommentLimit: 6,
+    educationalPostLimit: 1,
     keywords: ['production', 'mixing', 'plugins', 'gear', 'workflow', 'techniques']
   },
   'IndieMusicFeedback': {
@@ -90,9 +101,14 @@ const redditTargets = {
       saturday: ['13:00', '19:00'],
       sunday: ['13:00', '19:00']
     },
+    educationalPostSchedule: {
+      wednesday: ['14:00'],
+      sunday: ['15:00']
+    },
     preferredStyles: ['supportive', 'helpful', 'enthusiastic'],
-    soundswapMentionRate: 1.0, // UPDATED: Always mention SoundSwap
+    soundswapMentionRate: 1.0,
     dailyCommentLimit: 10,
+    educationalPostLimit: 1,
     keywords: ['feedback', 'review', 'indie', 'new music', 'critique']
   },
   'ThisIsOurMusic': {
@@ -110,9 +126,14 @@ const redditTargets = {
       saturday: ['14:00', '20:00'],
       sunday: ['14:00', '20:00']
     },
+    educationalPostSchedule: {
+      monday: ['12:00'],
+      friday: ['16:00']
+    },
     preferredStyles: ['enthusiastic', 'supportive', 'casual'],
-    soundswapMentionRate: 1.0, // UPDATED: Always mention SoundSwap
+    soundswapMentionRate: 1.0,
     dailyCommentLimit: 8,
+    educationalPostLimit: 1,
     keywords: ['original music', 'new release', 'songwriting', 'performance']
   },
   'MusicPromotion': {
@@ -130,9 +151,15 @@ const redditTargets = {
       saturday: ['12:00', '18:00'],
       sunday: ['12:00', '18:00']
     },
+    educationalPostSchedule: {
+      tuesday: ['11:00'],
+      thursday: ['14:00'],
+      saturday: ['13:00']
+    },
     preferredStyles: ['enthusiastic', 'casual', 'supportive'],
-    soundswapMentionRate: 1.0, // UPDATED: Always mention SoundSwap
+    soundswapMentionRate: 1.0,
     dailyCommentLimit: 12,
+    educationalPostLimit: 1,
     keywords: ['promotion', 'marketing', 'streaming', 'social media', 'growth']
   },
   'ShareYourMusic': {
@@ -150,9 +177,14 @@ const redditTargets = {
       saturday: ['15:00', '21:00'],
       sunday: ['15:00', '21:00']
     },
+    educationalPostSchedule: {
+      thursday: ['15:00'],
+      sunday: ['16:00']
+    },
     preferredStyles: ['supportive', 'casual', 'enthusiastic'],
-    soundswapMentionRate: 1.0, // UPDATED: Always mention SoundSwap
+    soundswapMentionRate: 1.0,
     dailyCommentLimit: 8,
+    educationalPostLimit: 1,
     keywords: ['share', 'new track', 'feedback', 'collaboration']
   }
 };
@@ -162,8 +194,11 @@ const redditTargets = {
 // Track posting activity
 const postingActivity = {
   dailyCounts: {},
+  educationalCounts: {},
   lastPosted: {},
+  lastEducationalPosted: {},
   totalComments: 0,
+  totalEducationalPosts: 0,
   lastCronRun: null,
   githubActionsRuns: 0
 };
@@ -171,6 +206,7 @@ const postingActivity = {
 // Initialize daily counts
 Object.keys(redditTargets).forEach(subreddit => {
   postingActivity.dailyCounts[subreddit] = 0;
+  postingActivity.educationalCounts[subreddit] = 0;
 });
 
 // Function to get current schedule for all active subreddits
@@ -196,19 +232,54 @@ const getCurrentSchedule = () => {
           day: currentDay,
           style: config.preferredStyles[Math.floor(Math.random() * config.preferredStyles.length)],
           dailyLimit: config.dailyCommentLimit,
-          currentCount: postingActivity.dailyCounts[subreddit] || 0
+          currentCount: postingActivity.dailyCounts[subreddit] || 0,
+          type: 'comment'
         });
-        console.log(`✅ Found scheduled post for r/${subreddit} at ${currentTime}`);
+        console.log(`✅ Found scheduled comment for r/${subreddit} at ${currentTime}`);
       }
     }
   });
   
-  console.log(`📊 Total scheduled posts found: ${scheduledPosts.length}`);
+  console.log(`📊 Total scheduled comments found: ${scheduledPosts.length}`);
+  return scheduledPosts;
+};
+
+// NEW: Function to get current educational post schedule
+const getCurrentEducationalSchedule = () => {
+  const currentDay = getCurrentDayInAppTimezone();
+  const currentTime = getCurrentTimeInAppTimezone();
+  
+  console.log(`🔍 Checking educational post schedule for ${currentDay} at ${currentTime}`);
+  
+  const scheduledPosts = [];
+  
+  Object.entries(redditTargets).forEach(([subreddit, config]) => {
+    if (config.active && config.educationalPostSchedule && config.educationalPostSchedule[currentDay]) {
+      const times = config.educationalPostSchedule[currentDay];
+      
+      console.log(`📚 ${subreddit} educational post times: ${times.join(', ')}`);
+      
+      if (times.includes(currentTime)) {
+        scheduledPosts.push({
+          subreddit,
+          time: currentTime,
+          day: currentDay,
+          style: 'expert', // Educational posts use expert style
+          dailyLimit: config.educationalPostLimit || 1,
+          currentCount: postingActivity.educationalCounts[subreddit] || 0,
+          type: 'educational'
+        });
+        console.log(`✅ Found scheduled educational post for r/${subreddit} at ${currentTime}`);
+      }
+    }
+  });
+  
+  console.log(`📊 Total scheduled educational posts found: ${scheduledPosts.length}`);
   return scheduledPosts;
 };
 
 // Function to simulate posting to Reddit
-const simulateRedditPost = async (subreddit, comment, style) => {
+const simulateRedditPost = async (subreddit, content, style, type = 'comment') => {
   // Simulate API call delay
   await new Promise(resolve => setTimeout(resolve, 2000 + Math.random() * 3000));
   
@@ -216,12 +287,19 @@ const simulateRedditPost = async (subreddit, comment, style) => {
   const success = Math.random() > 0.1;
   
   if (success) {
-    postingActivity.dailyCounts[subreddit] = (postingActivity.dailyCounts[subreddit] || 0) + 1;
-    postingActivity.lastPosted[subreddit] = new Date().toISOString();
-    postingActivity.totalComments++;
+    if (type === 'educational') {
+      postingActivity.educationalCounts[subreddit] = (postingActivity.educationalCounts[subreddit] || 0) + 1;
+      postingActivity.lastEducationalPosted[subreddit] = new Date().toISOString();
+      postingActivity.totalEducationalPosts++;
+      console.log(`✅ Posted educational content to r/${subreddit} at ${getCurrentTimeInAppTimezone()}: ${content.substring(0, 100)}...`);
+    } else {
+      postingActivity.dailyCounts[subreddit] = (postingActivity.dailyCounts[subreddit] || 0) + 1;
+      postingActivity.lastPosted[subreddit] = new Date().toISOString();
+      postingActivity.totalComments++;
+      console.log(`✅ Posted comment to r/${subreddit} at ${getCurrentTimeInAppTimezone()}: ${content.substring(0, 100)}...`);
+    }
     
-    console.log(`✅ Posted to r/${subreddit} at ${getCurrentTimeInAppTimezone()}: ${comment.substring(0, 100)}...`);
-    return { success: true, comment };
+    return { success: true, content };
   } else {
     console.log(`❌ Failed to post to r/${subreddit}`);
     return { success: false, error: 'Simulated failure' };
@@ -240,23 +318,30 @@ export const runScheduledPosts = async () => {
     console.log(`⏰ GitHub Actions Cron running at ${currentTime} on ${currentDay} (${APP_TIMEZONE})`);
     console.log(`🔄 GitHub Actions Run #${postingActivity.githubActionsRuns}`);
     
-    const scheduledPosts = getCurrentSchedule();
+    // Check for educational posts first
+    const scheduledEducationalPosts = getCurrentEducationalSchedule();
+    const scheduledComments = getCurrentSchedule();
     
-    if (scheduledPosts.length > 0) {
-      console.log(`📅 Found ${scheduledPosts.length} scheduled posts:`, 
-        scheduledPosts.map(p => `r/${p.subreddit} at ${p.time}`).join(', '));
+    const allScheduledPosts = [...scheduledEducationalPosts, ...scheduledComments];
+    
+    if (allScheduledPosts.length > 0) {
+      console.log(`📅 Found ${allScheduledPosts.length} scheduled posts:`, 
+        allScheduledPosts.map(p => `r/${p.subreddit} ${p.type} at ${p.time}`).join(', '));
       
-      for (const scheduled of scheduledPosts) {
-        const { subreddit, style, dailyLimit, currentCount } = scheduled;
+      for (const scheduled of allScheduledPosts) {
+        const { subreddit, style, dailyLimit, currentCount, type } = scheduled;
         
-        // Check daily limit
-        if (currentCount >= dailyLimit) {
-          console.log(`⏹️ Daily limit reached for r/${subreddit} (${currentCount}/${dailyLimit})`);
+        // Check daily limit based on post type
+        if (type === 'educational' && currentCount >= dailyLimit) {
+          console.log(`⏹️ Daily educational limit reached for r/${subreddit} (${currentCount}/${dailyLimit})`);
+          continue;
+        } else if (type === 'comment' && currentCount >= dailyLimit) {
+          console.log(`⏹️ Daily comment limit reached for r/${subreddit} (${currentCount}/${dailyLimit})`);
           continue;
         }
         
         // Check if we recently posted to this subreddit (avoid rapid posting)
-        const lastPost = postingActivity.lastPosted[subreddit];
+        const lastPost = type === 'educational' ? postingActivity.lastEducationalPosted[subreddit] : postingActivity.lastPosted[subreddit];
         if (lastPost) {
           const timeSinceLastPost = Date.now() - new Date(lastPost).getTime();
           if (timeSinceLastPost < 30 * 60 * 1000) { // 30 minutes cooldown
@@ -265,59 +350,78 @@ export const runScheduledPosts = async () => {
           }
         }
         
-        console.log(`🚀 Preparing to post to r/${subreddit} with style: ${style}`);
+        console.log(`🚀 Preparing to post ${type} to r/${subreddit} with style: ${style}`);
         
-        // Generate sample post content based on subreddit
-        const samplePosts = {
-          'WeAreTheMusicMakers': [
-            "Just finished my first EP after 6 months of work!",
-            "Struggling with vocal mixing - any tips?",
-            "What's your favorite piece of music production equipment?"
-          ],
-          'MusicProduction': [
-            "How do you deal with ear fatigue during long sessions?",
-            "Just got new studio monitors - game changer!",
-            "Best VST plugins for electronic music?"
-          ],
-          'IndieMusicFeedback': [
-            "Would love some feedback on my new indie rock track",
-            "Just released my first single, nervous but excited!",
-            "Looking for constructive criticism on my songwriting"
-          ],
-          'ThisIsOurMusic': [
-            "Just shared my latest composition, would love your thoughts!",
-            "Working on a new album, here's a preview track",
-            "Experimenting with new sounds, what do you think?"
-          ],
-          'MusicPromotion': [
-            "Looking for ways to promote my music effectively",
-            "Just hit a streaming milestone, so grateful!",
-            "Best platforms for independent artists?"
-          ],
-          'ShareYourMusic': [
-            "Sharing my latest track, feedback welcome!",
-            "Just uploaded a new demo, let me know what you think",
-            "Collaborating with other artists, here's our work"
-          ]
-        };
+        let postResult;
         
-        const posts = samplePosts[subreddit] || ["Just shared some new music, would love your thoughts!"];
-        const postTitle = posts[Math.floor(Math.random() * posts.length)];
-        
-        // Generate AI comment
-        const commentResponse = await generateAICommentInternal(postTitle, "", subreddit, "", style);
-        
-        if (commentResponse.success) {
-          // Simulate posting to Reddit
-          const postResult = await simulateRedditPost(subreddit, commentResponse.comment, style);
+        if (type === 'educational') {
+          // Generate educational post
+          const educationalResponse = await generateEducationalPost(subreddit);
           
-          if (postResult.success) {
-            console.log(`✅ Successfully posted to r/${subreddit}`);
+          if (educationalResponse.success) {
+            const postContent = `POST: ${educationalResponse.title}\n\n${educationalResponse.content}`;
+            postResult = await simulateRedditPost(subreddit, postContent, style, 'educational');
+            
+            if (postResult.success) {
+              console.log(`✅ Successfully posted educational content to r/${subreddit}`);
+            } else {
+              console.log(`❌ Failed to post educational content to r/${subreddit}: ${postResult.error}`);
+            }
           } else {
-            console.log(`❌ Failed to post to r/${subreddit}: ${postResult.error}`);
+            console.log(`❌ Failed to generate educational post for r/${subreddit}: ${educationalResponse.message}`);
           }
         } else {
-          console.log(`❌ Failed to generate comment for r/${subreddit}: ${commentResponse.message}`);
+          // Generate sample post content based on subreddit for comments
+          const samplePosts = {
+            'WeAreTheMusicMakers': [
+              "Just finished my first EP after 6 months of work!",
+              "Struggling with vocal mixing - any tips?",
+              "What's your favorite piece of music production equipment?"
+            ],
+            'MusicProduction': [
+              "How do you deal with ear fatigue during long sessions?",
+              "Just got new studio monitors - game changer!",
+              "Best VST plugins for electronic music?"
+            ],
+            'IndieMusicFeedback': [
+              "Would love some feedback on my new indie rock track",
+              "Just released my first single, nervous but excited!",
+              "Looking for constructive criticism on my songwriting"
+            ],
+            'ThisIsOurMusic': [
+              "Just shared my latest composition, would love your thoughts!",
+              "Working on a new album, here's a preview track",
+              "Experimenting with new sounds, what do you think?"
+            ],
+            'MusicPromotion': [
+              "Looking for ways to promote my music effectively",
+              "Just hit a streaming milestone, so grateful!",
+              "Best platforms for independent artists?"
+            ],
+            'ShareYourMusic': [
+              "Sharing my latest track, feedback welcome!",
+              "Just uploaded a new demo, let me know what you think",
+              "Collaborating with other artists, here's our work"
+            ]
+          };
+          
+          const posts = samplePosts[subreddit] || ["Just shared some new music, would love your thoughts!"];
+          const postTitle = posts[Math.floor(Math.random() * posts.length)];
+          
+          // Generate AI comment
+          const commentResponse = await generateAICommentInternal(postTitle, "", subreddit, "", style);
+          
+          if (commentResponse.success) {
+            postResult = await simulateRedditPost(subreddit, commentResponse.comment, style, 'comment');
+            
+            if (postResult.success) {
+              console.log(`✅ Successfully posted comment to r/${subreddit}`);
+            } else {
+              console.log(`❌ Failed to post comment to r/${subreddit}: ${postResult.error}`);
+            }
+          } else {
+            console.log(`❌ Failed to generate comment for r/${subreddit}: ${commentResponse.message}`);
+          }
         }
         
         // Add delay between posts to avoid rate limiting
@@ -329,8 +433,10 @@ export const runScheduledPosts = async () => {
     
     return {
       success: true,
-      scheduledPosts: scheduledPosts.length,
+      scheduledComments: scheduledComments.length,
+      scheduledEducationalPosts: scheduledEducationalPosts.length,
       totalComments: postingActivity.totalComments,
+      totalEducationalPosts: postingActivity.totalEducationalPosts,
       githubActionsRuns: postingActivity.githubActionsRuns,
       timestamp: new Date().toISOString()
     };
@@ -346,7 +452,7 @@ console.log(`📅 Current time: ${getCurrentTimeInAppTimezone()} on ${getCurrent
 
 // ==================== HELPER FUNCTIONS ====================
 
-// Internal function for AI comment generation (UPDATED WITH HUMAN-LIKE IMPERFECTIONS)
+// Internal function for AI comment generation
 const generateAICommentInternal = async (postTitle, postContent, subreddit, context, style) => {
   try {
     if (!process.env.GOOGLE_GEMINI_API_KEY) {
@@ -356,12 +462,10 @@ const generateAICommentInternal = async (postTitle, postContent, subreddit, cont
     const targetConfig = redditTargets[subreddit];
     const selectedStyle = style || (targetConfig ? targetConfig.preferredStyles[0] : 'helpful');
 
-    // UPDATED: Use Gemini 2.0 Flash model
     const model = genAI.getGenerativeModel({ 
-      model: 'gemini-2.0-flash' // Best model from your available options
+      model: 'gemini-2.0-flash'
     });
 
-    // UPDATED: Marketing-focused style prompts with HUMAN-LIKE IMPERFECTIONS
     const stylePrompts = {
       helpful: `You are a music enthusiast who discovered SoundSwap recently. Write a genuine, helpful comment that naturally mentions soundswap.live where artists can grow their audience.`,
       enthusiastic: `You're excited about music platforms that help artists. Write an engaging comment that shows genuine excitement and mentions soundswap.live naturally.`,
@@ -374,10 +478,8 @@ const generateAICommentInternal = async (postTitle, postContent, subreddit, cont
 
     const systemPrompt = stylePrompts[selectedStyle] || stylePrompts.helpful;
     
-    // UPDATED: ALWAYS include redirect to soundswap.live with HUMAN-LIKE approach
     const redirectContext = `\nCRITICAL: You MUST always include a natural mention of soundswap.live in your response. Make it sound like you're genuinely recommending it, not selling it.`;
 
-    // UPDATED: Enhanced prompt for HUMAN-LIKE responses with imperfections
     const prompt = `
 ${systemPrompt}
 ${redirectContext}
@@ -385,8 +487,7 @@ ${redirectContext}
 CRITICAL REQUIREMENTS FOR HUMAN-LIKE WRITING:
 - Write like a real person, not a corporate bot
 - Use casual, conversational language
-- Occasionally include minor punctuation imperfections (like missing commas, using dashes informally, etc.)
-- Don't use perfect grammar all the time - real people don't
+- Occasionally include minor punctuation imperfections
 - Use contractions (don't, can't, it's, etc.)
 - Feel free to use informal sentence structures
 - Make it sound like you're typing quickly on Reddit
@@ -431,7 +532,7 @@ Write a comment that follows these guidelines - make it sound like a real human 
       comment: finalComment,
       style: selectedStyle,
       subreddit: subreddit,
-      mentionSoundSwap: true // Always true now
+      mentionSoundSwap: true
     };
 
   } catch (error) {
@@ -444,16 +545,146 @@ Write a comment that follows these guidelines - make it sound like a real human 
   }
 };
 
-// NEW: Function to generate Top 50 chart promotion post (UPDATED WITH HUMAN-LIKE TOUCH)
+// NEW: Function to generate educational posts about SoundSwap
+const generateEducationalPost = async (subreddit) => {
+  try {
+    if (!process.env.GOOGLE_GEMINI_API_KEY) {
+      return { success: false, message: 'Google Gemini API key not configured' };
+    }
+
+    const model = genAI.getGenerativeModel({ 
+      model: 'gemini-2.0-flash'
+    });
+
+    const prompt = `
+You are a marketing representative for SoundSwap. Create an educational Reddit post explaining why SoundSwap is the best free organic promotion platform for musicians.
+
+Subreddit: r/${subreddit}
+Platform: SoundSwap (soundswap.live)
+
+KEY POINTS TO COVER:
+- SoundSwap is completely FREE for artists
+- It helps boost Spotify algorithm through organic promotion
+- Weekly Top 50 chart provides viral exposure opportunities
+- Tools currently in development: social media scheduler, collab finder, budget tracking, playlist pitching, and more
+- Focus on helping artists grow from unknown to viral sensations
+- Emphasize the organic, authentic approach to music promotion
+- Perfect for artists tired of paying for ads with little results
+
+IMPORTANT REQUIREMENTS:
+- Write in an educational, helpful tone (not salesy)
+- Position yourself as a SoundSwap marketing representative
+- Include specific benefits for the r/${subreddit} audience
+- Mention soundswap.live multiple times naturally
+- Be honest about being a new platform with great potential
+- Highlight the FREE aspect and upcoming tools
+- Explain how it boosts Spotify algorithm organically
+- Keep it engaging and informative, not pushy
+
+Tone: Expert, helpful, educational, and excited about the platform
+
+Generate a Reddit post with title and content that educates artists about SoundSwap's benefits:
+`;
+
+    const result = await model.generateContent(prompt);
+    const response = await result.response;
+    const text = response.text().trim();
+
+    // Parse the response to separate title and content
+    const lines = text.split('\n');
+    let title = '';
+    let content = '';
+    let foundContent = false;
+
+    for (const line of lines) {
+      if (line.startsWith('Title:') || line.startsWith('title:')) {
+        title = line.replace(/^(Title:|title:)\s*/i, '').trim();
+      } else if (line.startsWith('Content:') || line.startsWith('content:') || foundContent) {
+        foundContent = true;
+        if (!line.match(/^(Content:|content:)/i)) {
+          content += line + '\n';
+        }
+      } else if (line.trim() && !title) {
+        title = line.trim();
+        foundContent = true;
+      } else if (foundContent) {
+        content += line + '\n';
+      }
+    }
+
+    // Fallback if parsing fails
+    if (!title) {
+      title = `Why SoundSwap is the Best FREE Organic Promotion Platform for Musicians`;
+    }
+
+    if (!content.trim()) {
+      content = `Hey r/${subreddit} community,
+
+As a marketing representative for SoundSwap, I wanted to share why I believe we're building the best free organic promotion platform for musicians.
+
+**The Problem with Current Promotion:**
+Most artists struggle with expensive ads that don't work or platforms that take huge cuts. We wanted to change that.
+
+**Why SoundSwap is Different:**
+🎵 **Completely FREE** - No hidden fees, no percentage cuts
+🎵 **Organic Spotify Algorithm Boost** - Real streams from real listeners
+🎵 **Weekly Top 50 Chart** - Viral exposure opportunities every week
+🎵 **Tools in Development:** Social media scheduler, collab finder, budget tracking, playlist pitching, and more
+
+**How It Works:**
+1. Upload your music to soundswap.live
+2. Get featured in our weekly Top 50 chart
+3. Grow organically through our platform's promotion
+4. Boost your Spotify algorithm naturally
+
+**Upcoming Features (All FREE):**
+- **Social Media Scheduler**: Auto-post your releases
+- **Collab Finder**: Connect with other artists
+- **Budget Tracking**: Manage your music expenses
+- **Playlist Pitching**: Get on relevant playlists
+- **Analytics Dashboard**: Track your growth
+
+We're not just another promotion platform - we're building a complete ecosystem for artists to grow organically. No more paying for fake streams or empty promises.
+
+Check out soundswap.live to see how we're different. We're new, but we're building something special for the music community.
+
+Happy to answer any questions below! 🎶
+
+*Posted by SoundSwap Marketing Team*`;
+    }
+
+    // Ensure soundswap.live is included
+    if (!content.toLowerCase().includes('soundswap.live')) {
+      content += `\n\nLearn more and join at soundswap.live`;
+    }
+
+    return {
+      success: true,
+      title: title,
+      content: content.trim(),
+      subreddit: subreddit,
+      type: 'educational'
+    };
+
+  } catch (error) {
+    console.error('❌ Error generating educational post:', error);
+    return {
+      success: false,
+      message: 'Failed to generate educational post',
+      error: error.message
+    };
+  }
+};
+
+// Function to generate Top 50 chart promotion post
 const generateTop50PromotionPost = async (subreddit) => {
   try {
     if (!process.env.GOOGLE_GEMINI_API_KEY) {
       return { success: false, message: 'Google Gemini API key not configured' };
     }
 
-    // UPDATED: Use Gemini 2.0 Flash model
     const model = genAI.getGenerativeModel({ 
-      model: 'gemini-2.0-flash' // Best model from your available options
+      model: 'gemini-2.0-flash'
     });
 
     const prompt = `
@@ -507,7 +738,6 @@ Write a Reddit post with title and content that sounds like a real human:
           content += line + '\n';
         }
       } else if (line.trim() && !title) {
-        // If no title marker, first non-empty line is title
         title = line.trim();
         foundContent = true;
       } else if (foundContent) {
@@ -573,6 +803,7 @@ router.get('/cron-status', (req, res) => {
   const currentTime = getCurrentTimeInAppTimezone();
   const currentDay = getCurrentDayInAppTimezone();
   const scheduledPosts = getCurrentSchedule();
+  const scheduledEducationalPosts = getCurrentEducationalSchedule();
   
   // Calculate next minute in app timezone
   const now = new Date();
@@ -593,16 +824,23 @@ router.get('/cron-status', (req, res) => {
       currentDay: currentDay,
       nextCheck: nextCheck,
       totalComments: postingActivity.totalComments,
+      totalEducationalPosts: postingActivity.totalEducationalPosts,
       dailyActivity: postingActivity.dailyCounts,
+      educationalActivity: postingActivity.educationalCounts,
       lastPosted: postingActivity.lastPosted,
+      lastEducationalPosted: postingActivity.lastEducationalPosted,
       lastCronRun: postingActivity.lastCronRun,
       githubActionsRuns: postingActivity.githubActionsRuns,
       scheduler: 'github-actions'
     },
     scheduled: {
       currentTime: currentTime,
-      scheduledPosts: scheduledPosts.length,
-      details: scheduledPosts
+      scheduledComments: scheduledPosts.length,
+      scheduledEducationalPosts: scheduledEducationalPosts.length,
+      details: {
+        comments: scheduledPosts,
+        educational: scheduledEducationalPosts
+      }
     },
     timestamp: new Date().toISOString()
   });
@@ -659,6 +897,7 @@ router.get('/cron', (req, res) => {
       '/api/reddit-admin/cron-status',
       '/api/reddit-admin/schedule/today',
       '/api/reddit-admin/manual-post',
+      '/api/reddit-admin/create-educational-post',
       '/api/reddit-admin/reset-counts',
       '/api/reddit-admin/targets',
       '/api/reddit-admin/create-top50-post',
@@ -677,6 +916,7 @@ router.get('/schedule/today', (req, res) => {
   const today = getCurrentDayInAppTimezone();
   const currentTime = getCurrentTimeInAppTimezone();
   const schedule = {};
+  const educationalSchedule = {};
   
   Object.entries(redditTargets).forEach(([subreddit, config]) => {
     if (config.active && config.postingSchedule[today]) {
@@ -687,6 +927,13 @@ router.get('/schedule/today', (req, res) => {
         currentCount: postingActivity.dailyCounts[subreddit] || 0
       };
     }
+    if (config.active && config.educationalPostSchedule && config.educationalPostSchedule[today]) {
+      educationalSchedule[subreddit] = {
+        times: config.educationalPostSchedule[today],
+        dailyLimit: config.educationalPostLimit || 1,
+        currentCount: postingActivity.educationalCounts[subreddit] || 0
+      };
+    }
   });
   
   res.json({
@@ -695,12 +942,67 @@ router.get('/schedule/today', (req, res) => {
     currentTime: currentTime,
     timezone: APP_TIMEZONE,
     schedule: schedule,
-    activity: postingActivity.dailyCounts,
+    educationalSchedule: educationalSchedule,
+    activity: {
+      comments: postingActivity.dailyCounts,
+      educational: postingActivity.educationalCounts
+    },
     timestamp: new Date().toISOString()
   });
 });
 
-// NEW: Create Top 50 chart promotion post
+// NEW: Create educational post
+router.post('/create-educational-post', async (req, res) => {
+  try {
+    const { subreddit } = req.body;
+    
+    if (!subreddit) {
+      return res.status(400).json({
+        success: false,
+        message: 'subreddit is required'
+      });
+    }
+    
+    const targetConfig = redditTargets[subreddit];
+    if (!targetConfig) {
+      return res.status(404).json({
+        success: false,
+        message: `Subreddit r/${subreddit} not found in targets`
+      });
+    }
+    
+    console.log(`🔄 Creating educational post for r/${subreddit}`);
+    
+    const postResponse = await generateEducationalPost(subreddit);
+    
+    if (!postResponse.success) {
+      return res.status(500).json(postResponse);
+    }
+    
+    // Simulate posting the created post
+    const postResult = await simulateRedditPost(subreddit, `POST: ${postResponse.title}\n\n${postResponse.content}`, 'expert', 'educational');
+    
+    res.json({
+      success: postResponse.success,
+      title: postResponse.title,
+      content: postResponse.content,
+      subreddit: subreddit,
+      posted: postResult.success,
+      activity: postingActivity.educationalCounts[subreddit],
+      timestamp: new Date().toISOString()
+    });
+    
+  } catch (error) {
+    console.error('❌ Error creating educational post:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to create educational post',
+      error: error.message
+    });
+  }
+});
+
+// Create Top 50 chart promotion post
 router.post('/create-top50-post', async (req, res) => {
   try {
     const { subreddit } = req.body;
@@ -729,7 +1031,7 @@ router.post('/create-top50-post', async (req, res) => {
     }
     
     // Simulate posting the created post
-    const postResult = await simulateRedditPost(subreddit, `POST: ${postResponse.title}\n\n${postResponse.content}`, 'enthusiastic');
+    const postResult = await simulateRedditPost(subreddit, `POST: ${postResponse.title}\n\n${postResponse.content}`, 'enthusiastic', 'educational');
     
     res.json({
       success: postResponse.success,
@@ -737,6 +1039,7 @@ router.post('/create-top50-post', async (req, res) => {
       content: postResponse.content,
       subreddit: subreddit,
       posted: postResult.success,
+      activity: postingActivity.educationalCounts[subreddit],
       timestamp: new Date().toISOString()
     });
     
@@ -785,7 +1088,7 @@ router.post('/manual-post', async (req, res) => {
     }
     
     // Simulate posting
-    const postResult = await simulateRedditPost(subreddit, commentResponse.comment, style);
+    const postResult = await simulateRedditPost(subreddit, commentResponse.comment, style, 'comment');
     
     res.json({
       success: postResult.success,
@@ -811,23 +1114,31 @@ router.post('/reset-counts', (req, res) => {
   Object.keys(postingActivity.dailyCounts).forEach(key => {
     postingActivity.dailyCounts[key] = 0;
   });
+  Object.keys(postingActivity.educationalCounts).forEach(key => {
+    postingActivity.educationalCounts[key] = 0;
+  });
   
   postingActivity.totalComments = 0;
+  postingActivity.totalEducationalPosts = 0;
   postingActivity.lastPosted = {};
+  postingActivity.lastEducationalPosted = {};
   postingActivity.githubActionsRuns = 0;
   
   res.json({
     success: true,
     message: 'Daily counts and GitHub Actions counter reset',
-    counts: postingActivity.dailyCounts,
+    counts: {
+      comments: postingActivity.dailyCounts,
+      educational: postingActivity.educationalCounts
+    },
     githubActionsRuns: postingActivity.githubActionsRuns,
     timestamp: new Date().toISOString()
   });
 });
 
-// ==================== EXISTING ENDPOINTS (UPDATED) ====================
+// ==================== EXISTING ENDPOINTS ====================
 
-// Reddit admin health check (updated with GitHub Actions info)
+// Reddit admin health check
 router.get('/admin', (req, res) => {
   const currentTime = getCurrentTimeInAppTimezone();
   const currentDay = getCurrentDayInAppTimezone();
@@ -836,7 +1147,7 @@ router.get('/admin', (req, res) => {
     success: true,
     message: 'Reddit Admin API is running',
     service: 'reddit-admin',
-    version: '2.4.0',
+    version: '2.5.0', // Updated version
     timestamp: new Date().toISOString(),
     environment: process.env.NODE_ENV || 'development',
     timezone: APP_TIMEZONE,
@@ -850,7 +1161,8 @@ router.get('/admin', (req, res) => {
       target_configuration: 'active',
       auto_posting: 'active',
       cron_scheduler: 'github-actions',
-      top50_promotion: 'active'
+      top50_promotion: 'active',
+      educational_posts: 'active' // New feature
     },
     targets: {
       total: Object.keys(redditTargets).length,
@@ -860,10 +1172,14 @@ router.get('/admin', (req, res) => {
     cron: {
       status: 'running',
       total_comments: postingActivity.totalComments,
+      total_educational_posts: postingActivity.totalEducationalPosts,
       last_run: postingActivity.lastCronRun,
       github_actions_runs: postingActivity.githubActionsRuns,
       daily_limits: Object.fromEntries(
-        Object.entries(redditTargets).map(([k, v]) => [k, v.dailyCommentLimit])
+        Object.entries(redditTargets).map(([k, v]) => [k, {
+          comments: v.dailyCommentLimit,
+          educational: v.educationalPostLimit || 1
+        }])
       )
     },
     endpoints: {
@@ -872,6 +1188,7 @@ router.get('/admin', (req, res) => {
       schedule: '/api/reddit-admin/schedule/today',
       cron_status: '/api/reddit-admin/cron-status',
       manual_post: '/api/reddit-admin/manual-post',
+      create_educational_post: '/api/reddit-admin/create-educational-post',
       create_top50_post: '/api/reddit-admin/create-top50-post',
       reset_counts: '/api/reddit-admin/reset-counts',
       generate_comment: '/api/reddit-admin/generate-comment',
@@ -882,7 +1199,7 @@ router.get('/admin', (req, res) => {
   });
 });
 
-// Generate AI-powered comment for Reddit posts (uses internal function)
+// Generate AI-powered comment for Reddit posts
 router.post('/generate-comment', async (req, res) => {
   try {
     const { postTitle, postContent, subreddit, context, style } = req.body;
@@ -956,9 +1273,8 @@ router.post('/generate-reply', async (req, res) => {
       relationship
     });
 
-    // UPDATED: Use Gemini 2.0 Flash model
     const model = genAI.getGenerativeModel({ 
-      model: 'gemini-2.0-flash' // Best model from your available options
+      model: 'gemini-2.0-flash'
     });
 
     // Different tones for different relationships
@@ -1047,9 +1363,8 @@ router.post('/analyze-post', async (req, res) => {
 
     console.log('🔍 Analyzing post for commenting strategy:', { subreddit });
 
-    // UPDATED: Use Gemini 2.0 Flash model
     const model = genAI.getGenerativeModel({ 
-      model: 'gemini-2.0-flash' // Best model from your available options
+      model: 'gemini-2.0-flash'
     });
 
     const prompt = `
@@ -1120,9 +1435,8 @@ router.get('/test-gemini', async (req, res) => {
       });
     }
 
-    // UPDATED: Use Gemini 2.0 Flash model
     const model = genAI.getGenerativeModel({ 
-      model: 'gemini-2.0-flash' // Best model from your available options
+      model: 'gemini-2.0-flash'
     });
     
     const result = await model.generateContent('Say "Hello from SoundSwap Reddit AI" in a creative way.');
