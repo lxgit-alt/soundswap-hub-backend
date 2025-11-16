@@ -1,7 +1,28 @@
 import express from 'express';
 import { GoogleGenerativeAI } from '@google/generative-ai';
+import { initializeApp } from 'firebase/app';
+import { getFirestore, collection, addDoc, getDocs, query, where, updateDoc, doc, getDoc, deleteDoc, orderBy, limit } from 'firebase/firestore';
 
 const router = express.Router();
+
+// Initialize Firebase
+const firebaseConfig = {
+  apiKey: process.env.FIREBASE_API_KEY,
+  authDomain: process.env.FIREBASE_AUTH_DOMAIN,
+  projectId: process.env.FIREBASE_PROJECT_ID,
+  storageBucket: process.env.FIREBASE_STORAGE_BUCKET,
+  messagingSenderId: process.env.FIREBASE_MESSAGING_SENDER_ID,
+  appId: process.env.FIREBASE_APP_ID
+};
+
+// Initialize Firebase app and Firestore
+const firebaseApp = initializeApp(firebaseConfig);
+const db = getFirestore(firebaseApp);
+
+// Collections
+const SCHEDULED_POSTS_COLLECTION = 'scheduledPosts';
+const EDUCATIONAL_POSTS_COLLECTION = 'educationalPosts';
+const POSTING_ACTIVITY_COLLECTION = 'postingActivity';
 
 // Initialize Google Gemini AI - Updated for Gemini 2.0 Flash
 const genAI = new GoogleGenerativeAI(process.env.GOOGLE_GEMINI_API_KEY);
@@ -189,25 +210,194 @@ const redditTargets = {
   }
 };
 
-// ==================== CRON SCHEDULER ====================
+// ==================== FIREBASE FUNCTIONS ====================
 
-// Track posting activity
-const postingActivity = {
-  dailyCounts: {},
-  educationalCounts: {},
-  lastPosted: {},
-  lastEducationalPosted: {},
-  totalComments: 0,
-  totalEducationalPosts: 0,
-  lastCronRun: null,
-  githubActionsRuns: 0
+// Initialize or get posting activity
+const initializePostingActivity = async () => {
+  try {
+    const activityRef = collection(db, POSTING_ACTIVITY_COLLECTION);
+    const q = query(activityRef, orderBy('timestamp', 'desc'), limit(1));
+    const snapshot = await getDocs(q);
+    
+    if (snapshot.empty) {
+      const initialActivity = {
+        dailyCounts: {},
+        educationalCounts: {},
+        lastPosted: {},
+        lastEducationalPosted: {},
+        totalComments: 0,
+        totalEducationalPosts: 0,
+        lastCronRun: null,
+        githubActionsRuns: 0,
+        timestamp: new Date().toISOString()
+      };
+      
+      // Initialize counts for all subreddits
+      Object.keys(redditTargets).forEach(subreddit => {
+        initialActivity.dailyCounts[subreddit] = 0;
+        initialActivity.educationalCounts[subreddit] = 0;
+      });
+      
+      const docRef = await addDoc(activityRef, initialActivity);
+      console.log('✅ Initialized new posting activity record:', docRef.id);
+      return initialActivity;
+    } else {
+      const activityDoc = snapshot.docs[0].data();
+      console.log('✅ Loaded existing posting activity');
+      return activityDoc;
+    }
+  } catch (error) {
+    console.error('❌ Error initializing posting activity:', error);
+    // Return fallback activity object
+    const fallbackActivity = {
+      dailyCounts: {},
+      educationalCounts: {},
+      lastPosted: {},
+      lastEducationalPosted: {},
+      totalComments: 0,
+      totalEducationalPosts: 0,
+      lastCronRun: null,
+      githubActionsRuns: 0,
+      timestamp: new Date().toISOString()
+    };
+    
+    Object.keys(redditTargets).forEach(subreddit => {
+      fallbackActivity.dailyCounts[subreddit] = 0;
+      fallbackActivity.educationalCounts[subreddit] = 0;
+    });
+    
+    return fallbackActivity;
+  }
 };
 
-// Initialize daily counts
-Object.keys(redditTargets).forEach(subreddit => {
-  postingActivity.dailyCounts[subreddit] = 0;
-  postingActivity.educationalCounts[subreddit] = 0;
-});
+// Save posting activity to Firebase
+const savePostingActivity = async (activity) => {
+  try {
+    const activityRef = collection(db, POSTING_ACTIVITY_COLLECTION);
+    await addDoc(activityRef, {
+      ...activity,
+      timestamp: new Date().toISOString()
+    });
+    console.log('✅ Saved posting activity to Firebase');
+  } catch (error) {
+    console.error('❌ Error saving posting activity:', error);
+  }
+};
+
+// Store scheduled post in Firebase
+const storeScheduledPost = async (postData) => {
+  try {
+    const postsRef = collection(db, SCHEDULED_POSTS_COLLECTION);
+    const docRef = await addDoc(postsRef, {
+      ...postData,
+      createdAt: new Date().toISOString(),
+      posted: false,
+      postedAt: null
+    });
+    console.log(`✅ Stored scheduled post for r/${postData.subreddit} at ${postData.scheduledTime}`);
+    return docRef.id;
+  } catch (error) {
+    console.error('❌ Error storing scheduled post:', error);
+    return null;
+  }
+};
+
+// Store educational post in Firebase
+const storeEducationalPost = async (postData) => {
+  try {
+    const postsRef = collection(db, EDUCATIONAL_POSTS_COLLECTION);
+    const docRef = await addDoc(postsRef, {
+      ...postData,
+      createdAt: new Date().toISOString(),
+      posted: false,
+      postedAt: null
+    });
+    console.log(`✅ Stored educational post for r/${postData.subreddit}`);
+    return docRef.id;
+  } catch (error) {
+    console.error('❌ Error storing educational post:', error);
+    return null;
+  }
+};
+
+// Get scheduled posts for current time
+const getScheduledPostsForCurrentTime = async () => {
+  try {
+    const currentDay = getCurrentDayInAppTimezone();
+    const currentTime = getCurrentTimeInAppTimezone();
+    
+    const postsRef = collection(db, SCHEDULED_POSTS_COLLECTION);
+    const q = query(
+      postsRef, 
+      where('scheduledDay', '==', currentDay),
+      where('scheduledTime', '==', currentTime),
+      where('posted', '==', false)
+    );
+    
+    const snapshot = await getDocs(q);
+    const posts = [];
+    
+    snapshot.forEach(doc => {
+      posts.push({ id: doc.id, ...doc.data() });
+    });
+    
+    console.log(`📊 Found ${posts.length} scheduled posts in Firebase for ${currentTime} on ${currentDay}`);
+    return posts;
+  } catch (error) {
+    console.error('❌ Error getting scheduled posts:', error);
+    return [];
+  }
+};
+
+// Get educational posts for current time
+const getEducationalPostsForCurrentTime = async () => {
+  try {
+    const currentDay = getCurrentDayInAppTimezone();
+    const currentTime = getCurrentTimeInAppTimezone();
+    
+    const postsRef = collection(db, EDUCATIONAL_POSTS_COLLECTION);
+    const q = query(
+      postsRef, 
+      where('scheduledDay', '==', currentDay),
+      where('scheduledTime', '==', currentTime),
+      where('posted', '==', false)
+    );
+    
+    const snapshot = await getDocs(q);
+    const posts = [];
+    
+    snapshot.forEach(doc => {
+      posts.push({ id: doc.id, ...doc.data() });
+    });
+    
+    console.log(`📊 Found ${posts.length} educational posts in Firebase for ${currentTime} on ${currentDay}`);
+    return posts;
+  } catch (error) {
+    console.error('❌ Error getting educational posts:', error);
+    return [];
+  }
+};
+
+// Mark post as posted
+const markPostAsPosted = async (postId, collectionName) => {
+  try {
+    const postRef = doc(db, collectionName, postId);
+    await updateDoc(postRef, {
+      posted: true,
+      postedAt: new Date().toISOString()
+    });
+    console.log(`✅ Marked post ${postId} as posted`);
+    return true;
+  } catch (error) {
+    console.error('❌ Error marking post as posted:', error);
+    return false;
+  }
+};
+
+// ==================== CRON SCHEDULER ====================
+
+// Initialize posting activity
+let postingActivity = await initializePostingActivity();
 
 // Function to get current schedule for all active subreddits
 const getCurrentSchedule = () => {
@@ -244,7 +434,7 @@ const getCurrentSchedule = () => {
   return scheduledPosts;
 };
 
-// NEW: Function to get current educational post schedule
+// Function to get current educational post schedule
 const getCurrentEducationalSchedule = () => {
   const currentDay = getCurrentDayInAppTimezone();
   const currentTime = getCurrentTimeInAppTimezone();
@@ -299,10 +489,80 @@ const simulateRedditPost = async (subreddit, content, style, type = 'comment') =
       console.log(`✅ Posted comment to r/${subreddit} at ${getCurrentTimeInAppTimezone()}: ${content.substring(0, 100)}...`);
     }
     
+    // Save activity to Firebase
+    await savePostingActivity(postingActivity);
+    
     return { success: true, content };
   } else {
     console.log(`❌ Failed to post to r/${subreddit}`);
     return { success: false, error: 'Simulated failure' };
+  }
+};
+
+// NEW: Function to generate and store posts for the day
+const generateDailyPosts = async () => {
+  try {
+    const currentDay = getCurrentDayInAppTimezone();
+    console.log(`🔄 Generating daily posts for ${currentDay}`);
+    
+    let totalGenerated = 0;
+    
+    // Generate regular comments
+    for (const [subreddit, config] of Object.entries(redditTargets)) {
+      if (config.active && config.postingSchedule[currentDay]) {
+        const times = config.postingSchedule[currentDay];
+        
+        for (const time of times) {
+          const style = config.preferredStyles[Math.floor(Math.random() * config.preferredStyles.length)];
+          
+          // Store scheduled post in Firebase
+          await storeScheduledPost({
+            subreddit,
+            scheduledDay: currentDay,
+            scheduledTime: time,
+            style: style,
+            type: 'comment',
+            dailyLimit: config.dailyCommentLimit
+          });
+          
+          totalGenerated++;
+        }
+      }
+    }
+    
+    // Generate educational posts
+    for (const [subreddit, config] of Object.entries(redditTargets)) {
+      if (config.active && config.educationalPostSchedule && config.educationalPostSchedule[currentDay]) {
+        const times = config.educationalPostSchedule[currentDay];
+        
+        for (const time of times) {
+          // Generate educational post content
+          const educationalResponse = await generateEducationalPost(subreddit);
+          
+          if (educationalResponse.success) {
+            await storeEducationalPost({
+              subreddit,
+              scheduledDay: currentDay,
+              scheduledTime: time,
+              style: 'expert',
+              type: 'educational',
+              title: educationalResponse.title,
+              content: educationalResponse.content,
+              dailyLimit: config.educationalPostLimit || 1
+            });
+            
+            totalGenerated++;
+          }
+        }
+      }
+    }
+    
+    console.log(`✅ Generated ${totalGenerated} posts for ${currentDay}`);
+    return { success: true, totalGenerated };
+    
+  } catch (error) {
+    console.error('❌ Error generating daily posts:', error);
+    return { success: false, error: error.message };
   }
 };
 
@@ -318,30 +578,28 @@ export const runScheduledPosts = async () => {
     console.log(`⏰ GitHub Actions Cron running at ${currentTime} on ${currentDay} (${APP_TIMEZONE})`);
     console.log(`🔄 GitHub Actions Run #${postingActivity.githubActionsRuns}`);
     
-    // Check for educational posts first
-    const scheduledEducationalPosts = getCurrentEducationalSchedule();
-    const scheduledComments = getCurrentSchedule();
+    // Check for posts in Firebase first
+    const scheduledPostsFromDB = await getScheduledPostsForCurrentTime();
+    const educationalPostsFromDB = await getEducationalPostsForCurrentTime();
     
-    const allScheduledPosts = [...scheduledEducationalPosts, ...scheduledComments];
+    let totalPosted = 0;
     
-    if (allScheduledPosts.length > 0) {
-      console.log(`📅 Found ${allScheduledPosts.length} scheduled posts:`, 
-        allScheduledPosts.map(p => `r/${p.subreddit} ${p.type} at ${p.time}`).join(', '));
+    // Process posts from Firebase
+    if (scheduledPostsFromDB.length > 0 || educationalPostsFromDB.length > 0) {
+      console.log(`📅 Found ${scheduledPostsFromDB.length + educationalPostsFromDB.length} scheduled posts in Firebase`);
       
-      for (const scheduled of allScheduledPosts) {
-        const { subreddit, style, dailyLimit, currentCount, type } = scheduled;
+      // Process regular comments
+      for (const post of scheduledPostsFromDB) {
+        const { subreddit, style, dailyLimit } = post;
+        const currentCount = postingActivity.dailyCounts[subreddit] || 0;
         
-        // Check daily limit based on post type
-        if (type === 'educational' && currentCount >= dailyLimit) {
-          console.log(`⏹️ Daily educational limit reached for r/${subreddit} (${currentCount}/${dailyLimit})`);
-          continue;
-        } else if (type === 'comment' && currentCount >= dailyLimit) {
-          console.log(`⏹️ Daily comment limit reached for r/${subreddit} (${currentCount}/${dailyLimit})`);
+        if (currentCount >= dailyLimit) {
+          console.log(`⏹️ Daily limit reached for r/${subreddit} (${currentCount}/${dailyLimit})`);
           continue;
         }
         
-        // Check if we recently posted to this subreddit (avoid rapid posting)
-        const lastPost = type === 'educational' ? postingActivity.lastEducationalPosted[subreddit] : postingActivity.lastPosted[subreddit];
+        // Check cooldown
+        const lastPost = postingActivity.lastPosted[subreddit];
         if (lastPost) {
           const timeSinceLastPost = Date.now() - new Date(lastPost).getTime();
           if (timeSinceLastPost < 30 * 60 * 1000) { // 30 minutes cooldown
@@ -350,94 +608,231 @@ export const runScheduledPosts = async () => {
           }
         }
         
-        console.log(`🚀 Preparing to post ${type} to r/${subreddit} with style: ${style}`);
+        console.log(`🚀 Preparing to post comment to r/${subreddit} with style: ${style}`);
         
-        let postResult;
+        // Generate sample post content for comment context
+        const samplePosts = {
+          'WeAreTheMusicMakers': [
+            "Just finished my first EP after 6 months of work!",
+            "Struggling with vocal mixing - any tips?",
+            "What's your favorite piece of music production equipment?"
+          ],
+          'MusicProduction': [
+            "How do you deal with ear fatigue during long sessions?",
+            "Just got new studio monitors - game changer!",
+            "Best VST plugins for electronic music?"
+          ],
+          'IndieMusicFeedback': [
+            "Would love some feedback on my new indie rock track",
+            "Just released my first single, nervous but excited!",
+            "Looking for constructive criticism on my songwriting"
+          ],
+          'ThisIsOurMusic': [
+            "Just shared my latest composition, would love your thoughts!",
+            "Working on a new album, here's a preview track",
+            "Experimenting with new sounds, what do you think?"
+          ],
+          'MusicPromotion': [
+            "Looking for ways to promote my music effectively",
+            "Just hit a streaming milestone, so grateful!",
+            "Best platforms for independent artists?"
+          ],
+          'ShareYourMusic': [
+            "Sharing my latest track, feedback welcome!",
+            "Just uploaded a new demo, let me know what you think",
+            "Collaborating with other artists, here's our work"
+          ]
+        };
         
-        if (type === 'educational') {
-          // Generate educational post
-          const educationalResponse = await generateEducationalPost(subreddit);
+        const posts = samplePosts[subreddit] || ["Just shared some new music, would love your thoughts!"];
+        const postTitle = posts[Math.floor(Math.random() * posts.length)];
+        
+        // Generate AI comment
+        const commentResponse = await generateAICommentInternal(postTitle, "", subreddit, "", style);
+        
+        if (commentResponse.success) {
+          const postResult = await simulateRedditPost(subreddit, commentResponse.comment, style, 'comment');
           
-          if (educationalResponse.success) {
-            const postContent = `POST: ${educationalResponse.title}\n\n${educationalResponse.content}`;
-            postResult = await simulateRedditPost(subreddit, postContent, style, 'educational');
-            
-            if (postResult.success) {
-              console.log(`✅ Successfully posted educational content to r/${subreddit}`);
-            } else {
-              console.log(`❌ Failed to post educational content to r/${subreddit}: ${postResult.error}`);
-            }
+          if (postResult.success) {
+            await markPostAsPosted(post.id, SCHEDULED_POSTS_COLLECTION);
+            totalPosted++;
+            console.log(`✅ Successfully posted comment to r/${subreddit}`);
           } else {
-            console.log(`❌ Failed to generate educational post for r/${subreddit}: ${educationalResponse.message}`);
+            console.log(`❌ Failed to post comment to r/${subreddit}: ${postResult.error}`);
           }
         } else {
-          // Generate sample post content based on subreddit for comments
-          const samplePosts = {
-            'WeAreTheMusicMakers': [
-              "Just finished my first EP after 6 months of work!",
-              "Struggling with vocal mixing - any tips?",
-              "What's your favorite piece of music production equipment?"
-            ],
-            'MusicProduction': [
-              "How do you deal with ear fatigue during long sessions?",
-              "Just got new studio monitors - game changer!",
-              "Best VST plugins for electronic music?"
-            ],
-            'IndieMusicFeedback': [
-              "Would love some feedback on my new indie rock track",
-              "Just released my first single, nervous but excited!",
-              "Looking for constructive criticism on my songwriting"
-            ],
-            'ThisIsOurMusic': [
-              "Just shared my latest composition, would love your thoughts!",
-              "Working on a new album, here's a preview track",
-              "Experimenting with new sounds, what do you think?"
-            ],
-            'MusicPromotion': [
-              "Looking for ways to promote my music effectively",
-              "Just hit a streaming milestone, so grateful!",
-              "Best platforms for independent artists?"
-            ],
-            'ShareYourMusic': [
-              "Sharing my latest track, feedback welcome!",
-              "Just uploaded a new demo, let me know what you think",
-              "Collaborating with other artists, here's our work"
-            ]
-          };
-          
-          const posts = samplePosts[subreddit] || ["Just shared some new music, would love your thoughts!"];
-          const postTitle = posts[Math.floor(Math.random() * posts.length)];
-          
-          // Generate AI comment
-          const commentResponse = await generateAICommentInternal(postTitle, "", subreddit, "", style);
-          
-          if (commentResponse.success) {
-            postResult = await simulateRedditPost(subreddit, commentResponse.comment, style, 'comment');
-            
-            if (postResult.success) {
-              console.log(`✅ Successfully posted comment to r/${subreddit}`);
-            } else {
-              console.log(`❌ Failed to post comment to r/${subreddit}: ${postResult.error}`);
-            }
-          } else {
-            console.log(`❌ Failed to generate comment for r/${subreddit}: ${commentResponse.message}`);
+          console.log(`❌ Failed to generate comment for r/${subreddit}: ${commentResponse.message}`);
+        }
+        
+        // Add delay between posts to avoid rate limiting
+        await new Promise(resolve => setTimeout(resolve, 10000));
+      }
+      
+      // Process educational posts
+      for (const post of educationalPostsFromDB) {
+        const { subreddit, title, content, dailyLimit } = post;
+        const currentCount = postingActivity.educationalCounts[subreddit] || 0;
+        
+        if (currentCount >= dailyLimit) {
+          console.log(`⏹️ Daily educational limit reached for r/${subreddit} (${currentCount}/${dailyLimit})`);
+          continue;
+        }
+        
+        // Check cooldown
+        const lastPost = postingActivity.lastEducationalPosted[subreddit];
+        if (lastPost) {
+          const timeSinceLastPost = Date.now() - new Date(lastPost).getTime();
+          if (timeSinceLastPost < 30 * 60 * 1000) { // 30 minutes cooldown
+            console.log(`⏳ Cooldown active for r/${subreddit} educational posts`);
+            continue;
           }
+        }
+        
+        console.log(`🚀 Preparing to post educational content to r/${subreddit}`);
+        
+        const postContent = `POST: ${title}\n\n${content}`;
+        const postResult = await simulateRedditPost(subreddit, postContent, 'expert', 'educational');
+        
+        if (postResult.success) {
+          await markPostAsPosted(post.id, EDUCATIONAL_POSTS_COLLECTION);
+          totalPosted++;
+          console.log(`✅ Successfully posted educational content to r/${subreddit}`);
+        } else {
+          console.log(`❌ Failed to post educational content to r/${subreddit}: ${postResult.error}`);
         }
         
         // Add delay between posts to avoid rate limiting
         await new Promise(resolve => setTimeout(resolve, 10000));
       }
     } else {
-      console.log('⏰ No scheduled posts for this time slot');
+      console.log('⏰ No scheduled posts in Firebase for this time slot');
+      
+      // Fallback to old method if no posts in Firebase
+      const scheduledEducationalPosts = getCurrentEducationalSchedule();
+      const scheduledComments = getCurrentSchedule();
+      
+      const allScheduledPosts = [...scheduledEducationalPosts, ...scheduledComments];
+      
+      if (allScheduledPosts.length > 0) {
+        console.log(`📅 Found ${allScheduledPosts.length} scheduled posts using fallback method`);
+        
+        for (const scheduled of allScheduledPosts) {
+          const { subreddit, style, dailyLimit, currentCount, type } = scheduled;
+          
+          // Check daily limit based on post type
+          if (type === 'educational' && currentCount >= dailyLimit) {
+            console.log(`⏹️ Daily educational limit reached for r/${subreddit} (${currentCount}/${dailyLimit})`);
+            continue;
+          } else if (type === 'comment' && currentCount >= dailyLimit) {
+            console.log(`⏹️ Daily comment limit reached for r/${subreddit} (${currentCount}/${dailyLimit})`);
+            continue;
+          }
+          
+          // Check if we recently posted to this subreddit (avoid rapid posting)
+          const lastPost = type === 'educational' ? postingActivity.lastEducationalPosted[subreddit] : postingActivity.lastPosted[subreddit];
+          if (lastPost) {
+            const timeSinceLastPost = Date.now() - new Date(lastPost).getTime();
+            if (timeSinceLastPost < 30 * 60 * 1000) { // 30 minutes cooldown
+              console.log(`⏳ Cooldown active for r/${subreddit}`);
+              continue;
+            }
+          }
+          
+          console.log(`🚀 Preparing to post ${type} to r/${subreddit} with style: ${style}`);
+          
+          let postResult;
+          
+          if (type === 'educational') {
+            // Generate educational post
+            const educationalResponse = await generateEducationalPost(subreddit);
+            
+            if (educationalResponse.success) {
+              const postContent = `POST: ${educationalResponse.title}\n\n${educationalResponse.content}`;
+              postResult = await simulateRedditPost(subreddit, postContent, style, 'educational');
+              
+              if (postResult.success) {
+                console.log(`✅ Successfully posted educational content to r/${subreddit}`);
+                totalPosted++;
+              } else {
+                console.log(`❌ Failed to post educational content to r/${subreddit}: ${postResult.error}`);
+              }
+            } else {
+              console.log(`❌ Failed to generate educational post for r/${subreddit}: ${educationalResponse.message}`);
+            }
+          } else {
+            // Generate sample post content based on subreddit for comments
+            const samplePosts = {
+              'WeAreTheMusicMakers': [
+                "Just finished my first EP after 6 months of work!",
+                "Struggling with vocal mixing - any tips?",
+                "What's your favorite piece of music production equipment?"
+              ],
+              'MusicProduction': [
+                "How do you deal with ear fatigue during long sessions?",
+                "Just got new studio monitors - game changer!",
+                "Best VST plugins for electronic music?"
+              ],
+              'IndieMusicFeedback': [
+                "Would love some feedback on my new indie rock track",
+                "Just released my first single, nervous but excited!",
+                "Looking for constructive criticism on my songwriting"
+              ],
+              'ThisIsOurMusic': [
+                "Just shared my latest composition, would love your thoughts!",
+                "Working on a new album, here's a preview track",
+                "Experimenting with new sounds, what do you think?"
+              ],
+              'MusicPromotion': [
+                "Looking for ways to promote my music effectively",
+                "Just hit a streaming milestone, so grateful!",
+                "Best platforms for independent artists?"
+              ],
+              'ShareYourMusic': [
+                "Sharing my latest track, feedback welcome!",
+                "Just uploaded a new demo, let me know what you think",
+                "Collaborating with other artists, here's our work"
+              ]
+            };
+            
+            const posts = samplePosts[subreddit] || ["Just shared some new music, would love your thoughts!"];
+            const postTitle = posts[Math.floor(Math.random() * posts.length)];
+            
+            // Generate AI comment
+            const commentResponse = await generateAICommentInternal(postTitle, "", subreddit, "", style);
+            
+            if (commentResponse.success) {
+              postResult = await simulateRedditPost(subreddit, commentResponse.comment, style, 'comment');
+              
+              if (postResult.success) {
+                console.log(`✅ Successfully posted comment to r/${subreddit}`);
+                totalPosted++;
+              } else {
+                console.log(`❌ Failed to post comment to r/${subreddit}: ${postResult.error}`);
+              }
+            } else {
+              console.log(`❌ Failed to generate comment for r/${subreddit}: ${commentResponse.message}`);
+            }
+          }
+          
+          // Add delay between posts to avoid rate limiting
+          await new Promise(resolve => setTimeout(resolve, 10000));
+        }
+      } else {
+        console.log('⏰ No scheduled posts for this time slot');
+      }
     }
+    
+    // Save final activity state
+    await savePostingActivity(postingActivity);
     
     return {
       success: true,
-      scheduledComments: scheduledComments.length,
-      scheduledEducationalPosts: scheduledEducationalPosts.length,
+      scheduledComments: scheduledPostsFromDB.length,
+      scheduledEducationalPosts: educationalPostsFromDB.length,
       totalComments: postingActivity.totalComments,
       totalEducationalPosts: postingActivity.totalEducationalPosts,
       githubActionsRuns: postingActivity.githubActionsRuns,
+      totalPosted: totalPosted,
       timestamp: new Date().toISOString()
     };
   } catch (error) {
@@ -446,7 +841,7 @@ export const runScheduledPosts = async () => {
   }
 };
 
-console.log('🚀 Reddit Auto-Poster initialized (GitHub Actions)');
+console.log('🚀 Reddit Auto-Poster initialized (GitHub Actions + Firebase)');
 console.log(`⏰ Timezone: ${APP_TIMEZONE}`);
 console.log(`📅 Current time: ${getCurrentTimeInAppTimezone()} on ${getCurrentDayInAppTimezone()}`);
 
@@ -545,7 +940,7 @@ Write a comment that follows these guidelines - make it sound like a real human 
   }
 };
 
-// NEW: Function to generate educational posts about SoundSwap
+// Function to generate educational posts about SoundSwap
 const generateEducationalPost = async (subreddit) => {
   try {
     if (!process.env.GOOGLE_GEMINI_API_KEY) {
@@ -799,51 +1194,60 @@ Check it out at soundswap.live and see if it's for you. Might be worth a shot! �
 // ==================== CRON MANAGEMENT ENDPOINTS ====================
 
 // Get cron job status and activity
-router.get('/cron-status', (req, res) => {
-  const currentTime = getCurrentTimeInAppTimezone();
-  const currentDay = getCurrentDayInAppTimezone();
-  const scheduledPosts = getCurrentSchedule();
-  const scheduledEducationalPosts = getCurrentEducationalSchedule();
-  
-  // Calculate next minute in app timezone
-  const now = new Date();
-  const nextMinute = new Date(now.getTime() + 60000);
-  const nextCheck = nextMinute.toLocaleTimeString('en-US', { 
-    timeZone: APP_TIMEZONE,
-    hour12: false,
-    hour: '2-digit',
-    minute: '2-digit'
-  }).slice(0, 5);
-  
-  res.json({
-    success: true,
-    cron: {
-      status: 'active',
-      timezone: APP_TIMEZONE,
-      currentTime: currentTime,
-      currentDay: currentDay,
-      nextCheck: nextCheck,
-      totalComments: postingActivity.totalComments,
-      totalEducationalPosts: postingActivity.totalEducationalPosts,
-      dailyActivity: postingActivity.dailyCounts,
-      educationalActivity: postingActivity.educationalCounts,
-      lastPosted: postingActivity.lastPosted,
-      lastEducationalPosted: postingActivity.lastEducationalPosted,
-      lastCronRun: postingActivity.lastCronRun,
-      githubActionsRuns: postingActivity.githubActionsRuns,
-      scheduler: 'github-actions'
-    },
-    scheduled: {
-      currentTime: currentTime,
-      scheduledComments: scheduledPosts.length,
-      scheduledEducationalPosts: scheduledEducationalPosts.length,
-      details: {
-        comments: scheduledPosts,
-        educational: scheduledEducationalPosts
-      }
-    },
-    timestamp: new Date().toISOString()
-  });
+router.get('/cron-status', async (req, res) => {
+  try {
+    const currentTime = getCurrentTimeInAppTimezone();
+    const currentDay = getCurrentDayInAppTimezone();
+    const scheduledPosts = await getScheduledPostsForCurrentTime();
+    const scheduledEducationalPosts = await getEducationalPostsForCurrentTime();
+    
+    // Calculate next minute in app timezone
+    const now = new Date();
+    const nextMinute = new Date(now.getTime() + 60000);
+    const nextCheck = nextMinute.toLocaleTimeString('en-US', { 
+      timeZone: APP_TIMEZONE,
+      hour12: false,
+      hour: '2-digit',
+      minute: '2-digit'
+    }).slice(0, 5);
+    
+    res.json({
+      success: true,
+      cron: {
+        status: 'active',
+        timezone: APP_TIMEZONE,
+        currentTime: currentTime,
+        currentDay: currentDay,
+        nextCheck: nextCheck,
+        totalComments: postingActivity.totalComments,
+        totalEducationalPosts: postingActivity.totalEducationalPosts,
+        dailyActivity: postingActivity.dailyCounts,
+        educationalActivity: postingActivity.educationalCounts,
+        lastPosted: postingActivity.lastPosted,
+        lastEducationalPosted: postingActivity.lastEducationalPosted,
+        lastCronRun: postingActivity.lastCronRun,
+        githubActionsRuns: postingActivity.githubActionsRuns,
+        scheduler: 'github-actions',
+        firebase: 'connected'
+      },
+      scheduled: {
+        currentTime: currentTime,
+        scheduledComments: scheduledPosts.length,
+        scheduledEducationalPosts: scheduledEducationalPosts.length,
+        details: {
+          comments: scheduledPosts,
+          educational: scheduledEducationalPosts
+        }
+      },
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('❌ Error in cron-status:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
 });
 
 // Manual cron trigger endpoint (for testing)
@@ -878,6 +1282,28 @@ router.post('/cron', async (req, res) => {
   }
 });
 
+// NEW: Generate daily posts endpoint
+router.post('/generate-daily-posts', async (req, res) => {
+  try {
+    const result = await generateDailyPosts();
+    
+    res.json({
+      success: result.success,
+      message: result.success ? 'Daily posts generated successfully' : 'Failed to generate daily posts',
+      totalGenerated: result.totalGenerated,
+      error: result.error,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('❌ Error generating daily posts:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to generate daily posts',
+      error: error.message
+    });
+  }
+});
+
 // Add GET endpoint for /cron to show available endpoints
 router.get('/cron', (req, res) => {
   const currentTime = getCurrentTimeInAppTimezone();
@@ -905,7 +1331,8 @@ router.get('/cron', (req, res) => {
       '/api/reddit-admin/generate-reply',
       '/api/reddit-admin/analyze-post',
       '/api/reddit-admin/test-gemini',
-      '/api/reddit-admin/admin'
+      '/api/reddit-admin/admin',
+      '/api/reddit-admin/generate-daily-posts' // NEW
     ],
     timestamp: new Date().toISOString()
   });
@@ -951,7 +1378,7 @@ router.get('/schedule/today', (req, res) => {
   });
 });
 
-// NEW: Create educational post
+// Create educational post
 router.post('/create-educational-post', async (req, res) => {
   try {
     const { subreddit } = req.body;
@@ -979,15 +1406,25 @@ router.post('/create-educational-post', async (req, res) => {
       return res.status(500).json(postResponse);
     }
     
-    // Simulate posting the created post
-    const postResult = await simulateRedditPost(subreddit, `POST: ${postResponse.title}\n\n${postResponse.content}`, 'expert', 'educational');
+    // Store in Firebase instead of immediately posting
+    const postId = await storeEducationalPost({
+      subreddit,
+      scheduledDay: getCurrentDayInAppTimezone(),
+      scheduledTime: getCurrentTimeInAppTimezone(),
+      style: 'expert',
+      type: 'educational',
+      title: postResponse.title,
+      content: postResponse.content,
+      dailyLimit: targetConfig.educationalPostLimit || 1
+    });
     
     res.json({
       success: postResponse.success,
       title: postResponse.title,
       content: postResponse.content,
       subreddit: subreddit,
-      posted: postResult.success,
+      storedInFirebase: !!postId,
+      postId: postId,
       activity: postingActivity.educationalCounts[subreddit],
       timestamp: new Date().toISOString()
     });
@@ -1030,15 +1467,25 @@ router.post('/create-top50-post', async (req, res) => {
       return res.status(500).json(postResponse);
     }
     
-    // Simulate posting the created post
-    const postResult = await simulateRedditPost(subreddit, `POST: ${postResponse.title}\n\n${postResponse.content}`, 'enthusiastic', 'educational');
+    // Store in Firebase
+    const postId = await storeEducationalPost({
+      subreddit,
+      scheduledDay: getCurrentDayInAppTimezone(),
+      scheduledTime: getCurrentTimeInAppTimezone(),
+      style: 'enthusiastic',
+      type: 'educational',
+      title: postResponse.title,
+      content: postResponse.content,
+      dailyLimit: targetConfig.educationalPostLimit || 1
+    });
     
     res.json({
       success: postResponse.success,
       title: postResponse.title,
       content: postResponse.content,
       subreddit: subreddit,
-      posted: postResult.success,
+      storedInFirebase: !!postId,
+      postId: postId,
       activity: postingActivity.educationalCounts[subreddit],
       timestamp: new Date().toISOString()
     });
@@ -1087,14 +1534,31 @@ router.post('/manual-post', async (req, res) => {
       return res.status(500).json(commentResponse);
     }
     
-    // Simulate posting
+    // Store in Firebase for immediate posting
+    const postId = await storeScheduledPost({
+      subreddit,
+      scheduledDay: getCurrentDayInAppTimezone(),
+      scheduledTime: getCurrentTimeInAppTimezone(),
+      style: style,
+      type: 'comment',
+      content: commentResponse.comment,
+      dailyLimit: targetConfig.dailyCommentLimit
+    });
+    
+    // Simulate posting immediately
     const postResult = await simulateRedditPost(subreddit, commentResponse.comment, style, 'comment');
+    
+    // Mark as posted in Firebase
+    if (postResult.success && postId) {
+      await markPostAsPosted(postId, SCHEDULED_POSTS_COLLECTION);
+    }
     
     res.json({
       success: postResult.success,
       comment: commentResponse.comment,
       subreddit: subreddit,
       posted: postResult.success,
+      storedInFirebase: !!postId,
       activity: postingActivity.dailyCounts[subreddit],
       timestamp: new Date().toISOString()
     });
@@ -1110,30 +1574,42 @@ router.post('/manual-post', async (req, res) => {
 });
 
 // Reset daily counts
-router.post('/reset-counts', (req, res) => {
-  Object.keys(postingActivity.dailyCounts).forEach(key => {
-    postingActivity.dailyCounts[key] = 0;
-  });
-  Object.keys(postingActivity.educationalCounts).forEach(key => {
-    postingActivity.educationalCounts[key] = 0;
-  });
-  
-  postingActivity.totalComments = 0;
-  postingActivity.totalEducationalPosts = 0;
-  postingActivity.lastPosted = {};
-  postingActivity.lastEducationalPosted = {};
-  postingActivity.githubActionsRuns = 0;
-  
-  res.json({
-    success: true,
-    message: 'Daily counts and GitHub Actions counter reset',
-    counts: {
-      comments: postingActivity.dailyCounts,
-      educational: postingActivity.educationalCounts
-    },
-    githubActionsRuns: postingActivity.githubActionsRuns,
-    timestamp: new Date().toISOString()
-  });
+router.post('/reset-counts', async (req, res) => {
+  try {
+    Object.keys(postingActivity.dailyCounts).forEach(key => {
+      postingActivity.dailyCounts[key] = 0;
+    });
+    Object.keys(postingActivity.educationalCounts).forEach(key => {
+      postingActivity.educationalCounts[key] = 0;
+    });
+    
+    postingActivity.totalComments = 0;
+    postingActivity.totalEducationalPosts = 0;
+    postingActivity.lastPosted = {};
+    postingActivity.lastEducationalPosted = {};
+    postingActivity.githubActionsRuns = 0;
+    
+    // Save reset activity to Firebase
+    await savePostingActivity(postingActivity);
+    
+    res.json({
+      success: true,
+      message: 'Daily counts and GitHub Actions counter reset',
+      counts: {
+        comments: postingActivity.dailyCounts,
+        educational: postingActivity.educationalCounts
+      },
+      githubActionsRuns: postingActivity.githubActionsRuns,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('❌ Error resetting counts:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to reset counts',
+      error: error.message
+    });
+  }
 });
 
 // ==================== EXISTING ENDPOINTS ====================
@@ -1147,7 +1623,7 @@ router.get('/admin', (req, res) => {
     success: true,
     message: 'Reddit Admin API is running',
     service: 'reddit-admin',
-    version: '2.5.0', // Updated version
+    version: '3.0.0', // Updated version with Firebase
     timestamp: new Date().toISOString(),
     environment: process.env.NODE_ENV || 'development',
     timezone: APP_TIMEZONE,
@@ -1155,6 +1631,7 @@ router.get('/admin', (req, res) => {
     currentDay: currentDay,
     features: {
       gemini_ai: process.env.GOOGLE_GEMINI_API_KEY ? 'enabled' : 'disabled',
+      firebase_db: process.env.FIREBASE_PROJECT_ID ? 'enabled' : 'disabled',
       comment_generation: 'active',
       dm_replies: 'active',
       content_analysis: 'active',
@@ -1162,7 +1639,8 @@ router.get('/admin', (req, res) => {
       auto_posting: 'active',
       cron_scheduler: 'github-actions',
       top50_promotion: 'active',
-      educational_posts: 'active' // New feature
+      educational_posts: 'active',
+      firebase_storage: 'active'
     },
     targets: {
       total: Object.keys(redditTargets).length,
@@ -1194,7 +1672,8 @@ router.get('/admin', (req, res) => {
       generate_comment: '/api/reddit-admin/generate-comment',
       generate_reply: '/api/reddit-admin/generate-reply',
       analyze_post: '/api/reddit-admin/analyze-post',
-      cron: '/api/reddit-admin/cron (POST)'
+      cron: '/api/reddit-admin/cron (POST)',
+      generate_daily_posts: '/api/reddit-admin/generate-daily-posts' // NEW
     }
   });
 });
