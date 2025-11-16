@@ -512,6 +512,67 @@ const simulateRedditPost = async (subreddit, content, style, type = 'comment') =
   }
 };
 
+// NEW: Generate posts for current time slot on demand
+const generatePostsForCurrentTime = async () => {
+  try {
+    const currentDay = getCurrentDayInAppTimezone();
+    const currentTime = getCurrentTimeInAppTimezone();
+    
+    console.log(`🔄 Generating posts for current time: ${currentTime} on ${currentDay}`);
+    
+    let totalGenerated = 0;
+    
+    // Generate regular comments for current time
+    for (const [subreddit, config] of Object.entries(redditTargets)) {
+      if (config.active && config.postingSchedule[currentDay] && config.postingSchedule[currentDay].includes(currentTime)) {
+        const style = config.preferredStyles[Math.floor(Math.random() * config.preferredStyles.length)];
+        
+        await storeScheduledPost({
+          subreddit,
+          scheduledDay: currentDay,
+          scheduledTime: currentTime,
+          style: style,
+          type: 'comment',
+          dailyLimit: config.dailyCommentLimit
+        });
+        
+        totalGenerated++;
+        console.log(`✅ Generated comment for r/${subreddit} at ${currentTime}`);
+      }
+    }
+    
+    // Generate educational posts for current time
+    for (const [subreddit, config] of Object.entries(redditTargets)) {
+      if (config.active && config.educationalPostSchedule && config.educationalPostSchedule[currentDay] && config.educationalPostSchedule[currentDay].includes(currentTime)) {
+        const educationalResponse = await generateEducationalPost(subreddit);
+        
+        if (educationalResponse.success) {
+          await storeEducationalPost({
+            subreddit,
+            scheduledDay: currentDay,
+            scheduledTime: currentTime,
+            style: 'expert',
+            type: 'educational',
+            title: educationalResponse.title,
+            content: educationalResponse.content,
+            dailyLimit: config.educationalPostLimit || 1
+          });
+          
+          totalGenerated++;
+          console.log(`✅ Generated educational post for r/${subreddit} at ${currentTime}`);
+        }
+      }
+    }
+    
+    console.log(`✅ Generated ${totalGenerated} posts for ${currentTime} on ${currentDay}`);
+    return { success: true, totalGenerated };
+    
+  } catch (error) {
+    console.error('❌ Error generating posts for current time:', error);
+    return { success: false, error: error.message };
+  }
+};
+
 // Generate and store posts for the day
 const generateDailyPosts = async () => {
   try {
@@ -577,7 +638,7 @@ const generateDailyPosts = async () => {
   }
 };
 
-// Main function to run scheduled posts
+// UPDATED: Main function to run scheduled posts - now generates posts on demand
 export const runScheduledPosts = async () => {
   try {
     postingActivity.lastCronRun = new Date().toISOString();
@@ -595,6 +656,28 @@ export const runScheduledPosts = async () => {
     const educationalPostsFromDB = await getEducationalPostsForCurrentTime();
     
     let totalPosted = 0;
+    
+    // If no posts found in database, generate them on demand
+    if (scheduledPostsFromDB.length === 0 && educationalPostsFromDB.length === 0) {
+      console.log('🔄 No posts found in database, generating posts for current time slot...');
+      const generationResult = await generatePostsForCurrentTime();
+      
+      if (generationResult.success && generationResult.totalGenerated > 0) {
+        console.log(`✅ Generated ${generationResult.totalGenerated} posts for current time`);
+        
+        // Re-check for posts after generation
+        const newScheduledPosts = await getScheduledPostsForCurrentTime();
+        const newEducationalPosts = await getEducationalPostsForCurrentTime();
+        
+        // Use the newly generated posts
+        scheduledPostsFromDB.length = 0;
+        educationalPostsFromDB.length = 0;
+        scheduledPostsFromDB.push(...newScheduledPosts);
+        educationalPostsFromDB.push(...newEducationalPosts);
+      } else {
+        console.log('⚠️ No posts generated for current time slot');
+      }
+    }
     
     // Process posts from database
     if (scheduledPostsFromDB.length > 0 || educationalPostsFromDB.length > 0) {
@@ -717,83 +800,7 @@ export const runScheduledPosts = async () => {
         await new Promise(resolve => setTimeout(resolve, 10000));
       }
     } else {
-      console.log('⏰ No scheduled posts in database for this time slot');
-      
-      // Fallback to schedule-based posting
-      const scheduledEducationalPosts = getCurrentEducationalSchedule();
-      const scheduledComments = getCurrentSchedule();
-      
-      const allScheduledPosts = [...scheduledEducationalPosts, ...scheduledComments];
-      
-      if (allScheduledPosts.length > 0) {
-        console.log(`📅 Found ${allScheduledPosts.length} scheduled posts using schedule`);
-        
-        for (const scheduled of allScheduledPosts) {
-          const { subreddit, style, dailyLimit, currentCount, type } = scheduled;
-          
-          if (type === 'educational' && currentCount >= dailyLimit) {
-            console.log(`⏹️ Daily educational limit reached for r/${subreddit} (${currentCount}/${dailyLimit})`);
-            continue;
-          } else if (type === 'comment' && currentCount >= dailyLimit) {
-            console.log(`⏹️ Daily comment limit reached for r/${subreddit} (${currentCount}/${dailyLimit})`);
-            continue;
-          }
-          
-          const lastPost = type === 'educational' ? postingActivity.lastEducationalPosted[subreddit] : postingActivity.lastPosted[subreddit];
-          if (lastPost) {
-            const timeSinceLastPost = Date.now() - new Date(lastPost).getTime();
-            if (timeSinceLastPost < 30 * 60 * 1000) {
-              console.log(`⏳ Cooldown active for r/${subreddit}`);
-              continue;
-            }
-          }
-          
-          console.log(`🚀 Preparing to post ${type} to r/${subreddit} with style: ${style}`);
-          
-          let postResult;
-          
-          if (type === 'educational') {
-            const educationalResponse = await generateEducationalPost(subreddit);
-            
-            if (educationalResponse.success) {
-              const postContent = `POST: ${educationalResponse.title}\n\n${educationalResponse.content}`;
-              postResult = await simulateRedditPost(subreddit, postContent, style, 'educational');
-              
-              if (postResult.success) {
-                console.log(`✅ Successfully posted educational content to r/${subreddit}`);
-                totalPosted++;
-              }
-            }
-          } else {
-            const samplePosts = {
-              'WeAreTheMusicMakers': ["Just finished my first EP after 6 months of work!"],
-              'MusicProduction': ["How do you deal with ear fatigue during long sessions?"],
-              'IndieMusicFeedback': ["Would love some feedback on my new indie rock track"],
-              'ThisIsOurMusic': ["Just shared my latest composition, would love your thoughts!"],
-              'MusicPromotion': ["Looking for ways to promote my music effectively"],
-              'ShareYourMusic': ["Sharing my latest track, feedback welcome!"]
-            };
-            
-            const posts = samplePosts[subreddit] || ["Just shared some new music, would love your thoughts!"];
-            const postTitle = posts[Math.floor(Math.random() * posts.length)];
-            
-            const commentResponse = await generateAICommentInternal(postTitle, "", subreddit, "", style);
-            
-            if (commentResponse.success) {
-              postResult = await simulateRedditPost(subreddit, commentResponse.comment, style, 'comment');
-              
-              if (postResult.success) {
-                console.log(`✅ Successfully posted comment to r/${subreddit}`);
-                totalPosted++;
-              }
-            }
-          }
-          
-          await new Promise(resolve => setTimeout(resolve, 10000));
-        }
-      } else {
-        console.log('⏰ No scheduled posts for this time slot');
-      }
+      console.log('⏰ No scheduled posts available for this time slot');
     }
     
     return {
@@ -1591,7 +1598,7 @@ router.get('/admin', (req, res) => {
     success: true,
     message: 'Reddit Admin API is running',
     service: 'reddit-admin',
-    version: '3.0.0',
+    version: '3.1.0', // Updated version
     timestamp: new Date().toISOString(),
     environment: process.env.NODE_ENV || 'development',
     timezone: APP_TIMEZONE,
@@ -1607,7 +1614,8 @@ router.get('/admin', (req, res) => {
       auto_posting: 'active',
       cron_scheduler: 'github-actions',
       top50_promotion: 'active',
-      educational_posts: 'active'
+      educational_posts: 'active',
+      on_demand_generation: 'active' // New feature
     },
     targets: {
       total: Object.keys(redditTargets).length,
