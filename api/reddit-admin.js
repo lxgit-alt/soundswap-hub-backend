@@ -3,7 +3,7 @@ import { GoogleGenerativeAI } from '@google/generative-ai';
 
 const router = express.Router();
 
-// Initialize Google Gemini AI
+// Initialize Google Gemini AI - Updated for free tier
 const genAI = new GoogleGenerativeAI(process.env.GOOGLE_GEMINI_API_KEY);
 
 // ==================== TIMEZONE CONFIGURATION ====================
@@ -357,7 +357,10 @@ const generateAICommentInternal = async (postTitle, postContent, subreddit, cont
     const shouldMentionSoundSwap = targetConfig && Math.random() < targetConfig.soundswapMentionRate;
     const selectedStyle = style || (targetConfig ? targetConfig.preferredStyles[0] : 'helpful');
 
-    const model = genAI.getGenerativeModel({ model: 'gemini-pro' });
+    // UPDATED: Use correct model for free tier - gemini-1.5-flash or gemini-1.0-pro
+    const model = genAI.getGenerativeModel({ 
+      model: 'gemini-1.5-flash' // Free tier model
+    });
 
     // UPDATED: Marketing-focused style prompts
     const stylePrompts = {
@@ -434,7 +437,10 @@ const generateTop50PromotionPost = async (subreddit) => {
       return { success: false, message: 'Google Gemini API key not configured' };
     }
 
-    const model = genAI.getGenerativeModel({ model: 'gemini-pro' });
+    // UPDATED: Use correct model for free tier
+    const model = genAI.getGenerativeModel({ 
+      model: 'gemini-1.5-flash' // Free tier model
+    });
 
     const prompt = `
 You are a marketing representative for SoundSwap, a music platform that helps artists grow from unknown to viral sensations. Create a compelling Reddit post inviting artists to submit their best songs for the weekly Top 50 chart.
@@ -932,7 +938,10 @@ router.post('/generate-reply', async (req, res) => {
       relationship
     });
 
-    const model = genAI.getGenerativeModel({ model: 'gemini-pro' });
+    // UPDATED: Use correct model for free tier
+    const model = genAI.getGenerativeModel({ 
+      model: 'gemini-1.5-flash' // Free tier model
+    });
 
     // Different tones for different relationships
     const tonePrompts = {
@@ -1020,7 +1029,10 @@ router.post('/analyze-post', async (req, res) => {
 
     console.log('🔍 Analyzing post for commenting strategy:', { subreddit });
 
-    const model = genAI.getGenerativeModel({ model: 'gemini-pro' });
+    // UPDATED: Use correct model for free tier
+    const model = genAI.getGenerativeModel({ 
+      model: 'gemini-1.5-flash' // Free tier model
+    });
 
     const prompt = `
 Analyze this Reddit post and provide guidance on how to engage with it naturally.
@@ -1090,7 +1102,11 @@ router.get('/test-gemini', async (req, res) => {
       });
     }
 
-    const model = genAI.getGenerativeModel({ model: 'gemini-pro' });
+    // UPDATED: Use correct model for free tier
+    const model = genAI.getGenerativeModel({ 
+      model: 'gemini-1.5-flash' // Free tier model
+    });
+    
     const result = await model.generateContent('Say "Hello from SoundSwap Reddit AI" in a creative way.');
     const response = await result.response;
     const text = response.text();
