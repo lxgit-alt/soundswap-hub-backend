@@ -1,7 +1,7 @@
 import express from 'express';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { initializeApp } from 'firebase/app';
-import { getFirestore, collection, addDoc, getDocs, query, where, updateDoc, doc, getDoc, deleteDoc, orderBy, limit } from 'firebase/firestore';
+import { getFirestore, collection, addDoc, getDocs, query, where, updateDoc, doc, orderBy, limit } from 'firebase/firestore';
 
 const router = express.Router();
 
@@ -15,24 +15,34 @@ const firebaseConfig = {
   appId: process.env.FIREBASE_APP_ID
 };
 
-// Initialize Firebase app and Firestore
-const firebaseApp = initializeApp(firebaseConfig);
-const db = getFirestore(firebaseApp);
+// Initialize Firebase only if config is available
+let db = null;
+let firebaseApp = null;
+
+try {
+  if (firebaseConfig.apiKey && firebaseConfig.projectId) {
+    firebaseApp = initializeApp(firebaseConfig);
+    db = getFirestore(firebaseApp);
+    console.log('✅ Firebase initialized successfully');
+  } else {
+    console.log('⚠️ Firebase configuration missing, using in-memory storage');
+  }
+} catch (error) {
+  console.error('❌ Firebase initialization failed:', error);
+}
 
 // Collections
 const SCHEDULED_POSTS_COLLECTION = 'scheduledPosts';
 const EDUCATIONAL_POSTS_COLLECTION = 'educationalPosts';
 const POSTING_ACTIVITY_COLLECTION = 'postingActivity';
 
-// Initialize Google Gemini AI - Updated for Gemini 2.0 Flash
+// Initialize Google Gemini AI
 const genAI = new GoogleGenerativeAI(process.env.GOOGLE_GEMINI_API_KEY);
 
 // ==================== TIMEZONE CONFIGURATION ====================
 
-// Set your preferred timezone (e.g., 'America/New_York', 'Europe/London', 'UTC')
 const APP_TIMEZONE = process.env.APP_TIMEZONE || 'America/New_York';
 
-// Helper function to get current time in app timezone
 const getCurrentTimeInAppTimezone = () => {
   const now = new Date();
   return now.toLocaleTimeString('en-US', { 
@@ -40,10 +50,9 @@ const getCurrentTimeInAppTimezone = () => {
     hour12: false,
     hour: '2-digit',
     minute: '2-digit'
-  }).slice(0, 5); // Returns "HH:MM"
+  }).slice(0, 5);
 };
 
-// Helper function to get current day in app timezone
 const getCurrentDayInAppTimezone = () => {
   const now = new Date();
   return now.toLocaleDateString('en-US', { 
@@ -55,7 +64,6 @@ const getCurrentDayInAppTimezone = () => {
 // ==================== REDDIT TARGET CONFIGURATION ====================
 
 const redditTargets = {
-  // Primary music communities
   'WeAreTheMusicMakers': {
     name: 'WeAreTheMusicMakers',
     memberCount: 1800000,
@@ -212,108 +220,85 @@ const redditTargets = {
 
 // ==================== FIREBASE FUNCTIONS ====================
 
-// Initialize or get posting activity
-const initializePostingActivity = async () => {
-  try {
-    const activityRef = collection(db, POSTING_ACTIVITY_COLLECTION);
-    const q = query(activityRef, orderBy('timestamp', 'desc'), limit(1));
-    const snapshot = await getDocs(q);
-    
-    if (snapshot.empty) {
-      const initialActivity = {
-        dailyCounts: {},
-        educationalCounts: {},
-        lastPosted: {},
-        lastEducationalPosted: {},
-        totalComments: 0,
-        totalEducationalPosts: 0,
-        lastCronRun: null,
-        githubActionsRuns: 0,
-        timestamp: new Date().toISOString()
-      };
-      
-      // Initialize counts for all subreddits
-      Object.keys(redditTargets).forEach(subreddit => {
-        initialActivity.dailyCounts[subreddit] = 0;
-        initialActivity.educationalCounts[subreddit] = 0;
-      });
-      
-      const docRef = await addDoc(activityRef, initialActivity);
-      console.log('✅ Initialized new posting activity record:', docRef.id);
-      return initialActivity;
-    } else {
-      const activityDoc = snapshot.docs[0].data();
-      console.log('✅ Loaded existing posting activity');
-      return activityDoc;
-    }
-  } catch (error) {
-    console.error('❌ Error initializing posting activity:', error);
-    // Return fallback activity object
-    const fallbackActivity = {
-      dailyCounts: {},
-      educationalCounts: {},
-      lastPosted: {},
-      lastEducationalPosted: {},
-      totalComments: 0,
-      totalEducationalPosts: 0,
-      lastCronRun: null,
-      githubActionsRuns: 0,
-      timestamp: new Date().toISOString()
-    };
-    
-    Object.keys(redditTargets).forEach(subreddit => {
-      fallbackActivity.dailyCounts[subreddit] = 0;
-      fallbackActivity.educationalCounts[subreddit] = 0;
-    });
-    
-    return fallbackActivity;
-  }
+// In-memory storage as fallback
+let inMemoryPosts = {
+  scheduled: [],
+  educational: []
 };
 
-// Save posting activity to Firebase
-const savePostingActivity = async (activity) => {
-  try {
-    const activityRef = collection(db, POSTING_ACTIVITY_COLLECTION);
-    await addDoc(activityRef, {
-      ...activity,
-      timestamp: new Date().toISOString()
-    });
-    console.log('✅ Saved posting activity to Firebase');
-  } catch (error) {
-    console.error('❌ Error saving posting activity:', error);
-  }
+let postingActivity = {
+  dailyCounts: {},
+  educationalCounts: {},
+  lastPosted: {},
+  lastEducationalPosted: {},
+  totalComments: 0,
+  totalEducationalPosts: 0,
+  lastCronRun: null,
+  githubActionsRuns: 0
 };
 
-// Store scheduled post in Firebase
+// Initialize counts
+Object.keys(redditTargets).forEach(subreddit => {
+  postingActivity.dailyCounts[subreddit] = 0;
+  postingActivity.educationalCounts[subreddit] = 0;
+});
+
+// Store scheduled post
 const storeScheduledPost = async (postData) => {
   try {
-    const postsRef = collection(db, SCHEDULED_POSTS_COLLECTION);
-    const docRef = await addDoc(postsRef, {
-      ...postData,
-      createdAt: new Date().toISOString(),
-      posted: false,
-      postedAt: null
-    });
-    console.log(`✅ Stored scheduled post for r/${postData.subreddit} at ${postData.scheduledTime}`);
-    return docRef.id;
+    if (db) {
+      const postsRef = collection(db, SCHEDULED_POSTS_COLLECTION);
+      const docRef = await addDoc(postsRef, {
+        ...postData,
+        createdAt: new Date().toISOString(),
+        posted: false,
+        postedAt: null
+      });
+      console.log(`✅ Stored scheduled post in Firebase for r/${postData.subreddit} at ${postData.scheduledTime}`);
+      return docRef.id;
+    } else {
+      // Fallback to in-memory storage
+      inMemoryPosts.scheduled.push({
+        ...postData,
+        id: `mem-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+        createdAt: new Date().toISOString(),
+        posted: false,
+        postedAt: null
+      });
+      console.log(`✅ Stored scheduled post in memory for r/${postData.subreddit} at ${postData.scheduledTime}`);
+      return inMemoryPosts.scheduled[inMemoryPosts.scheduled.length - 1].id;
+    }
   } catch (error) {
     console.error('❌ Error storing scheduled post:', error);
     return null;
   }
 };
 
-// Store educational post in Firebase
+// Store educational post
 const storeEducationalPost = async (postData) => {
   try {
-    const postsRef = collection(db, EDUCATIONAL_POSTS_COLLECTION);
-    const docRef = await addDoc(postsRef, {
-      ...postData,
-      createdAt: new Date().toISOString(),
-      posted: false,
-      postedAt: null
-    });
-    console.log(`✅ Stored educational post for r/${postData.subreddit}`);
-    return docRef.id;
+    if (db) {
+      const postsRef = collection(db, EDUCATIONAL_POSTS_COLLECTION);
+      const docRef = await addDoc(postsRef, {
+        ...postData,
+        createdAt: new Date().toISOString(),
+        posted: false,
+        postedAt: null
+      });
+      console.log(`✅ Stored educational post in Firebase for r/${postData.subreddit}`);
+      return docRef.id;
+    } else {
+      // Fallback to in-memory storage
+      inMemoryPosts.educational.push({
+        ...postData,
+        id: `mem-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+        createdAt: new Date().toISOString(),
+        posted: false,
+        postedAt: null
+      });
+      console.log(`✅ Stored educational post in memory for r/${postData.subreddit}`);
+      return inMemoryPosts.educational[inMemoryPosts.educational.length - 1].id;
+    }
   } catch (error) {
     console.error('❌ Error storing educational post:', error);
     return null;
@@ -326,23 +311,34 @@ const getScheduledPostsForCurrentTime = async () => {
     const currentDay = getCurrentDayInAppTimezone();
     const currentTime = getCurrentTimeInAppTimezone();
     
-    const postsRef = collection(db, SCHEDULED_POSTS_COLLECTION);
-    const q = query(
-      postsRef, 
-      where('scheduledDay', '==', currentDay),
-      where('scheduledTime', '==', currentTime),
-      where('posted', '==', false)
-    );
-    
-    const snapshot = await getDocs(q);
-    const posts = [];
-    
-    snapshot.forEach(doc => {
-      posts.push({ id: doc.id, ...doc.data() });
-    });
-    
-    console.log(`📊 Found ${posts.length} scheduled posts in Firebase for ${currentTime} on ${currentDay}`);
-    return posts;
+    if (db) {
+      const postsRef = collection(db, SCHEDULED_POSTS_COLLECTION);
+      const q = query(
+        postsRef, 
+        where('scheduledDay', '==', currentDay),
+        where('scheduledTime', '==', currentTime),
+        where('posted', '==', false)
+      );
+      
+      const snapshot = await getDocs(q);
+      const posts = [];
+      
+      snapshot.forEach(doc => {
+        posts.push({ id: doc.id, ...doc.data() });
+      });
+      
+      console.log(`📊 Found ${posts.length} scheduled posts in Firebase for ${currentTime} on ${currentDay}`);
+      return posts;
+    } else {
+      // Fallback to in-memory storage
+      const posts = inMemoryPosts.scheduled.filter(post => 
+        post.scheduledDay === currentDay && 
+        post.scheduledTime === currentTime && 
+        !post.posted
+      );
+      console.log(`📊 Found ${posts.length} scheduled posts in memory for ${currentTime} on ${currentDay}`);
+      return posts;
+    }
   } catch (error) {
     console.error('❌ Error getting scheduled posts:', error);
     return [];
@@ -355,23 +351,34 @@ const getEducationalPostsForCurrentTime = async () => {
     const currentDay = getCurrentDayInAppTimezone();
     const currentTime = getCurrentTimeInAppTimezone();
     
-    const postsRef = collection(db, EDUCATIONAL_POSTS_COLLECTION);
-    const q = query(
-      postsRef, 
-      where('scheduledDay', '==', currentDay),
-      where('scheduledTime', '==', currentTime),
-      where('posted', '==', false)
-    );
-    
-    const snapshot = await getDocs(q);
-    const posts = [];
-    
-    snapshot.forEach(doc => {
-      posts.push({ id: doc.id, ...doc.data() });
-    });
-    
-    console.log(`📊 Found ${posts.length} educational posts in Firebase for ${currentTime} on ${currentDay}`);
-    return posts;
+    if (db) {
+      const postsRef = collection(db, EDUCATIONAL_POSTS_COLLECTION);
+      const q = query(
+        postsRef, 
+        where('scheduledDay', '==', currentDay),
+        where('scheduledTime', '==', currentTime),
+        where('posted', '==', false)
+      );
+      
+      const snapshot = await getDocs(q);
+      const posts = [];
+      
+      snapshot.forEach(doc => {
+        posts.push({ id: doc.id, ...doc.data() });
+      });
+      
+      console.log(`📊 Found ${posts.length} educational posts in Firebase for ${currentTime} on ${currentDay}`);
+      return posts;
+    } else {
+      // Fallback to in-memory storage
+      const posts = inMemoryPosts.educational.filter(post => 
+        post.scheduledDay === currentDay && 
+        post.scheduledTime === currentTime && 
+        !post.posted
+      );
+      console.log(`📊 Found ${posts.length} educational posts in memory for ${currentTime} on ${currentDay}`);
+      return posts;
+    }
   } catch (error) {
     console.error('❌ Error getting educational posts:', error);
     return [];
@@ -381,12 +388,29 @@ const getEducationalPostsForCurrentTime = async () => {
 // Mark post as posted
 const markPostAsPosted = async (postId, collectionName) => {
   try {
-    const postRef = doc(db, collectionName, postId);
-    await updateDoc(postRef, {
-      posted: true,
-      postedAt: new Date().toISOString()
-    });
-    console.log(`✅ Marked post ${postId} as posted`);
+    if (db) {
+      const postRef = doc(db, collectionName, postId);
+      await updateDoc(postRef, {
+        posted: true,
+        postedAt: new Date().toISOString()
+      });
+      console.log(`✅ Marked post ${postId} as posted in Firebase`);
+    } else {
+      // Fallback to in-memory storage
+      let posts;
+      if (collectionName === SCHEDULED_POSTS_COLLECTION) {
+        posts = inMemoryPosts.scheduled;
+      } else {
+        posts = inMemoryPosts.educational;
+      }
+      
+      const postIndex = posts.findIndex(post => post.id === postId);
+      if (postIndex !== -1) {
+        posts[postIndex].posted = true;
+        posts[postIndex].postedAt = new Date().toISOString();
+        console.log(`✅ Marked post ${postId} as posted in memory`);
+      }
+    }
     return true;
   } catch (error) {
     console.error('❌ Error marking post as posted:', error);
@@ -395,9 +419,6 @@ const markPostAsPosted = async (postId, collectionName) => {
 };
 
 // ==================== CRON SCHEDULER ====================
-
-// Initialize posting activity
-let postingActivity = await initializePostingActivity();
 
 // Function to get current schedule for all active subreddits
 const getCurrentSchedule = () => {
@@ -411,9 +432,6 @@ const getCurrentSchedule = () => {
   Object.entries(redditTargets).forEach(([subreddit, config]) => {
     if (config.active && config.postingSchedule[currentDay]) {
       const times = config.postingSchedule[currentDay];
-      
-      // Log for debugging
-      console.log(`📅 ${subreddit} scheduled times: ${times.join(', ')}`);
       
       if (times.includes(currentTime)) {
         scheduledPosts.push({
@@ -447,14 +465,12 @@ const getCurrentEducationalSchedule = () => {
     if (config.active && config.educationalPostSchedule && config.educationalPostSchedule[currentDay]) {
       const times = config.educationalPostSchedule[currentDay];
       
-      console.log(`📚 ${subreddit} educational post times: ${times.join(', ')}`);
-      
       if (times.includes(currentTime)) {
         scheduledPosts.push({
           subreddit,
           time: currentTime,
           day: currentDay,
-          style: 'expert', // Educational posts use expert style
+          style: 'expert',
           dailyLimit: config.educationalPostLimit || 1,
           currentCount: postingActivity.educationalCounts[subreddit] || 0,
           type: 'educational'
@@ -489,9 +505,6 @@ const simulateRedditPost = async (subreddit, content, style, type = 'comment') =
       console.log(`✅ Posted comment to r/${subreddit} at ${getCurrentTimeInAppTimezone()}: ${content.substring(0, 100)}...`);
     }
     
-    // Save activity to Firebase
-    await savePostingActivity(postingActivity);
-    
     return { success: true, content };
   } else {
     console.log(`❌ Failed to post to r/${subreddit}`);
@@ -499,7 +512,7 @@ const simulateRedditPost = async (subreddit, content, style, type = 'comment') =
   }
 };
 
-// NEW: Function to generate and store posts for the day
+// Generate and store posts for the day
 const generateDailyPosts = async () => {
   try {
     const currentDay = getCurrentDayInAppTimezone();
@@ -515,7 +528,6 @@ const generateDailyPosts = async () => {
         for (const time of times) {
           const style = config.preferredStyles[Math.floor(Math.random() * config.preferredStyles.length)];
           
-          // Store scheduled post in Firebase
           await storeScheduledPost({
             subreddit,
             scheduledDay: currentDay,
@@ -536,7 +548,6 @@ const generateDailyPosts = async () => {
         const times = config.educationalPostSchedule[currentDay];
         
         for (const time of times) {
-          // Generate educational post content
           const educationalResponse = await generateEducationalPost(subreddit);
           
           if (educationalResponse.success) {
@@ -566,7 +577,7 @@ const generateDailyPosts = async () => {
   }
 };
 
-// Main function to run scheduled posts (called by GitHub Actions)
+// Main function to run scheduled posts
 export const runScheduledPosts = async () => {
   try {
     postingActivity.lastCronRun = new Date().toISOString();
@@ -577,16 +588,17 @@ export const runScheduledPosts = async () => {
     
     console.log(`⏰ GitHub Actions Cron running at ${currentTime} on ${currentDay} (${APP_TIMEZONE})`);
     console.log(`🔄 GitHub Actions Run #${postingActivity.githubActionsRuns}`);
+    console.log(`🗄️ Database: ${db ? 'Firebase' : 'In-Memory'}`);
     
-    // Check for posts in Firebase first
+    // Check for posts in database first
     const scheduledPostsFromDB = await getScheduledPostsForCurrentTime();
     const educationalPostsFromDB = await getEducationalPostsForCurrentTime();
     
     let totalPosted = 0;
     
-    // Process posts from Firebase
+    // Process posts from database
     if (scheduledPostsFromDB.length > 0 || educationalPostsFromDB.length > 0) {
-      console.log(`📅 Found ${scheduledPostsFromDB.length + educationalPostsFromDB.length} scheduled posts in Firebase`);
+      console.log(`📅 Found ${scheduledPostsFromDB.length + educationalPostsFromDB.length} scheduled posts in database`);
       
       // Process regular comments
       for (const post of scheduledPostsFromDB) {
@@ -602,7 +614,7 @@ export const runScheduledPosts = async () => {
         const lastPost = postingActivity.lastPosted[subreddit];
         if (lastPost) {
           const timeSinceLastPost = Date.now() - new Date(lastPost).getTime();
-          if (timeSinceLastPost < 30 * 60 * 1000) { // 30 minutes cooldown
+          if (timeSinceLastPost < 30 * 60 * 1000) {
             console.log(`⏳ Cooldown active for r/${subreddit}`);
             continue;
           }
@@ -664,7 +676,7 @@ export const runScheduledPosts = async () => {
           console.log(`❌ Failed to generate comment for r/${subreddit}: ${commentResponse.message}`);
         }
         
-        // Add delay between posts to avoid rate limiting
+        // Add delay between posts
         await new Promise(resolve => setTimeout(resolve, 10000));
       }
       
@@ -682,7 +694,7 @@ export const runScheduledPosts = async () => {
         const lastPost = postingActivity.lastEducationalPosted[subreddit];
         if (lastPost) {
           const timeSinceLastPost = Date.now() - new Date(lastPost).getTime();
-          if (timeSinceLastPost < 30 * 60 * 1000) { // 30 minutes cooldown
+          if (timeSinceLastPost < 30 * 60 * 1000) {
             console.log(`⏳ Cooldown active for r/${subreddit} educational posts`);
             continue;
           }
@@ -701,25 +713,24 @@ export const runScheduledPosts = async () => {
           console.log(`❌ Failed to post educational content to r/${subreddit}: ${postResult.error}`);
         }
         
-        // Add delay between posts to avoid rate limiting
+        // Add delay between posts
         await new Promise(resolve => setTimeout(resolve, 10000));
       }
     } else {
-      console.log('⏰ No scheduled posts in Firebase for this time slot');
+      console.log('⏰ No scheduled posts in database for this time slot');
       
-      // Fallback to old method if no posts in Firebase
+      // Fallback to schedule-based posting
       const scheduledEducationalPosts = getCurrentEducationalSchedule();
       const scheduledComments = getCurrentSchedule();
       
       const allScheduledPosts = [...scheduledEducationalPosts, ...scheduledComments];
       
       if (allScheduledPosts.length > 0) {
-        console.log(`📅 Found ${allScheduledPosts.length} scheduled posts using fallback method`);
+        console.log(`📅 Found ${allScheduledPosts.length} scheduled posts using schedule`);
         
         for (const scheduled of allScheduledPosts) {
           const { subreddit, style, dailyLimit, currentCount, type } = scheduled;
           
-          // Check daily limit based on post type
           if (type === 'educational' && currentCount >= dailyLimit) {
             console.log(`⏹️ Daily educational limit reached for r/${subreddit} (${currentCount}/${dailyLimit})`);
             continue;
@@ -728,11 +739,10 @@ export const runScheduledPosts = async () => {
             continue;
           }
           
-          // Check if we recently posted to this subreddit (avoid rapid posting)
           const lastPost = type === 'educational' ? postingActivity.lastEducationalPosted[subreddit] : postingActivity.lastPosted[subreddit];
           if (lastPost) {
             const timeSinceLastPost = Date.now() - new Date(lastPost).getTime();
-            if (timeSinceLastPost < 30 * 60 * 1000) { // 30 minutes cooldown
+            if (timeSinceLastPost < 30 * 60 * 1000) {
               console.log(`⏳ Cooldown active for r/${subreddit}`);
               continue;
             }
@@ -743,7 +753,6 @@ export const runScheduledPosts = async () => {
           let postResult;
           
           if (type === 'educational') {
-            // Generate educational post
             const educationalResponse = await generateEducationalPost(subreddit);
             
             if (educationalResponse.success) {
@@ -753,51 +762,21 @@ export const runScheduledPosts = async () => {
               if (postResult.success) {
                 console.log(`✅ Successfully posted educational content to r/${subreddit}`);
                 totalPosted++;
-              } else {
-                console.log(`❌ Failed to post educational content to r/${subreddit}: ${postResult.error}`);
               }
-            } else {
-              console.log(`❌ Failed to generate educational post for r/${subreddit}: ${educationalResponse.message}`);
             }
           } else {
-            // Generate sample post content based on subreddit for comments
             const samplePosts = {
-              'WeAreTheMusicMakers': [
-                "Just finished my first EP after 6 months of work!",
-                "Struggling with vocal mixing - any tips?",
-                "What's your favorite piece of music production equipment?"
-              ],
-              'MusicProduction': [
-                "How do you deal with ear fatigue during long sessions?",
-                "Just got new studio monitors - game changer!",
-                "Best VST plugins for electronic music?"
-              ],
-              'IndieMusicFeedback': [
-                "Would love some feedback on my new indie rock track",
-                "Just released my first single, nervous but excited!",
-                "Looking for constructive criticism on my songwriting"
-              ],
-              'ThisIsOurMusic': [
-                "Just shared my latest composition, would love your thoughts!",
-                "Working on a new album, here's a preview track",
-                "Experimenting with new sounds, what do you think?"
-              ],
-              'MusicPromotion': [
-                "Looking for ways to promote my music effectively",
-                "Just hit a streaming milestone, so grateful!",
-                "Best platforms for independent artists?"
-              ],
-              'ShareYourMusic': [
-                "Sharing my latest track, feedback welcome!",
-                "Just uploaded a new demo, let me know what you think",
-                "Collaborating with other artists, here's our work"
-              ]
+              'WeAreTheMusicMakers': ["Just finished my first EP after 6 months of work!"],
+              'MusicProduction': ["How do you deal with ear fatigue during long sessions?"],
+              'IndieMusicFeedback': ["Would love some feedback on my new indie rock track"],
+              'ThisIsOurMusic': ["Just shared my latest composition, would love your thoughts!"],
+              'MusicPromotion': ["Looking for ways to promote my music effectively"],
+              'ShareYourMusic': ["Sharing my latest track, feedback welcome!"]
             };
             
             const posts = samplePosts[subreddit] || ["Just shared some new music, would love your thoughts!"];
             const postTitle = posts[Math.floor(Math.random() * posts.length)];
             
-            // Generate AI comment
             const commentResponse = await generateAICommentInternal(postTitle, "", subreddit, "", style);
             
             if (commentResponse.success) {
@@ -806,24 +785,16 @@ export const runScheduledPosts = async () => {
               if (postResult.success) {
                 console.log(`✅ Successfully posted comment to r/${subreddit}`);
                 totalPosted++;
-              } else {
-                console.log(`❌ Failed to post comment to r/${subreddit}: ${postResult.error}`);
               }
-            } else {
-              console.log(`❌ Failed to generate comment for r/${subreddit}: ${commentResponse.message}`);
             }
           }
           
-          // Add delay between posts to avoid rate limiting
           await new Promise(resolve => setTimeout(resolve, 10000));
         }
       } else {
         console.log('⏰ No scheduled posts for this time slot');
       }
     }
-    
-    // Save final activity state
-    await savePostingActivity(postingActivity);
     
     return {
       success: true,
@@ -1228,7 +1199,7 @@ router.get('/cron-status', async (req, res) => {
         lastCronRun: postingActivity.lastCronRun,
         githubActionsRuns: postingActivity.githubActionsRuns,
         scheduler: 'github-actions',
-        firebase: 'connected'
+        database: db ? 'firebase' : 'in-memory'
       },
       scheduled: {
         currentTime: currentTime,
@@ -1250,7 +1221,7 @@ router.get('/cron-status', async (req, res) => {
   }
 });
 
-// Manual cron trigger endpoint (for testing)
+// Manual cron trigger endpoint
 router.post('/cron', async (req, res) => {
   try {
     // Check for cron secret authorization
@@ -1282,7 +1253,7 @@ router.post('/cron', async (req, res) => {
   }
 });
 
-// NEW: Generate daily posts endpoint
+// Generate daily posts endpoint
 router.post('/generate-daily-posts', async (req, res) => {
   try {
     const result = await generateDailyPosts();
@@ -1332,7 +1303,7 @@ router.get('/cron', (req, res) => {
       '/api/reddit-admin/analyze-post',
       '/api/reddit-admin/test-gemini',
       '/api/reddit-admin/admin',
-      '/api/reddit-admin/generate-daily-posts' // NEW
+      '/api/reddit-admin/generate-daily-posts'
     ],
     timestamp: new Date().toISOString()
   });
@@ -1406,7 +1377,7 @@ router.post('/create-educational-post', async (req, res) => {
       return res.status(500).json(postResponse);
     }
     
-    // Store in Firebase instead of immediately posting
+    // Store in database instead of immediately posting
     const postId = await storeEducationalPost({
       subreddit,
       scheduledDay: getCurrentDayInAppTimezone(),
@@ -1423,7 +1394,7 @@ router.post('/create-educational-post', async (req, res) => {
       title: postResponse.title,
       content: postResponse.content,
       subreddit: subreddit,
-      storedInFirebase: !!postId,
+      storedInDatabase: !!postId,
       postId: postId,
       activity: postingActivity.educationalCounts[subreddit],
       timestamp: new Date().toISOString()
@@ -1467,7 +1438,7 @@ router.post('/create-top50-post', async (req, res) => {
       return res.status(500).json(postResponse);
     }
     
-    // Store in Firebase
+    // Store in database
     const postId = await storeEducationalPost({
       subreddit,
       scheduledDay: getCurrentDayInAppTimezone(),
@@ -1484,7 +1455,7 @@ router.post('/create-top50-post', async (req, res) => {
       title: postResponse.title,
       content: postResponse.content,
       subreddit: subreddit,
-      storedInFirebase: !!postId,
+      storedInDatabase: !!postId,
       postId: postId,
       activity: postingActivity.educationalCounts[subreddit],
       timestamp: new Date().toISOString()
@@ -1534,7 +1505,7 @@ router.post('/manual-post', async (req, res) => {
       return res.status(500).json(commentResponse);
     }
     
-    // Store in Firebase for immediate posting
+    // Store in database for immediate posting
     const postId = await storeScheduledPost({
       subreddit,
       scheduledDay: getCurrentDayInAppTimezone(),
@@ -1548,7 +1519,7 @@ router.post('/manual-post', async (req, res) => {
     // Simulate posting immediately
     const postResult = await simulateRedditPost(subreddit, commentResponse.comment, style, 'comment');
     
-    // Mark as posted in Firebase
+    // Mark as posted in database
     if (postResult.success && postId) {
       await markPostAsPosted(postId, SCHEDULED_POSTS_COLLECTION);
     }
@@ -1558,7 +1529,7 @@ router.post('/manual-post', async (req, res) => {
       comment: commentResponse.comment,
       subreddit: subreddit,
       posted: postResult.success,
-      storedInFirebase: !!postId,
+      storedInDatabase: !!postId,
       activity: postingActivity.dailyCounts[subreddit],
       timestamp: new Date().toISOString()
     });
@@ -1588,9 +1559,6 @@ router.post('/reset-counts', async (req, res) => {
     postingActivity.lastPosted = {};
     postingActivity.lastEducationalPosted = {};
     postingActivity.githubActionsRuns = 0;
-    
-    // Save reset activity to Firebase
-    await savePostingActivity(postingActivity);
     
     res.json({
       success: true,
@@ -1623,7 +1591,7 @@ router.get('/admin', (req, res) => {
     success: true,
     message: 'Reddit Admin API is running',
     service: 'reddit-admin',
-    version: '3.0.0', // Updated version with Firebase
+    version: '3.0.0',
     timestamp: new Date().toISOString(),
     environment: process.env.NODE_ENV || 'development',
     timezone: APP_TIMEZONE,
@@ -1631,7 +1599,7 @@ router.get('/admin', (req, res) => {
     currentDay: currentDay,
     features: {
       gemini_ai: process.env.GOOGLE_GEMINI_API_KEY ? 'enabled' : 'disabled',
-      firebase_db: process.env.FIREBASE_PROJECT_ID ? 'enabled' : 'disabled',
+      firebase_db: db ? 'enabled' : 'disabled',
       comment_generation: 'active',
       dm_replies: 'active',
       content_analysis: 'active',
@@ -1639,8 +1607,7 @@ router.get('/admin', (req, res) => {
       auto_posting: 'active',
       cron_scheduler: 'github-actions',
       top50_promotion: 'active',
-      educational_posts: 'active',
-      firebase_storage: 'active'
+      educational_posts: 'active'
     },
     targets: {
       total: Object.keys(redditTargets).length,
@@ -1673,7 +1640,7 @@ router.get('/admin', (req, res) => {
       generate_reply: '/api/reddit-admin/generate-reply',
       analyze_post: '/api/reddit-admin/analyze-post',
       cron: '/api/reddit-admin/cron (POST)',
-      generate_daily_posts: '/api/reddit-admin/generate-daily-posts' // NEW
+      generate_daily_posts: '/api/reddit-admin/generate-daily-posts'
     }
   });
 });
