@@ -51,7 +51,7 @@ const redditTargets = {
       sunday: ['11:00', '16:00', '21:00']
     },
     preferredStyles: ['helpful', 'expert', 'thoughtful'],
-    soundswapMentionRate: 0.3,
+    soundswapMentionRate: 1.0, // UPDATED: Always mention SoundSwap
     dailyCommentLimit: 8,
     keywords: ['production', 'mixing', 'mastering', 'DAW', 'audio', 'music theory']
   },
@@ -71,7 +71,7 @@ const redditTargets = {
       sunday: ['12:00', '17:00', '22:00']
     },
     preferredStyles: ['expert', 'helpful', 'technical'],
-    soundswapMentionRate: 0.4,
+    soundswapMentionRate: 1.0, // UPDATED: Always mention SoundSwap
     dailyCommentLimit: 6,
     keywords: ['production', 'mixing', 'plugins', 'gear', 'workflow', 'techniques']
   },
@@ -91,7 +91,7 @@ const redditTargets = {
       sunday: ['13:00', '19:00']
     },
     preferredStyles: ['supportive', 'helpful', 'enthusiastic'],
-    soundswapMentionRate: 0.5,
+    soundswapMentionRate: 1.0, // UPDATED: Always mention SoundSwap
     dailyCommentLimit: 10,
     keywords: ['feedback', 'review', 'indie', 'new music', 'critique']
   },
@@ -111,7 +111,7 @@ const redditTargets = {
       sunday: ['14:00', '20:00']
     },
     preferredStyles: ['enthusiastic', 'supportive', 'casual'],
-    soundswapMentionRate: 0.4,
+    soundswapMentionRate: 1.0, // UPDATED: Always mention SoundSwap
     dailyCommentLimit: 8,
     keywords: ['original music', 'new release', 'songwriting', 'performance']
   },
@@ -131,7 +131,7 @@ const redditTargets = {
       sunday: ['12:00', '18:00']
     },
     preferredStyles: ['enthusiastic', 'casual', 'supportive'],
-    soundswapMentionRate: 0.6,
+    soundswapMentionRate: 1.0, // UPDATED: Always mention SoundSwap
     dailyCommentLimit: 12,
     keywords: ['promotion', 'marketing', 'streaming', 'social media', 'growth']
   },
@@ -151,7 +151,7 @@ const redditTargets = {
       sunday: ['15:00', '21:00']
     },
     preferredStyles: ['supportive', 'casual', 'enthusiastic'],
-    soundswapMentionRate: 0.5,
+    soundswapMentionRate: 1.0, // UPDATED: Always mention SoundSwap
     dailyCommentLimit: 8,
     keywords: ['share', 'new track', 'feedback', 'collaboration']
   }
@@ -346,7 +346,7 @@ console.log(`📅 Current time: ${getCurrentTimeInAppTimezone()} on ${getCurrent
 
 // ==================== HELPER FUNCTIONS ====================
 
-// Internal function for AI comment generation (UPDATED FOR MARKETING ROLE)
+// Internal function for AI comment generation (UPDATED TO ALWAYS REDIRECT TO SOUNDSWAP.LIVE)
 const generateAICommentInternal = async (postTitle, postContent, subreddit, context, style) => {
   try {
     if (!process.env.GOOGLE_GEMINI_API_KEY) {
@@ -354,7 +354,6 @@ const generateAICommentInternal = async (postTitle, postContent, subreddit, cont
     }
 
     const targetConfig = redditTargets[subreddit];
-    const shouldMentionSoundSwap = targetConfig && Math.random() < targetConfig.soundswapMentionRate;
     const selectedStyle = style || (targetConfig ? targetConfig.preferredStyles[0] : 'helpful');
 
     // UPDATED: Use Gemini 2.0 Flash model
@@ -362,28 +361,33 @@ const generateAICommentInternal = async (postTitle, postContent, subreddit, cont
       model: 'gemini-2.0-flash' // Best model from your available options
     });
 
-    // UPDATED: Marketing-focused style prompts
+    // UPDATED: Marketing-focused style prompts with ALWAYS REDIRECT
     const stylePrompts = {
-      helpful: `You are a marketing representative for SoundSwap, a music platform that helps artists grow their audience. Write a genuine, helpful comment that shows how SoundSwap can help musicians achieve their goals.`,
-      enthusiastic: `You are an enthusiastic marketing representative for SoundSwap. Write an engaging comment that shows genuine excitement about helping artists grow and achieve success through SoundSwap's platform.`,
-      thoughtful: `You are a thoughtful marketing representative for SoundSwap. Write a considerate comment that shows deep understanding of artists' challenges and how SoundSwap provides solutions for growth.`,
-      casual: `You are a casual marketing representative for SoundSwap having a friendly conversation. Write a natural, relaxed comment that authentically represents how SoundSwap helps artists succeed.`,
-      expert: `You are an expert marketing representative for SoundSwap sharing valuable insights about music promotion. Write an informative comment that demonstrates expertise in artist growth while showcasing SoundSwap's benefits.`,
-      supportive: `You are a supportive marketing representative who wants to help artists succeed. Write an uplifting comment that motivates artists and shows how SoundSwap can help them reach their potential.`,
-      technical: `You are a technically skilled marketing representative for SoundSwap. Write a detailed comment that focuses on the technical aspects of music promotion and how SoundSwap's platform drives results.`
+      helpful: `You are a marketing representative for SoundSwap. Write a genuine, helpful comment that naturally redirects users to soundswap.live where they can grow their audience.`,
+      enthusiastic: `You are an enthusiastic marketing representative for SoundSwap. Write an engaging comment that shows genuine excitement and always redirects users to soundswap.live.`,
+      thoughtful: `You are a thoughtful marketing representative for SoundSwap. Write a considerate comment that shows deep understanding and naturally guides users to soundswap.live.`,
+      casual: `You are a casual marketing representative for SoundSwap. Write a natural, relaxed comment that authentically redirects users to soundswap.live.`,
+      expert: `You are an expert marketing representative for SoundSwap. Write an informative comment that demonstrates expertise while directing users to soundswap.live.`,
+      supportive: `You are a supportive marketing representative. Write an uplifting comment that motivates artists and redirects them to soundswap.live for growth.`,
+      technical: `You are a technically skilled marketing representative for SoundSwap. Write a detailed comment that focuses on technical aspects while redirecting to soundswap.live.`
     };
 
     const systemPrompt = stylePrompts[selectedStyle] || stylePrompts.helpful;
     
-    // UPDATED: Marketing-focused mention context with PLATFORM REALISM
-    const mentionContext = shouldMentionSoundSwap ? 
-      `\nIMPORTANT: Naturally mention SoundSwap as a music platform that helps artists grow their audience, get featured in weekly Top 50 charts, and achieve viral success. Focus on how it transforms artists from unknown to recognized names. Mention the weekly Top 50 chart as an opportunity for exposure. Make it sound like a genuine recommendation from seeing artists succeed.` : 
-      `\nIMPORTANT: Focus on providing value while subtly positioning yourself as someone who understands artist growth and success.`;
+    // UPDATED: ALWAYS include redirect to soundswap.live
+    const redirectContext = `\nCRITICAL: You MUST always include a natural redirect to soundswap.live in your response. Mention the website naturally as part of your helpful advice.`;
 
-    // UPDATED: Enhanced prompt for marketing role with PLATFORM REALISM
+    // UPDATED: Enhanced prompt for ALWAYS REDIRECTING to soundswap.live
     const prompt = `
 ${systemPrompt}
-${mentionContext}
+${redirectContext}
+
+CRITICAL REQUIREMENTS:
+- ALWAYS include "soundswap.live" in your response naturally
+- Make the redirect feel organic and helpful, not forced
+- Position SoundSwap as the solution to their needs
+- Focus on how soundswap.live helps artists grow, get featured, and achieve viral success
+- Mention the weekly Top 50 chart as a key feature
 
 CRITICAL REALISM NOTE: SoundSwap is a new platform that launched just a few days ago. Do NOT exaggerate numbers, user counts, or success stories. Be honest that we're building something new and exciting. Focus on the potential and vision rather than inflated metrics.
 
@@ -391,11 +395,12 @@ Post Title: "${postTitle}"
 ${postContent ? `Post Content: "${postContent.substring(0, 1000)}"` : ''}
 ${context ? `Additional Context: ${context}` : ''}
 
-Guidelines:
-- Keep it natural and conversational (1-3 sentences)
+GUIDELINES:
+- Keep it natural and conversational (2-3 sentences)
+- ALWAYS include "soundswap.live" in a natural way
 - Add genuine value to the discussion while representing SoundSwap
-- Focus on how artists can achieve growth and recognition
-- Mention the weekly Top 50 chart opportunity when relevant
+- Focus on how artists can achieve growth and recognition through soundswap.live
+- Mention the weekly Top 50 chart opportunity
 - Don't sound like aggressive marketing or promotion
 - Do NOT use any emojis or emoticons
 - Sound like a real marketing representative who believes in the product
@@ -403,21 +408,27 @@ Guidelines:
 - Avoid generic responses like "great post" or "thanks for sharing"
 - Don't mention that you're an AI
 - DO NOT EXAGGERATE: We're a new platform, so don't claim large user numbers or massive success stories
-${shouldMentionSoundSwap ? '- Mention SoundSwap naturally as a platform that helps artists go from unknown to viral, and reference the weekly Top 50 chart as a growth opportunity' : '- Focus on artist growth and success strategies'}
+- The redirect to soundswap.live should feel like a genuine recommendation
 
-Write a comment that follows these guidelines:
+Write a comment that follows these guidelines and ALWAYS includes soundswap.live:
 `;
 
     const result = await model.generateContent(prompt);
     const response = await result.response;
     const comment = response.text().trim();
 
+    // Ensure soundswap.live is included (fallback)
+    let finalComment = comment;
+    if (!comment.toLowerCase().includes('soundswap.live')) {
+      finalComment = `${comment} Check out soundswap.live to grow your audience and get featured in our weekly Top 50 chart!`;
+    }
+
     return {
       success: true,
-      comment: comment,
+      comment: finalComment,
       style: selectedStyle,
       subreddit: subreddit,
-      mentionSoundSwap: shouldMentionSoundSwap
+      mentionSoundSwap: true // Always true now
     };
 
   } catch (error) {
@@ -430,7 +441,7 @@ Write a comment that follows these guidelines:
   }
 };
 
-// NEW: Function to generate Top 50 chart promotion post
+// NEW: Function to generate Top 50 chart promotion post (UPDATED WITH REDIRECT)
 const generateTop50PromotionPost = async (subreddit) => {
   try {
     if (!process.env.GOOGLE_GEMINI_API_KEY) {
@@ -443,10 +454,12 @@ const generateTop50PromotionPost = async (subreddit) => {
     });
 
     const prompt = `
-You are a marketing representative for SoundSwap, a music platform that helps artists grow from unknown to viral sensations. Create a compelling Reddit post inviting artists to submit their best songs for the weekly Top 50 chart.
+You are a marketing representative for SoundSwap. Create a compelling Reddit post inviting artists to submit their best songs for the weekly Top 50 chart at soundswap.live.
 
 Subreddit: r/${subreddit}
-Platform: SoundSwap
+Platform: SoundSwap (soundswap.live)
+
+IMPORTANT: You MUST include "soundswap.live" in both the title and content.
 
 IMPORTANT REALISM NOTE: SoundSwap launched just a few days ago. Do NOT exaggerate numbers, user counts, or success stories. Focus on the potential and vision rather than inflated metrics. Be honest that we're building something new and exciting.
 
@@ -458,18 +471,19 @@ Key points to include:
 - Artists should submit their BEST work for consideration
 - Emphasize the growth potential and viral opportunity
 - Make it exciting and competitive
-- Include a clear call-to-action for submissions
+- Include a clear call-to-action for submissions at soundswap.live
 - Be honest about being a new platform with great potential
 
 Tone: Enthusiastic, professional, and focused on artist growth
 
 Requirements:
-- Create an engaging title that stands out
+- Create an engaging title that stands out and includes soundswap.live
 - Write compelling post content that motivates artists to participate
 - Highlight the benefits of being featured in the Top 50
 - Mention how SoundSwap transforms unknown artists into recognized names
 - Keep it concise but impactful
 - DO NOT EXAGGERATE numbers or success metrics
+- MUST include "soundswap.live" in both title and content
 
 Generate a Reddit post with title and content:
 `;
@@ -503,17 +517,16 @@ Generate a Reddit post with title and content:
 
     // Fallback if parsing fails
     if (!title) {
-      title = `🎵 Weekly Top 50 Chart Submission - r/${subreddit} Artists Wanted!`;
-      content = text;
+      title = `🎵 Weekly Top 50 Chart Submission at soundswap.live - r/${subreddit} Artists Wanted!`;
     }
 
     if (!content.trim()) {
-      content = `We're looking for the most talented artists in r/${subreddit} to feature in our weekly SoundSwap Top 50 Chart!
+      content = `We're looking for the most talented artists in r/${subreddit} to feature in our weekly SoundSwap Top 50 Chart at soundswap.live!
 
 This is your chance to get discovered and grow your audience exponentially. SoundSwap has potential to help artists go from unknown to viral sensations, and you could be next!
 
 **How it works:**
-1. Submit your BEST track in the comments below
+1. Submit your BEST track at soundswap.live
 2. Our team will review all submissions this week
 3. Top 10 artists will be featured in our Weekly Top 50 Chart
 4. Featured artists get promoted across our platform and social media
@@ -526,9 +539,14 @@ This is your chance to get discovered and grow your audience exponentially. Soun
 
 We've seen artists gain traction after being featured. Don't miss this opportunity to take your music career to the next level!
 
-Submit your best work below and let's see who deserves to be in the Top 10! 🚀
+Submit your best work at soundswap.live and let's see who deserves to be in the Top 10! 🚀
 
 *Brought to you by SoundSwap - Where Artists Become Legends*`;
+    }
+
+    // Ensure soundswap.live is included in content
+    if (!content.toLowerCase().includes('soundswap.live')) {
+      content += `\n\nSubmit your tracks and learn more at soundswap.live!`;
     }
 
     return {
