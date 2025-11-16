@@ -3,7 +3,7 @@ import { GoogleGenerativeAI } from '@google/generative-ai';
 
 const router = express.Router();
 
-// Initialize Google Gemini AI - Updated for free tier
+// Initialize Google Gemini AI - Updated for Gemini 2.0 Flash
 const genAI = new GoogleGenerativeAI(process.env.GOOGLE_GEMINI_API_KEY);
 
 // ==================== TIMEZONE CONFIGURATION ====================
@@ -357,9 +357,9 @@ const generateAICommentInternal = async (postTitle, postContent, subreddit, cont
     const shouldMentionSoundSwap = targetConfig && Math.random() < targetConfig.soundswapMentionRate;
     const selectedStyle = style || (targetConfig ? targetConfig.preferredStyles[0] : 'helpful');
 
-    // UPDATED: Use correct model for free tier - gemini-1.5-flash or gemini-1.0-pro
+    // UPDATED: Use Gemini 2.0 Flash model
     const model = genAI.getGenerativeModel({ 
-      model: 'gemini-1.5-flash' // Free tier model
+      model: 'gemini-2.0-flash' // Best model from your available options
     });
 
     // UPDATED: Marketing-focused style prompts
@@ -437,9 +437,9 @@ const generateTop50PromotionPost = async (subreddit) => {
       return { success: false, message: 'Google Gemini API key not configured' };
     }
 
-    // UPDATED: Use correct model for free tier
+    // UPDATED: Use Gemini 2.0 Flash model
     const model = genAI.getGenerativeModel({ 
-      model: 'gemini-1.5-flash' // Free tier model
+      model: 'gemini-2.0-flash' // Best model from your available options
     });
 
     const prompt = `
@@ -938,9 +938,9 @@ router.post('/generate-reply', async (req, res) => {
       relationship
     });
 
-    // UPDATED: Use correct model for free tier
+    // UPDATED: Use Gemini 2.0 Flash model
     const model = genAI.getGenerativeModel({ 
-      model: 'gemini-1.5-flash' // Free tier model
+      model: 'gemini-2.0-flash' // Best model from your available options
     });
 
     // Different tones for different relationships
@@ -1029,9 +1029,9 @@ router.post('/analyze-post', async (req, res) => {
 
     console.log('🔍 Analyzing post for commenting strategy:', { subreddit });
 
-    // UPDATED: Use correct model for free tier
+    // UPDATED: Use Gemini 2.0 Flash model
     const model = genAI.getGenerativeModel({ 
-      model: 'gemini-1.5-flash' // Free tier model
+      model: 'gemini-2.0-flash' // Best model from your available options
     });
 
     const prompt = `
@@ -1102,9 +1102,9 @@ router.get('/test-gemini', async (req, res) => {
       });
     }
 
-    // UPDATED: Use correct model for free tier
+    // UPDATED: Use Gemini 2.0 Flash model
     const model = genAI.getGenerativeModel({ 
-      model: 'gemini-1.5-flash' // Free tier model
+      model: 'gemini-2.0-flash' // Best model from your available options
     });
     
     const result = await model.generateContent('Say "Hello from SoundSwap Reddit AI" in a creative way.');
