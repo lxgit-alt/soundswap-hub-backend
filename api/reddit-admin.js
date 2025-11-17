@@ -61,6 +61,62 @@ const getCurrentDayInAppTimezone = () => {
   }).toLowerCase();
 };
 
+// ==================== TIME WINDOW CONFIGURATION ====================
+
+// Posting window in minutes (posts will be found within this window of scheduled time)
+const POSTING_WINDOW_MINUTES = 10;
+
+// Helper function to get time window for current time
+const getTimeWindowForCurrentTime = () => {
+  const currentTime = getCurrentTimeInAppTimezone();
+  const [currentHour, currentMinute] = currentTime.split(':').map(Number);
+  
+  // Calculate window start and end times
+  const windowStart = new Date();
+  windowStart.setHours(currentHour, currentMinute - POSTING_WINDOW_MINUTES, 0, 0);
+  
+  const windowEnd = new Date();
+  windowEnd.setHours(currentHour, currentMinute, 59, 999);
+  
+  // Format times for display
+  const formatTime = (date) => {
+    return date.toLocaleTimeString('en-US', { 
+      timeZone: APP_TIMEZONE,
+      hour12: false,
+      hour: '2-digit',
+      minute: '2-digit'
+    }).slice(0, 5);
+  };
+  
+  return {
+    windowStart: formatTime(windowStart),
+    windowEnd: formatTime(windowEnd),
+    currentTime: currentTime
+  };
+};
+
+// Helper function to check if a scheduled time is within the current window
+const isTimeInCurrentWindow = (scheduledTime) => {
+  const { windowStart, windowEnd } = getTimeWindowForCurrentTime();
+  
+  // Convert times to minutes for easy comparison
+  const timeToMinutes = (timeStr) => {
+    const [hours, minutes] = timeStr.split(':').map(Number);
+    return hours * 60 + minutes;
+  };
+  
+  const scheduledMinutes = timeToMinutes(scheduledTime);
+  const startMinutes = timeToMinutes(windowStart);
+  const endMinutes = timeToMinutes(windowEnd);
+  
+  // Handle midnight wrap-around
+  if (startMinutes > endMinutes) {
+    return scheduledMinutes >= startMinutes || scheduledMinutes <= endMinutes;
+  }
+  
+  return scheduledMinutes >= startMinutes && scheduledMinutes <= endMinutes;
+};
+
 // ==================== REDDIT TARGET CONFIGURATION ====================
 
 const redditTargets = {
@@ -305,18 +361,20 @@ const storeEducationalPost = async (postData) => {
   }
 };
 
-// Get scheduled posts for current time
+// UPDATED: Get scheduled posts for current time window
 const getScheduledPostsForCurrentTime = async () => {
   try {
     const currentDay = getCurrentDayInAppTimezone();
     const currentTime = getCurrentTimeInAppTimezone();
+    const timeWindow = getTimeWindowForCurrentTime();
+    
+    console.log(`🕒 Checking time window: ${timeWindow.windowStart} to ${timeWindow.windowEnd} (current: ${currentTime})`);
     
     if (db) {
       const postsRef = collection(db, SCHEDULED_POSTS_COLLECTION);
       const q = query(
         postsRef, 
         where('scheduledDay', '==', currentDay),
-        where('scheduledTime', '==', currentTime),
         where('posted', '==', false)
       );
       
@@ -324,19 +382,23 @@ const getScheduledPostsForCurrentTime = async () => {
       const posts = [];
       
       snapshot.forEach(doc => {
-        posts.push({ id: doc.id, ...doc.data() });
+        const post = { id: doc.id, ...doc.data() };
+        // Check if post is within current time window
+        if (isTimeInCurrentWindow(post.scheduledTime)) {
+          posts.push(post);
+        }
       });
       
-      console.log(`📊 Found ${posts.length} scheduled posts in Firebase for ${currentTime} on ${currentDay}`);
+      console.log(`📊 Found ${posts.length} scheduled posts in Firebase for time window ${timeWindow.windowStart}-${timeWindow.windowEnd} on ${currentDay}`);
       return posts;
     } else {
       // Fallback to in-memory storage
       const posts = inMemoryPosts.scheduled.filter(post => 
         post.scheduledDay === currentDay && 
-        post.scheduledTime === currentTime && 
-        !post.posted
+        !post.posted &&
+        isTimeInCurrentWindow(post.scheduledTime)
       );
-      console.log(`📊 Found ${posts.length} scheduled posts in memory for ${currentTime} on ${currentDay}`);
+      console.log(`📊 Found ${posts.length} scheduled posts in memory for time window ${timeWindow.windowStart}-${timeWindow.windowEnd} on ${currentDay}`);
       return posts;
     }
   } catch (error) {
@@ -345,18 +407,20 @@ const getScheduledPostsForCurrentTime = async () => {
   }
 };
 
-// Get educational posts for current time
+// UPDATED: Get educational posts for current time window
 const getEducationalPostsForCurrentTime = async () => {
   try {
     const currentDay = getCurrentDayInAppTimezone();
     const currentTime = getCurrentTimeInAppTimezone();
+    const timeWindow = getTimeWindowForCurrentTime();
+    
+    console.log(`🕒 Checking educational posts time window: ${timeWindow.windowStart} to ${timeWindow.windowEnd} (current: ${currentTime})`);
     
     if (db) {
       const postsRef = collection(db, EDUCATIONAL_POSTS_COLLECTION);
       const q = query(
         postsRef, 
         where('scheduledDay', '==', currentDay),
-        where('scheduledTime', '==', currentTime),
         where('posted', '==', false)
       );
       
@@ -364,19 +428,23 @@ const getEducationalPostsForCurrentTime = async () => {
       const posts = [];
       
       snapshot.forEach(doc => {
-        posts.push({ id: doc.id, ...doc.data() });
+        const post = { id: doc.id, ...doc.data() };
+        // Check if post is within current time window
+        if (isTimeInCurrentWindow(post.scheduledTime)) {
+          posts.push(post);
+        }
       });
       
-      console.log(`📊 Found ${posts.length} educational posts in Firebase for ${currentTime} on ${currentDay}`);
+      console.log(`📊 Found ${posts.length} educational posts in Firebase for time window ${timeWindow.windowStart}-${timeWindow.windowEnd} on ${currentDay}`);
       return posts;
     } else {
       // Fallback to in-memory storage
       const posts = inMemoryPosts.educational.filter(post => 
         post.scheduledDay === currentDay && 
-        post.scheduledTime === currentTime && 
-        !post.posted
+        !post.posted &&
+        isTimeInCurrentWindow(post.scheduledTime)
       );
-      console.log(`📊 Found ${posts.length} educational posts in memory for ${currentTime} on ${currentDay}`);
+      console.log(`📊 Found ${posts.length} educational posts in memory for time window ${timeWindow.windowStart}-${timeWindow.windowEnd} on ${currentDay}`);
       return posts;
     }
   } catch (error) {
@@ -424,8 +492,10 @@ const markPostAsPosted = async (postId, collectionName) => {
 const getCurrentSchedule = () => {
   const currentDay = getCurrentDayInAppTimezone();
   const currentTime = getCurrentTimeInAppTimezone();
+  const timeWindow = getTimeWindowForCurrentTime();
   
   console.log(`🔍 Checking schedule for ${currentDay} at ${currentTime} (${APP_TIMEZONE})`);
+  console.log(`🕒 Time window: ${timeWindow.windowStart} to ${timeWindow.windowEnd}`);
   
   const scheduledPosts = [];
   
@@ -433,22 +503,25 @@ const getCurrentSchedule = () => {
     if (config.active && config.postingSchedule[currentDay]) {
       const times = config.postingSchedule[currentDay];
       
-      if (times.includes(currentTime)) {
-        scheduledPosts.push({
-          subreddit,
-          time: currentTime,
-          day: currentDay,
-          style: config.preferredStyles[Math.floor(Math.random() * config.preferredStyles.length)],
-          dailyLimit: config.dailyCommentLimit,
-          currentCount: postingActivity.dailyCounts[subreddit] || 0,
-          type: 'comment'
-        });
-        console.log(`✅ Found scheduled comment for r/${subreddit} at ${currentTime}`);
-      }
+      // Check each scheduled time to see if it falls within the current window
+      times.forEach(scheduledTime => {
+        if (isTimeInCurrentWindow(scheduledTime)) {
+          scheduledPosts.push({
+            subreddit,
+            time: scheduledTime,
+            day: currentDay,
+            style: config.preferredStyles[Math.floor(Math.random() * config.preferredStyles.length)],
+            dailyLimit: config.dailyCommentLimit,
+            currentCount: postingActivity.dailyCounts[subreddit] || 0,
+            type: 'comment'
+          });
+          console.log(`✅ Found scheduled comment for r/${subreddit} at ${scheduledTime} (within current window)`);
+        }
+      });
     }
   });
   
-  console.log(`📊 Total scheduled comments found: ${scheduledPosts.length}`);
+  console.log(`📊 Total scheduled comments found in window: ${scheduledPosts.length}`);
   return scheduledPosts;
 };
 
@@ -456,8 +529,10 @@ const getCurrentSchedule = () => {
 const getCurrentEducationalSchedule = () => {
   const currentDay = getCurrentDayInAppTimezone();
   const currentTime = getCurrentTimeInAppTimezone();
+  const timeWindow = getTimeWindowForCurrentTime();
   
   console.log(`🔍 Checking educational post schedule for ${currentDay} at ${currentTime}`);
+  console.log(`🕒 Time window: ${timeWindow.windowStart} to ${timeWindow.windowEnd}`);
   
   const scheduledPosts = [];
   
@@ -465,22 +540,25 @@ const getCurrentEducationalSchedule = () => {
     if (config.active && config.educationalPostSchedule && config.educationalPostSchedule[currentDay]) {
       const times = config.educationalPostSchedule[currentDay];
       
-      if (times.includes(currentTime)) {
-        scheduledPosts.push({
-          subreddit,
-          time: currentTime,
-          day: currentDay,
-          style: 'expert',
-          dailyLimit: config.educationalPostLimit || 1,
-          currentCount: postingActivity.educationalCounts[subreddit] || 0,
-          type: 'educational'
-        });
-        console.log(`✅ Found scheduled educational post for r/${subreddit} at ${currentTime}`);
-      }
+      // Check each scheduled time to see if it falls within the current window
+      times.forEach(scheduledTime => {
+        if (isTimeInCurrentWindow(scheduledTime)) {
+          scheduledPosts.push({
+            subreddit,
+            time: scheduledTime,
+            day: currentDay,
+            style: 'expert',
+            dailyLimit: config.educationalPostLimit || 1,
+            currentCount: postingActivity.educationalCounts[subreddit] || 0,
+            type: 'educational'
+          });
+          console.log(`✅ Found scheduled educational post for r/${subreddit} at ${scheduledTime} (within current window)`);
+        }
+      });
     }
   });
   
-  console.log(`📊 Total scheduled educational posts found: ${scheduledPosts.length}`);
+  console.log(`📊 Total scheduled educational posts found in window: ${scheduledPosts.length}`);
   return scheduledPosts;
 };
 
@@ -512,63 +590,77 @@ const simulateRedditPost = async (subreddit, content, style, type = 'comment') =
   }
 };
 
-// NEW: Generate posts for current time slot on demand
-const generatePostsForCurrentTime = async () => {
+// Generate posts for current time window
+const generatePostsForCurrentTimeWindow = async () => {
   try {
     const currentDay = getCurrentDayInAppTimezone();
-    const currentTime = getCurrentTimeInAppTimezone();
+    const timeWindow = getTimeWindowForCurrentTime();
     
-    console.log(`🔄 Generating posts for current time: ${currentTime} on ${currentDay}`);
+    console.log(`🔄 Generating posts for current time window: ${timeWindow.windowStart} to ${timeWindow.windowEnd} on ${currentDay}`);
     
     let totalGenerated = 0;
     
-    // Generate regular comments for current time
+    // Generate regular comments for current time window
     for (const [subreddit, config] of Object.entries(redditTargets)) {
-      if (config.active && config.postingSchedule[currentDay] && config.postingSchedule[currentDay].includes(currentTime)) {
-        const style = config.preferredStyles[Math.floor(Math.random() * config.preferredStyles.length)];
+      if (config.active && config.postingSchedule[currentDay]) {
+        const times = config.postingSchedule[currentDay];
         
-        await storeScheduledPost({
-          subreddit,
-          scheduledDay: currentDay,
-          scheduledTime: currentTime,
-          style: style,
-          type: 'comment',
-          dailyLimit: config.dailyCommentLimit
-        });
-        
-        totalGenerated++;
-        console.log(`✅ Generated comment for r/${subreddit} at ${currentTime}`);
-      }
-    }
-    
-    // Generate educational posts for current time
-    for (const [subreddit, config] of Object.entries(redditTargets)) {
-      if (config.active && config.educationalPostSchedule && config.educationalPostSchedule[currentDay] && config.educationalPostSchedule[currentDay].includes(currentTime)) {
-        const educationalResponse = await generateEducationalPost(subreddit);
-        
-        if (educationalResponse.success) {
-          await storeEducationalPost({
-            subreddit,
-            scheduledDay: currentDay,
-            scheduledTime: currentTime,
-            style: 'expert',
-            type: 'educational',
-            title: educationalResponse.title,
-            content: educationalResponse.content,
-            dailyLimit: config.educationalPostLimit || 1
-          });
-          
-          totalGenerated++;
-          console.log(`✅ Generated educational post for r/${subreddit} at ${currentTime}`);
+        for (const time of times) {
+          // Only generate if time is within current window
+          if (isTimeInCurrentWindow(time)) {
+            const style = config.preferredStyles[Math.floor(Math.random() * config.preferredStyles.length)];
+            
+            await storeScheduledPost({
+              subreddit,
+              scheduledDay: currentDay,
+              scheduledTime: time,
+              style: style,
+              type: 'comment',
+              dailyLimit: config.dailyCommentLimit
+            });
+            
+            totalGenerated++;
+            console.log(`✅ Generated comment for r/${subreddit} at ${time} (within current window)`);
+          }
         }
       }
     }
     
-    console.log(`✅ Generated ${totalGenerated} posts for ${currentTime} on ${currentDay}`);
+    // Generate educational posts for current time window
+    for (const [subreddit, config] of Object.entries(redditTargets)) {
+      if (config.active && config.educationalPostSchedule && config.educationalPostSchedule[currentDay]) {
+        const times = config.educationalPostSchedule[currentDay];
+        
+        for (const time of times) {
+          // Only generate if time is within current window
+          if (isTimeInCurrentWindow(time)) {
+            const educationalResponse = await generateEducationalPost(subreddit);
+            
+            if (educationalResponse.success) {
+              await storeEducationalPost({
+                subreddit,
+                scheduledDay: currentDay,
+                scheduledTime: time,
+                style: 'expert',
+                type: 'educational',
+                title: educationalResponse.title,
+                content: educationalResponse.content,
+                dailyLimit: config.educationalPostLimit || 1
+              });
+              
+              totalGenerated++;
+              console.log(`✅ Generated educational post for r/${subreddit} at ${time} (within current window)`);
+            }
+          }
+        }
+      }
+    }
+    
+    console.log(`✅ Generated ${totalGenerated} posts for time window ${timeWindow.windowStart}-${timeWindow.windowEnd} on ${currentDay}`);
     return { success: true, totalGenerated };
     
   } catch (error) {
-    console.error('❌ Error generating posts for current time:', error);
+    console.error('❌ Error generating posts for current time window:', error);
     return { success: false, error: error.message };
   }
 };
@@ -638,7 +730,7 @@ const generateDailyPosts = async () => {
   }
 };
 
-// UPDATED: Main function to run scheduled posts - now generates posts on demand
+// UPDATED: Main function to run scheduled posts with time window support
 export const runScheduledPosts = async () => {
   try {
     postingActivity.lastCronRun = new Date().toISOString();
@@ -646,10 +738,12 @@ export const runScheduledPosts = async () => {
     
     const currentTime = getCurrentTimeInAppTimezone();
     const currentDay = getCurrentDayInAppTimezone();
+    const timeWindow = getTimeWindowForCurrentTime();
     
     console.log(`⏰ GitHub Actions Cron running at ${currentTime} on ${currentDay} (${APP_TIMEZONE})`);
     console.log(`🔄 GitHub Actions Run #${postingActivity.githubActionsRuns}`);
     console.log(`🗄️ Database: ${db ? 'Firebase' : 'In-Memory'}`);
+    console.log(`🕒 Time window: ${timeWindow.windowStart} to ${timeWindow.windowEnd}`);
     
     // Check for posts in database first
     const scheduledPostsFromDB = await getScheduledPostsForCurrentTime();
@@ -657,13 +751,13 @@ export const runScheduledPosts = async () => {
     
     let totalPosted = 0;
     
-    // If no posts found in database, generate them on demand
+    // If no posts found in database, generate them on demand for current time window
     if (scheduledPostsFromDB.length === 0 && educationalPostsFromDB.length === 0) {
-      console.log('🔄 No posts found in database, generating posts for current time slot...');
-      const generationResult = await generatePostsForCurrentTime();
+      console.log('🔄 No posts found in database, generating posts for current time window...');
+      const generationResult = await generatePostsForCurrentTimeWindow();
       
       if (generationResult.success && generationResult.totalGenerated > 0) {
-        console.log(`✅ Generated ${generationResult.totalGenerated} posts for current time`);
+        console.log(`✅ Generated ${generationResult.totalGenerated} posts for current time window`);
         
         // Re-check for posts after generation
         const newScheduledPosts = await getScheduledPostsForCurrentTime();
@@ -675,17 +769,17 @@ export const runScheduledPosts = async () => {
         scheduledPostsFromDB.push(...newScheduledPosts);
         educationalPostsFromDB.push(...newEducationalPosts);
       } else {
-        console.log('⚠️ No posts generated for current time slot');
+        console.log('⚠️ No posts generated for current time window');
       }
     }
     
     // Process posts from database
     if (scheduledPostsFromDB.length > 0 || educationalPostsFromDB.length > 0) {
-      console.log(`📅 Found ${scheduledPostsFromDB.length + educationalPostsFromDB.length} scheduled posts in database`);
+      console.log(`📅 Found ${scheduledPostsFromDB.length + educationalPostsFromDB.length} scheduled posts in database for current time window`);
       
       // Process regular comments
       for (const post of scheduledPostsFromDB) {
-        const { subreddit, style, dailyLimit } = post;
+        const { subreddit, style, dailyLimit, scheduledTime } = post;
         const currentCount = postingActivity.dailyCounts[subreddit] || 0;
         
         if (currentCount >= dailyLimit) {
@@ -703,7 +797,7 @@ export const runScheduledPosts = async () => {
           }
         }
         
-        console.log(`🚀 Preparing to post comment to r/${subreddit} with style: ${style}`);
+        console.log(`🚀 Preparing to post comment to r/${subreddit} with style: ${style} (scheduled for ${scheduledTime})`);
         
         // Generate sample post content for comment context
         const samplePosts = {
@@ -751,7 +845,7 @@ export const runScheduledPosts = async () => {
           if (postResult.success) {
             await markPostAsPosted(post.id, SCHEDULED_POSTS_COLLECTION);
             totalPosted++;
-            console.log(`✅ Successfully posted comment to r/${subreddit}`);
+            console.log(`✅ Successfully posted comment to r/${subreddit} (was scheduled for ${scheduledTime})`);
           } else {
             console.log(`❌ Failed to post comment to r/${subreddit}: ${postResult.error}`);
           }
@@ -765,7 +859,7 @@ export const runScheduledPosts = async () => {
       
       // Process educational posts
       for (const post of educationalPostsFromDB) {
-        const { subreddit, title, content, dailyLimit } = post;
+        const { subreddit, title, content, dailyLimit, scheduledTime } = post;
         const currentCount = postingActivity.educationalCounts[subreddit] || 0;
         
         if (currentCount >= dailyLimit) {
@@ -783,7 +877,7 @@ export const runScheduledPosts = async () => {
           }
         }
         
-        console.log(`🚀 Preparing to post educational content to r/${subreddit}`);
+        console.log(`🚀 Preparing to post educational content to r/${subreddit} (scheduled for ${scheduledTime})`);
         
         const postContent = `POST: ${title}\n\n${content}`;
         const postResult = await simulateRedditPost(subreddit, postContent, 'expert', 'educational');
@@ -791,7 +885,7 @@ export const runScheduledPosts = async () => {
         if (postResult.success) {
           await markPostAsPosted(post.id, EDUCATIONAL_POSTS_COLLECTION);
           totalPosted++;
-          console.log(`✅ Successfully posted educational content to r/${subreddit}`);
+          console.log(`✅ Successfully posted educational content to r/${subreddit} (was scheduled for ${scheduledTime})`);
         } else {
           console.log(`❌ Failed to post educational content to r/${subreddit}: ${postResult.error}`);
         }
@@ -800,7 +894,7 @@ export const runScheduledPosts = async () => {
         await new Promise(resolve => setTimeout(resolve, 10000));
       }
     } else {
-      console.log('⏰ No scheduled posts available for this time slot');
+      console.log('⏰ No scheduled posts available for current time window');
     }
     
     return {
@@ -811,6 +905,7 @@ export const runScheduledPosts = async () => {
       totalEducationalPosts: postingActivity.totalEducationalPosts,
       githubActionsRuns: postingActivity.githubActionsRuns,
       totalPosted: totalPosted,
+      timeWindow: getTimeWindowForCurrentTime(),
       timestamp: new Date().toISOString()
     };
   } catch (error) {
@@ -819,9 +914,10 @@ export const runScheduledPosts = async () => {
   }
 };
 
-console.log('🚀 Reddit Auto-Poster initialized (GitHub Actions + Firebase)');
+console.log('🚀 Reddit Auto-Poster initialized (GitHub Actions + Firebase + Time Window)');
 console.log(`⏰ Timezone: ${APP_TIMEZONE}`);
 console.log(`📅 Current time: ${getCurrentTimeInAppTimezone()} on ${getCurrentDayInAppTimezone()}`);
+console.log(`🕒 Posting window: ${POSTING_WINDOW_MINUTES} minutes`);
 
 // ==================== HELPER FUNCTIONS ====================
 
@@ -1176,6 +1272,7 @@ router.get('/cron-status', async (req, res) => {
   try {
     const currentTime = getCurrentTimeInAppTimezone();
     const currentDay = getCurrentDayInAppTimezone();
+    const timeWindow = getTimeWindowForCurrentTime();
     const scheduledPosts = await getScheduledPostsForCurrentTime();
     const scheduledEducationalPosts = await getEducationalPostsForCurrentTime();
     
@@ -1206,12 +1303,17 @@ router.get('/cron-status', async (req, res) => {
         lastCronRun: postingActivity.lastCronRun,
         githubActionsRuns: postingActivity.githubActionsRuns,
         scheduler: 'github-actions',
-        database: db ? 'firebase' : 'in-memory'
+        database: db ? 'firebase' : 'in-memory',
+        timeWindow: {
+          minutes: POSTING_WINDOW_MINUTES,
+          currentWindow: timeWindow
+        }
       },
       scheduled: {
         currentTime: currentTime,
         scheduledComments: scheduledPosts.length,
         scheduledEducationalPosts: scheduledEducationalPosts.length,
+        timeWindow: timeWindow,
         details: {
           comments: scheduledPosts,
           educational: scheduledEducationalPosts
@@ -1286,6 +1388,7 @@ router.post('/generate-daily-posts', async (req, res) => {
 router.get('/cron', (req, res) => {
   const currentTime = getCurrentTimeInAppTimezone();
   const currentDay = getCurrentDayInAppTimezone();
+  const timeWindow = getTimeWindowForCurrentTime();
   
   res.json({
     success: true,
@@ -1293,6 +1396,10 @@ router.get('/cron', (req, res) => {
     timezone: APP_TIMEZONE,
     currentTime: currentTime,
     currentDay: currentDay,
+    timeWindow: {
+      minutes: POSTING_WINDOW_MINUTES,
+      currentWindow: timeWindow
+    },
     availableMethods: {
       POST: 'Trigger cron execution (requires CRON_SECRET)',
       GET: 'Show cron information'
@@ -1320,6 +1427,7 @@ router.get('/cron', (req, res) => {
 router.get('/schedule/today', (req, res) => {
   const today = getCurrentDayInAppTimezone();
   const currentTime = getCurrentTimeInAppTimezone();
+  const timeWindow = getTimeWindowForCurrentTime();
   const schedule = {};
   const educationalSchedule = {};
   
@@ -1329,14 +1437,16 @@ router.get('/schedule/today', (req, res) => {
         times: config.postingSchedule[today],
         preferredStyles: config.preferredStyles,
         dailyLimit: config.dailyCommentLimit,
-        currentCount: postingActivity.dailyCounts[subreddit] || 0
+        currentCount: postingActivity.dailyCounts[subreddit] || 0,
+        inCurrentWindow: config.postingSchedule[today].some(time => isTimeInCurrentWindow(time))
       };
     }
     if (config.active && config.educationalPostSchedule && config.educationalPostSchedule[today]) {
       educationalSchedule[subreddit] = {
         times: config.educationalPostSchedule[today],
         dailyLimit: config.educationalPostLimit || 1,
-        currentCount: postingActivity.educationalCounts[subreddit] || 0
+        currentCount: postingActivity.educationalCounts[subreddit] || 0,
+        inCurrentWindow: config.educationalPostSchedule[today].some(time => isTimeInCurrentWindow(time))
       };
     }
   });
@@ -1346,6 +1456,7 @@ router.get('/schedule/today', (req, res) => {
     day: today,
     currentTime: currentTime,
     timezone: APP_TIMEZONE,
+    timeWindow: timeWindow,
     schedule: schedule,
     educationalSchedule: educationalSchedule,
     activity: {
@@ -1593,17 +1704,22 @@ router.post('/reset-counts', async (req, res) => {
 router.get('/admin', (req, res) => {
   const currentTime = getCurrentTimeInAppTimezone();
   const currentDay = getCurrentDayInAppTimezone();
+  const timeWindow = getTimeWindowForCurrentTime();
   
   res.json({
     success: true,
     message: 'Reddit Admin API is running',
     service: 'reddit-admin',
-    version: '3.1.0', // Updated version
+    version: '4.0.0', // Updated version with time window
     timestamp: new Date().toISOString(),
     environment: process.env.NODE_ENV || 'development',
     timezone: APP_TIMEZONE,
     currentTime: currentTime,
     currentDay: currentDay,
+    timeWindow: {
+      minutes: POSTING_WINDOW_MINUTES,
+      currentWindow: timeWindow
+    },
     features: {
       gemini_ai: process.env.GOOGLE_GEMINI_API_KEY ? 'enabled' : 'disabled',
       firebase_db: db ? 'enabled' : 'disabled',
@@ -1615,7 +1731,8 @@ router.get('/admin', (req, res) => {
       cron_scheduler: 'github-actions',
       top50_promotion: 'active',
       educational_posts: 'active',
-      on_demand_generation: 'active' // New feature
+      on_demand_generation: 'active',
+      time_window: `${POSTING_WINDOW_MINUTES} minutes`
     },
     targets: {
       total: Object.keys(redditTargets).length,
