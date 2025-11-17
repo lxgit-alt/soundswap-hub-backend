@@ -1,0 +1,62 @@
+name: Reddit Automation Engine
+on:
+  schedule:
+    # Run every 5 minutes during exact posting hours with 1-hour buffer
+    # UTC conversion for America/New_York (EST: UTC-5, EDT: UTC-4)
+    # Posting schedule: 08:00-22:00 EST → 13:00-03:00 UTC next day
+    # With 1-hour buffer: 07:00-23:00 EST → 12:00-04:00 UTC next day
+    - cron: '*/5 12-23 * * *'  # UTC 12:00-23:59 (covers 07:00-18:59 EST/EDT)
+    - cron: '*/5 0-4 * * *'     # UTC 00:00-04:59 (covers 19:00-23:59 EST/EDT)
+  workflow_dispatch:
+    inputs:
+      debug:
+        description: 'Run in debug mode'
+        required: false
+        default: 'false'
+
+jobs:
+  run-reddit-automation:
+    runs-on: ubuntu-latest
+    name: Run Reddit Automation
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Display Time Info
+        run: |
+          echo "🕒 GitHub Actions Run Time"
+          echo "📅 UTC: $(date -u)"
+          echo "🇺🇸 New York: $(TZ=America/New_York date)"
+          echo "🌍 Timezone: America/New_York"
+
+      - name: Run Reddit Cron
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          VERCEL_URL: ${{ secrets.VERCEL_URL }}
+        run: |
+          echo "🚀 Starting Reddit Automation..."
+          
+          response=$(curl -s -w "\n%{http_code}" -X POST \
+            -H "Authorization: Bearer $CRON_SECRET" \
+            -H "Content-Type: application/json" \
+            "$VERCEL_URL/api/reddit-admin/cron")
+          
+          http_code=$(echo "$response" | tail -n1)
+          body=$(echo "$response" | head -n1)
+          
+          echo "📡 HTTP Status: $http_code"
+          echo "📦 Response: $body"
+          
+          if [ "$http_code" -eq 200 ]; then
+            echo "✅ Cron executed successfully"
+          else
+            echo "❌ Cron execution failed"
+            exit 1
+          fi
+
+      - name: Check Cron Status
+        env:
+          VERCEL_URL: ${{ secrets.VERCEL_URL }}
+        run: |
+          echo "📊 Final Status Check..."
+          curl -s "$VERCEL_URL/api/reddit-admin/cron-status" | jq '.scheduled, .cron | {scheduledComments: .scheduledComments, scheduledEducationalPosts: .scheduledEducationalPosts, totalPosted: .totalComments, lastRun: .lastCronRun}'
