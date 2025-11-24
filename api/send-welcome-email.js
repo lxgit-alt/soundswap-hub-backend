@@ -189,7 +189,7 @@ const sendSongReviewedEmail = async (email, name, songTitle, reviewerName, revie
     const mailOptions = {
       from: { name: 'SoundSwap', address: process.env.GMAIL_USER },
       to: email,
-      subject: `🎵 Your Song "${songTitle}" Has Been Reviewed!`,
+      subject: `Your Song "${songTitle}" Has Been Reviewed!`,
       html: htmlContent
     };
 
