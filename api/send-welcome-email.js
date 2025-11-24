@@ -5,9 +5,9 @@ const router = express.Router();
 
 console.log('🔧 Email routes module loaded - checking endpoints...');
 
-// Create email transporter
+// Create email transporter - FIXED: use createTransport not createTransporter
 const createTransporter = () => {
-  return nodemailer.createTransporter({
+  return nodemailer.createTransport({
     service: 'gmail',
     auth: {
       user: process.env.GMAIL_USER,
