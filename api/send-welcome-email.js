@@ -1,5 +1,8 @@
 import express from 'express';
 import nodemailer from 'nodemailer';
+import { readFile } from 'fs/promises';
+import path from 'path';
+import Handlebars from 'handlebars';
 
 const router = express.Router();
 
@@ -16,6 +19,45 @@ const createTransporter = () => {
   });
 };
 
+// Set client URL based on environment
+const getClientURL = () => {
+  if (process.env.NODE_ENV === 'production') {
+    return 'https://soundswap.live';
+  }
+  return process.env.CLIENT_URL || 'https://soundswap.live';
+};
+
+// Utility to load and compile a Handlebars template
+async function renderTemplate(templateName, data) {
+  try {
+    const templatePath = path.join(process.cwd(), 'templates', `${templateName}.hbs`);
+    console.log(`📄 Loading template from: ${templatePath}`);
+    
+    const source = await readFile(templatePath, 'utf8');
+    const template = Handlebars.compile(source);
+    
+    // Default data for all templates
+    const templateData = {
+      dashboardUrl: `${getClientURL()}/dashboard`,
+      supportUrl: `${getClientURL()}/support`,
+      settingsUrl: `${getClientURL()}/settings`,
+      unsubscribeUrl: `${getClientURL()}/unsubscribe`,
+      loginUrl: `${getClientURL()}/login`,
+      chartsUrl: `${getClientURL()}/charts`,
+      twitterUrl: 'https://twitter.com/soundswap',
+      facebookUrl: 'https://facebook.com/soundswap',
+      instagramUrl: 'https://instagram.com/soundswap_official',
+      youtubeUrl: 'https://youtube.com/soundswap',
+      ...data
+    };
+    
+    return template(templateData);
+  } catch (error) {
+    console.error(`❌ Failed to render template '${templateName}':`, error);
+    throw new Error(`Template '${templateName}' not found or invalid`);
+  }
+}
+
 // Send welcome email function
 const sendWelcomeEmail = async (email, name, subscription, isFounder = false) => {
   try {
@@ -27,56 +69,21 @@ const sendWelcomeEmail = async (email, name, subscription, isFounder = false) =>
 
     const transporter = createTransporter();
 
+    const html = await renderTemplate('welcome', {
+      name,
+      subscription,
+      isFounder
+    });
+
     const subject = isFounder 
       ? `🎉 Welcome to SoundSwap, ${name}! You're a Founder Member!`
       : `🎉 Welcome to SoundSwap, ${name}! Your ${subscription} Plan is Active`;
-
-    const htmlContent = `
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Welcome to SoundSwap</title>
-    <style>
-        body { margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #f8f9fa; color: #333; line-height: 1.6; }
-        .email-container { max-width: 600px; margin: 0 auto; background: white; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1); }
-        .header { background: linear-gradient(135deg, #fd4e2f, #ff6b47); padding: 40px 30px; text-align: center; color: white; }
-        .header h1 { margin: 0; font-size: 32px; font-weight: bold; }
-        .content { padding: 40px 30px; }
-        .greeting { font-size: 20px; font-weight: 600; margin-bottom: 20px; color: #333; }
-        .message { font-size: 16px; margin-bottom: 30px; color: #555; }
-        .features { background: #f8f9fa; border-radius: 8px; padding: 25px; margin: 30px 0; }
-        .cta-button { display: inline-block; background: #fd4e2f; color: white; padding: 14px 30px; text-decoration: none; border-radius: 8px; font-weight: 600; font-size: 16px; text-align: center; margin: 20px 0; }
-        .footer { background: #f8f9fa; padding: 30px; text-align: center; font-size: 14px; color: #666; border-top: 1px solid #eee; }
-    </style>
-</head>
-<body>
-    <div class="email-container">
-        <div class="header">
-            <h1>Welcome to SoundSwap!</h1>
-            <p>Your musical journey starts here</p>
-        </div>
-        <div class="content">
-            <div class="greeting">Hey ${name}!</div>
-            <div class="message">Welcome to SoundSwap - the community where musicians connect, collaborate, and grow together!</div>
-            <div style="text-align: center;">
-                <a href="https://soundswap.live/dashboard" class="cta-button">Start Your Musical Journey</a>
-            </div>
-        </div>
-        <div class="footer">
-            <p>© ${new Date().getFullYear()} SoundSwap. All rights reserved.</p>
-        </div>
-    </div>
-</body>
-</html>
-    `;
 
     const mailOptions = {
       from: { name: 'SoundSwap', address: process.env.GMAIL_USER },
       to: email,
       subject: subject,
-      html: htmlContent
+      html: html
     };
 
     console.log('📤 Sending email to:', email);
@@ -99,42 +106,18 @@ const sendPasswordResetEmail = async (email, resetToken, name) => {
     }
 
     const transporter = createTransporter();
-    const clientURL = process.env.NODE_ENV === 'production' ? 'https://soundswap.live' : (process.env.CLIENT_URL || 'https://soundswap.live');
-    const resetUrl = `${clientURL}/reset-password?token=${resetToken}&email=${encodeURIComponent(email)}`;
+    const resetUrl = `${getClientURL()}/reset-password?token=${resetToken}&email=${encodeURIComponent(email)}`;
 
-    const htmlContent = `
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Password Reset - SoundSwap</title>
-    <style>
-        body { margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #f8f9fa; color: #333; line-height: 1.6; }
-        .email-container { max-width: 600px; margin: 0 auto; background: white; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1); }
-        .header { background: linear-gradient(135deg, #667eea, #764ba2); padding: 40px 30px; text-align: center; color: white; }
-        .content { padding: 40px 30px; }
-        .reset-button { display: inline-block; background: #667eea; color: white; padding: 14px 30px; text-decoration: none; border-radius: 8px; font-weight: 600; font-size: 16px; text-align: center; margin: 20px 0; }
-    </style>
-</head>
-<body>
-    <div class="email-container">
-        <div class="header"><h1>Password Reset</h1></div>
-        <div class="content">
-            <div style="text-align: center;">
-                <a href="${resetUrl}" class="reset-button">Reset Your Password</a>
-            </div>
-        </div>
-    </div>
-</body>
-</html>
-    `;
+    const html = await renderTemplate('password-reset', {
+      name,
+      resetUrl
+    });
 
     const mailOptions = {
       from: { name: 'SoundSwap', address: process.env.GMAIL_USER },
       to: email,
       subject: '🔐 Reset Your SoundSwap Password',
-      html: htmlContent
+      html: html
     };
 
     console.log('📤 Sending password reset email to:', email);
@@ -158,39 +141,27 @@ const sendSongReviewedEmail = async (email, name, songTitle, reviewerName, revie
 
     const transporter = createTransporter();
 
-    const htmlContent = `
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Song Reviewed - SoundSwap</title>
-    <style>
-        body { margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #f8f9fa; color: #333; line-height: 1.6; }
-        .email-container { max-width: 600px; margin: 0 auto; background: white; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1); }
-        .header { background: linear-gradient(135deg, #667eea, #764ba2); padding: 40px 30px; text-align: center; color: white; }
-        .content { padding: 40px 30px; }
-        .cta-button { display: inline-block; background: #667eea; color: white; padding: 14px 30px; text-decoration: none; border-radius: 8px; font-weight: 600; font-size: 16px; text-align: center; margin: 20px 0; }
-    </style>
-</head>
-<body>
-    <div class="email-container">
-        <div class="header"><h1>Your Song Got Feedback! 🎵</h1></div>
-        <div class="content">
-            <div style="text-align: center;">
-                <a href="${songUrl}" class="cta-button">View Your Song & Response</a>
-            </div>
-        </div>
-    </div>
-</body>
-</html>
-    `;
+    // Register star rating helper for Handlebars
+    Handlebars.registerHelper('stars', function(rating) {
+      const fullStars = Math.round(rating);
+      const stars = '★'.repeat(fullStars) + '☆'.repeat(5 - fullStars);
+      return new Handlebars.SafeString(stars);
+    });
+
+    const html = await renderTemplate('song-reviewed', {
+      name,
+      songTitle,
+      reviewerName,
+      reviewComments,
+      rating,
+      songUrl
+    });
 
     const mailOptions = {
       from: { name: 'SoundSwap', address: process.env.GMAIL_USER },
       to: email,
-      subject: `Your Song "${songTitle}" Has Been Reviewed!`,
-      html: htmlContent
+      subject: `🎵 Your Song "${songTitle}" Has Been Reviewed!`,
+      html: html
     };
 
     console.log('📤 Sending song reviewed email to:', email);
@@ -199,6 +170,67 @@ const sendSongReviewedEmail = async (email, name, songTitle, reviewerName, revie
     return result;
   } catch (error) {
     console.error('❌ Error sending song reviewed email:', error);
+    throw error;
+  }
+};
+
+// Send top 10 chart notification email function
+const sendTop10ChartEmail = async (
+  email, 
+  name, 
+  position, 
+  trackTitle, 
+  trackGenre, 
+  trackScore, 
+  averageRating, 
+  ratingCount, 
+  pairingEngagement, 
+  uniqueReviewers, 
+  pointsAwarded, 
+  chartWeek,
+  chartData = []
+) => {
+  try {
+    console.log('📧 Preparing to send top 10 chart email:', { email, name, position, trackTitle });
+
+    if (!process.env.GMAIL_USER || !process.env.GMAIL_PASS) {
+      throw new Error('Email credentials not configured');
+    }
+
+    const transporter = createTransporter();
+
+    const html = await renderTemplate('top10-chart', {
+      name,
+      position,
+      trackTitle,
+      trackGenre,
+      trackScore: trackScore.toFixed(1),
+      averageRating: averageRating.toFixed(1),
+      ratingCount,
+      pairingEngagement,
+      uniqueReviewers,
+      pointsAwarded,
+      chartWeek,
+      chartData,
+      chartUrl: `${getClientURL()}/charts`
+    });
+
+    const positionEmoji = position === 1 ? '🥇' : position === 2 ? '🥈' : position === 3 ? '🥉' : '🎵';
+    const subject = `${positionEmoji} Congratulations! You're #${position} in SoundSwap Charts!`;
+
+    const mailOptions = {
+      from: { name: 'SoundSwap', address: process.env.GMAIL_USER },
+      to: email,
+      subject,
+      html
+    };
+
+    console.log('📤 Sending top 10 chart email to:', email);
+    const result = await transporter.sendMail(mailOptions);
+    console.log('✅ Top 10 chart email sent successfully');
+    return result;
+  } catch (error) {
+    console.error('❌ Error sending top 10 chart email:', error);
     throw error;
   }
 };
@@ -298,6 +330,96 @@ export const sendSongReviewedHandler = async (req, res) => {
   }
 };
 
+// Send top 10 chart notification route
+export const sendTop10ChartHandler = async (req, res) => {
+  console.log('📍 Hit /send-top10-chart endpoint');
+  console.log('📨 Request body:', req.body);
+  
+  try {
+    const { 
+      email, 
+      name, 
+      position, 
+      trackTitle, 
+      trackGenre, 
+      trackScore, 
+      averageRating, 
+      ratingCount, 
+      pairingEngagement, 
+      uniqueReviewers, 
+      pointsAwarded, 
+      chartWeek,
+      chartData 
+    } = req.body;
+
+    // Validate required fields
+    if (!email || !position || !trackTitle) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Email, position, and trackTitle are required' 
+      });
+    }
+
+    // Validate position is between 1-10
+    if (position < 1 || position > 10) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Position must be between 1 and 10' 
+      });
+    }
+
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+      return res.status(400).json({ success: false, message: 'Invalid email format' });
+    }
+
+    await sendTop10ChartEmail(
+      email,
+      name || 'Artist',
+      position,
+      trackTitle,
+      trackGenre || 'Unknown',
+      trackScore || 0,
+      averageRating || 0,
+      ratingCount || 0,
+      pairingEngagement || 0,
+      uniqueReviewers || 0,
+      pointsAwarded || 0,
+      chartWeek || getCurrentWeekRange(),
+      chartData || []
+    );
+    
+    console.log('✅ Top 10 chart email route completed successfully');
+    res.json({ success: true, message: 'Top 10 chart notification sent successfully' });
+  } catch (error) {
+    console.error('❌ Top 10 chart email route error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to send top 10 chart notification',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+};
+
+// Helper function to get current week range
+const getCurrentWeekRange = () => {
+  const now = new Date();
+  const startOfWeek = new Date(now);
+  startOfWeek.setDate(now.getDate() - now.getDay());
+  const endOfWeek = new Date(startOfWeek);
+  endOfWeek.setDate(startOfWeek.getDate() + 6);
+  
+  const formatDate = (date) => {
+    return date.toLocaleDateString('en-US', { 
+      month: 'long', 
+      day: 'numeric', 
+      year: 'numeric' 
+    });
+  };
+  
+  return `${formatDate(startOfWeek)} - ${formatDate(endOfWeek)}`;
+};
+
 // Test endpoint for email configuration
 export const testEmailHandler = async (req, res) => {
   console.log('📍 Hit /test endpoint');
@@ -316,8 +438,10 @@ export const testEmailHandler = async (req, res) => {
         'POST /api/email/send-welcome-email',
         'POST /api/email/send-password-reset',
         'POST /api/email/send-song-reviewed',
+        'POST /api/email/send-top10-chart',
         'GET /api/email/test'
-      ]
+      ],
+      templates_used: ['welcome.hbs', 'password-reset.hbs', 'song-reviewed.hbs', 'top10-chart.hbs']
     });
   } catch (error) {
     console.error('Test endpoint error:', error);
@@ -337,6 +461,7 @@ router.use((req, res, next) => {
 router.post('/send-welcome-email', sendWelcomeEmailHandler);
 router.post('/send-password-reset', sendPasswordResetHandler);
 router.post('/send-song-reviewed', sendSongReviewedHandler);
+router.post('/send-top10-chart', sendTop10ChartHandler);
 router.get('/test', testEmailHandler);
 
 // Debug route to list all registered routes
@@ -356,7 +481,8 @@ router.get('/debug-routes', (req, res) => {
     mountPath: '/api/email',
     fullPaths: routes.map(route => 
       route.methods.map(method => `${method.toUpperCase()} /api/email${route.path}`)
-    ).flat()
+    ).flat(),
+    templates_used: ['welcome.hbs', 'password-reset.hbs', 'song-reviewed.hbs', 'top10-chart.hbs']
   });
 });
 
@@ -364,7 +490,9 @@ console.log('✅ Email routes registered:');
 console.log('   POST /api/email/send-welcome-email');
 console.log('   POST /api/email/send-password-reset'); 
 console.log('   POST /api/email/send-song-reviewed');
+console.log('   POST /api/email/send-top10-chart');
 console.log('   GET /api/email/test');
 console.log('   GET /api/email/debug-routes');
+console.log('📧 Using Handlebars templates: welcome.hbs, password-reset.hbs, song-reviewed.hbs, top10-chart.hbs');
 
 export default router;

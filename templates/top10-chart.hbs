@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🎵 You're in the Top 10! - SoundSwap</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            background-color: #f8f9fa;
+            color: #333;
+            line-height: 1.6;
+        }
+        .email-container {
+            max-width: 600px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 12px;
+            overflow: hidden;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+        }
+        .header {
+            background: linear-gradient(135deg, #ffd700, #ffed4e);
+            padding: 40px 30px;
+            text-align: center;
+            color: #333;
+        }
+        .header h1 {
+            margin: 0;
+            font-size: 32px;
+            font-weight: bold;
+        }
+        .header p {
+            margin: 10px 0 0;
+            font-size: 18px;
+            opacity: 0.9;
+        }
+        .content {
+            padding: 40px 30px;
+        }
+        .greeting {
+            font-size: 20px;
+            font-weight: 600;
+            margin-bottom: 20px;
+            color: #333;
+        }
+        .message {
+            font-size: 16px;
+            margin-bottom: 30px;
+            color: #555;
+        }
+        .achievement-badge {
+            background: linear-gradient(135deg, #fff9e6, #fff3cc);
+            border: 3px solid #ffd700;
+            border-radius: 12px;
+            padding: 25px;
+            margin: 25px 0;
+            text-align: center;
+            position: relative;
+        }
+        .achievement-badge h3 {
+            margin: 0 0 10px;
+            color: #b8860b;
+            font-size: 24px;
+        }
+        .achievement-badge p {
+            margin: 5px 0;
+            color: #333;
+            font-size: 16px;
+        }
+        .position-number {
+            font-size: 48px;
+            font-weight: bold;
+            color: #ffd700;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.1);
+            margin: 10px 0;
+        }
+        .track-info {
+            background: linear-gradient(135deg, #e8f4fd, #f0f8ff);
+            border: 2px solid #0077b6;
+            border-radius: 8px;
+            padding: 20px;
+            margin: 20px 0;
+            text-align: center;
+        }
+        .track-info h4 {
+            margin: 0 0 10px;
+            color: #0077b6;
+            font-size: 18px;
+        }
+        .track-info p {
+            margin: 5px 0;
+            color: #333;
+            font-size: 14px;
+        }
+        .stats-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 15px;
+            margin: 25px 0;
+        }
+        .stat-card {
+            background: #f8f9fa;
+            border-radius: 8px;
+            padding: 15px;
+            text-align: center;
+        }
+        .stat-number {
+            font-size: 24px;
+            font-weight: bold;
+            color: #667eea;
+            margin-bottom: 5px;
+        }
+        .stat-label {
+            font-size: 12px;
+            color: #666;
+            text-transform: uppercase;
+        }
+        .cta-button {
+            display: inline-block;
+            background: #667eea;
+            color: white;
+            padding: 14px 30px;
+            text-decoration: none;
+            border-radius: 8px;
+            font-weight: 600;
+            font-size: 16px;
+            text-align: center;
+            margin: 20px 0;
+            transition: background-color 0.3s ease;
+        }
+        .cta-button:hover {
+            background: #5a6fd8;
+        }
+        .chart-list {
+            background: #f8f9fa;
+            border-radius: 8px;
+            padding: 25px;
+            margin: 30px 0;
+        }
+        .chart-list h3 {
+            margin: 0 0 20px;
+            color: #333;
+            font-size: 18px;
+            text-align: center;
+        }
+        .chart-item {
+            display: flex;
+            align-items: center;
+            padding: 12px;
+            margin-bottom: 8px;
+            background: white;
+            border-radius: 6px;
+            border-left: 4px solid #667eea;
+        }
+        .chart-position {
+            font-weight: bold;
+            color: #667eea;
+            margin-right: 15px;
+            min-width: 30px;
+            text-align: center;
+        }
+        .chart-track {
+            flex: 1;
+        }
+        .chart-track .title {
+            font-weight: 600;
+            color: #333;
+        }
+        .chart-track .artist {
+            font-size: 12px;
+            color: #666;
+        }
+        .footer {
+            background: #f8f9fa;
+            padding: 30px;
+            text-align: center;
+            font-size: 14px;
+            color: #666;
+            border-top: 1px solid #eee;
+        }
+        .footer a {
+            color: #667eea;
+            text-decoration: none;
+        }
+        .footer a:hover {
+            text-decoration: underline;
+        }
+        .social-links {
+            margin: 20px 0;
+        }
+        .social-links a {
+            display: inline-block;
+            margin: 0 10px;
+            color: #666;
+            font-size: 20px;
+            text-decoration: none;
+        }
+        @media (max-width: 600px) {
+            .email-container {
+                margin: 0;
+                border-radius: 0;
+            }
+            .header, .content, .footer {
+                padding: 20px;
+            }
+            .header h1 {
+                font-size: 28px;
+            }
+            .stats-grid {
+                grid-template-columns: 1fr;
+            }
+            .position-number {
+                font-size: 36px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="email-container">
+        <div class="header">
+            <h1>You Made the Top 10!</h1>
+            <p>Your track is charting on SoundSwap!</p>
+        </div>
+        
+        <div class="content">
+            <div class="greeting">
+                Congratulations {{name}}!
+            </div>
+            
+            <div class="message">
+                Amazing news! Your music has been recognized by the SoundSwap community and has reached the Top 10 in our weekly charts. This is a huge achievement and shows how much people are loving your track!
+            </div>
+
+            <div class="achievement-badge">
+                <h3>🏆 Chart Position</h3>
+                <div class="position-number">#{{position}}</div>
+                <p>in the SoundSwap Weekly Top 50</p>
+                <p><strong>Week of {{chartWeek}}</strong></p>
+            </div>
+
+            <div class="track-info">
+                <h4>Your Charting Track</h4>
+                <p><strong>"{{trackTitle}}"</strong></p>
+                <p>Genre: {{trackGenre}}</p>
+                <p>Total Score: {{trackScore}} points</p>
+            </div>
+
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <div class="stat-number">{{averageRating}}/5</div>
+                    <div class="stat-label">Average Rating</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-number">{{ratingCount}}</div>
+                    <div class="stat-label">Total Ratings</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-number">{{pairingEngagement}}</div>
+                    <div class="stat-label">Pairing Engagements</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-number">{{uniqueReviewers}}</div>
+                    <div class="stat-label">Unique Reviewers</div>
+                </div>
+            </div>
+
+            {{#if chartData}}
+            <div class="chart-list">
+                <h3>🎯 This Week's Top 10</h3>
+                {{#each chartData}}
+                <div class="chart-item">
+                    <div class="chart-position">#{{this.position}}</div>
+                    <div class="chart-track">
+                        <div class="title">{{this.title}}</div>
+                        <div class="artist">by {{this.userName}}</div>
+                    </div>
+                </div>
+                {{/each}}
+            </div>
+            {{/if}}
+
+            <div style="text-align: center;">
+                <a href="{{chartUrl}}" class="cta-button">
+                    View Full Charts
+                </a>
+            </div>
+
+            <div class="message">
+                <strong>What this means:</strong> Your track is getting incredible engagement from the community. Keep sharing your music, collaborating with other artists, and building your audience on SoundSwap!
+            </div>
+
+            <div style="background: #e8f5e8; border-radius: 8px; padding: 20px; margin: 25px 0; text-align: center;">
+                <h4 style="margin: 0 0 10px; color: #2e7d32;">🎉 Points Awarded!</h4>
+                <p style="margin: 0; color: #333;">You've earned <strong>{{pointsAwarded}} points</strong> for your chart placement! Use them to unlock premium features.</p>
+            </div>
+        </div>
+
+        <div class="footer">
+            <div class="social-links">
+                <a href="{{twitterUrl}}" title="Follow us on Twitter"></a>
+                <a href="{{facebookUrl}}" title="Like us on Facebook"></a>
+                <a href="{{instagramUrl}}" title="Follow us on Instagram"></a>
+                <a href="{{youtubeUrl}}" title="Subscribe to our YouTube"></a>
+            </div>
+            
+            <p>
+                Share your achievement with the world! Use <strong>#SoundSwapTop10</strong> on social media.
+            </p>
+            
+            <p>
+                <a href="{{dashboardUrl}}">Dashboard</a> | 
+                <a href="{{chartsUrl}}">View Charts</a> | 
+                <a href="{{unsubscribeUrl}}">Unsubscribe</a>
+            </p>
+            
+            <p style="margin-top: 20px; color: #999; font-size: 12px;">
+                © 2025 SoundSwap. All rights reserved.<br>
+                You're receiving this email because you have chart notifications enabled.
+            </p>
+        </div>
+    </div>
+</body>
+</html>

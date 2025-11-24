@@ -68,7 +68,8 @@ app.get('/api/health', (req, res) => {
       reddit_automation: 'active',
       gemini_ai: process.env.GOOGLE_GEMINI_API_KEY ? 'configured' : 'not_configured',
       educational_posts: 'active', // NEW: Added educational posts service
-      top50_promotion: 'active'
+      top50_promotion: 'active',
+      chart_notifications: 'active' // NEW: Added chart notifications service
     },
     reddit_stats: {
       total_subreddits: 6,
@@ -105,6 +106,7 @@ app.get('/', (req, res) => {
       welcome: 'POST /api/email/send-welcome-email',
       password_reset: 'POST /api/email/send-password-reset',
       song_reviewed: 'POST /api/email/send-song-reviewed',
+      top10_chart: 'POST /api/email/send-top10-chart', // NEW: Added top10 chart endpoint
       test: 'GET /api/email/test'
     },
     reddit_automation: {
@@ -148,6 +150,7 @@ app.use('*', (req, res) => {
       '/api/email/send-welcome-email',
       '/api/email/send-password-reset',
       '/api/email/send-song-reviewed',
+      '/api/email/send-top10-chart', // NEW: Added top10 chart endpoint
       '/api/email/test',
       '/api/trends/music',
       '/api/trends/content-ideas',
@@ -202,6 +205,7 @@ if (process.env.NODE_ENV !== 'production') {
     console.log(`🎵 Top 50 Promotion: http://localhost:${PORT}/api/reddit-admin/create-top50-post`);
     console.log(`🤖 Gemini AI: http://localhost:${PORT}/api/reddit-admin/test-gemini`);
     console.log(`⏰ Cron Endpoint: http://localhost:${PORT}/api/reddit-admin/cron`);
+    console.log(`🏆 Chart Notifications: http://localhost:${PORT}/api/email/send-top10-chart`); // NEW: Added chart notifications
     console.log(`📊 Stats: 52 comments/day + 2-3 educational posts/week across 6 subreddits (2.8M+ audience)`); // NEW: Added stats
   });
 }

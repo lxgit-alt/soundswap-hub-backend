@@ -127,7 +127,8 @@ app.get('/health', (req, res) => {
       reddit_automation: 'active',
       cron_scheduler: 'running',
       vercel_cron: process.env.CRON_SECRET ? 'configured' : 'not_configured',
-      educational_posts: 'active' // NEW: Added educational posts service
+      educational_posts: 'active', // NEW: Added educational posts service
+      chart_notifications: 'active' // NEW: Added chart notifications service
     }
   });
 });
@@ -161,6 +162,7 @@ app.get('/api/status', (req, res) => {
       welcome_emails: process.env.GMAIL_USER ? 'active' : 'disabled',
       password_reset: process.env.GMAIL_USER ? 'active' : 'disabled',
       song_review_notifications: process.env.GMAIL_USER ? 'active' : 'disabled',
+      top10_chart_notifications: process.env.GMAIL_USER ? 'active' : 'disabled', // NEW: Added top10 chart notifications
       analytics: 'in_development',
       reddit_integration: 'active',
       gemini_ai: process.env.GOOGLE_GEMINI_API_KEY ? 'active' : 'disabled',
@@ -205,7 +207,8 @@ app.get('/', (req, res) => {
       cron_scheduler: 'running',
       vercel_cron: process.env.CRON_SECRET ? 'active' : 'disabled',
       educational_posts: 'active', // NEW: Added educational posts
-      top50_promotion: 'active'
+      top50_promotion: 'active',
+      chart_notifications: 'active' // NEW: Added chart notifications
     },
     reddit_automation: {
       comments: '52 posts/day across 6 subreddits',
@@ -235,6 +238,7 @@ app.use('*', (req, res) => {
       '/api/email/send-welcome-email',
       '/api/email/send-password-reset',
       '/api/email/send-song-reviewed',
+      '/api/email/send-top10-chart', // NEW: Added top10 chart endpoint
       '/api/email/test',
       '/api/trends/music',
       '/api/trends/content-ideas',
@@ -288,6 +292,7 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`⏰ Cron Status: http://localhost:${PORT}/api/reddit-admin/cron-status`);
   console.log(`📚 Educational Posts: http://localhost:${PORT}/api/reddit-admin/create-educational-post`); // NEW: Added educational posts
   console.log(`🎵 Top 50 Promotion: http://localhost:${PORT}/api/reddit-admin/create-top50-post`);
+  console.log(`🏆 Chart Notifications: http://localhost:${PORT}/api/email/send-top10-chart`); // NEW: Added chart notifications
   console.log(`🔐 Vercel Cron: http://localhost:${PORT}/api/reddit-admin/cron (POST)`);
   console.log(`🔧 CORS enabled for production domains`);
   console.log(`🔐 CRON_SECRET: ${process.env.CRON_SECRET ? 'Configured' : 'Not configured'}`);
