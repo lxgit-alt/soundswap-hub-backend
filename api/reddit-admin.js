@@ -1877,6 +1877,7 @@ router.get('/admin', (req, res) => {
     features: {
       gemini_ai: process.env.GOOGLE_GEMINI_API_KEY ? 'enabled' : 'disabled',
       firebase_db: 'enabled',
+      reddit_api: redditConnection.success ? `connected as ${postingActivity.redditUsername}` : 'disconnected',
       comment_generation: 'active',
       dm_replies: 'active',
       content_analysis: 'active',
