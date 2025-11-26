@@ -1012,6 +1012,12 @@ router.get('/cron-status', async (req, res) => {
         githubActionsRuns: postingActivity.githubActionsRuns,
         lastCronRun: postingActivity.lastCronRun,
         firebase: firebaseConnected ? 'connected' : 'disconnected',
+
+         reddit: {
+          connected: redditConnection.success,
+          username: postingActivity.redditUsername,
+          posting: 'REAL_POSTS'
+        },
         dailyReset: {
           lastResetDate: postingActivity.lastResetDate,
           lastResetDay: postingActivity.lastResetDay,
@@ -1858,7 +1864,7 @@ router.get('/admin', (req, res) => {
     success: true,
     message: 'Reddit Admin API is running',
     service: 'reddit-admin',
-    version: '4.0.0', // Updated version with time window
+    version: '4.1.0', // Updated version with time window
     timestamp: new Date().toISOString(),
     environment: process.env.NODE_ENV || 'development',
     timezone: APP_TIMEZONE,
