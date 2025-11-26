@@ -53,7 +53,7 @@ app.get('/api/health', (req, res) => {
   res.json({
     success: true,
     message: 'SoundSwap API - Backend service is running',
-    version: '1.1.0', // Updated version
+    version: '1.2.0', // Updated version
     timestamp: new Date().toISOString(),
     environment: process.env.NODE_ENV || 'development',
     services: {
@@ -67,9 +67,10 @@ app.get('/api/health', (req, res) => {
       reddit_admin: 'operational',
       reddit_automation: 'active',
       gemini_ai: process.env.GOOGLE_GEMINI_API_KEY ? 'configured' : 'not_configured',
-      educational_posts: 'active', // NEW: Added educational posts service
+      educational_posts: 'active',
       top50_promotion: 'active',
-      chart_notifications: 'active' // NEW: Added chart notifications service
+      chart_notifications: 'active',
+      reddit_api: process.env.REDDIT_CLIENT_ID ? 'configured' : 'not_configured' // NEW: Added Reddit API status
     },
     reddit_stats: {
       total_subreddits: 6,
@@ -77,7 +78,8 @@ app.get('/api/health', (req, res) => {
       daily_comments: 52,
       weekly_educational_posts: '2-3 per subreddit',
       weekly_top50_posts: 'Weekly promotions',
-      features: 'Always redirects to soundswap.live'
+      features: 'Always redirects to soundswap.live',
+      reddit_api: process.env.REDDIT_CLIENT_ID ? 'integrated' : 'simulated' // NEW: Added Reddit API integration status
     }
   });
 });
@@ -87,7 +89,7 @@ app.get('/', (req, res) => {
   res.json({
     success: true,
     message: 'SoundSwap API - Backend service is running',
-    version: '1.1.0', // Updated version
+    version: '1.2.0', // Updated version
     timestamp: new Date().toISOString(),
     endpoints: {
       health: '/api/health',
@@ -106,13 +108,13 @@ app.get('/', (req, res) => {
       welcome: 'POST /api/email/send-welcome-email',
       password_reset: 'POST /api/email/send-password-reset',
       song_reviewed: 'POST /api/email/send-song-reviewed',
-      top10_chart: 'POST /api/email/send-top10-chart', // NEW: Added top10 chart endpoint
+      top10_chart: 'POST /api/email/send-top10-chart',
       test: 'GET /api/email/test'
     },
     reddit_automation: {
       status: 'GET /api/reddit-admin/cron-status',
       manual_post: 'POST /api/reddit-admin/manual-post',
-      educational_post: 'POST /api/reddit-admin/create-educational-post', // NEW: Added educational post
+      educational_post: 'POST /api/reddit-admin/create-educational-post',
       top50_post: 'POST /api/reddit-admin/create-top50-post',
       reset_counts: 'POST /api/reddit-admin/reset-counts',
       targets: 'GET /api/reddit-admin/targets',
@@ -121,6 +123,7 @@ app.get('/', (req, res) => {
       generate_reply: 'POST /api/reddit-admin/generate-reply',
       analyze_post: 'POST /api/reddit-admin/analyze-post',
       test_gemini: 'GET /api/reddit-admin/test-gemini',
+      test_reddit: 'GET /api/reddit-admin/test-reddit', // NEW: Added test-reddit endpoint
       cron: 'POST /api/reddit-admin/cron'
     },
     automation_stats: {
@@ -128,7 +131,8 @@ app.get('/', (req, res) => {
       weekly_educational_posts: '12-18 total',
       audience_reach: '2.8M+ musicians',
       subreddits: 6,
-      features: 'AI-powered, always redirects to soundswap.live'
+      features: 'AI-powered, always redirects to soundswap.live',
+      reddit_api: process.env.REDDIT_CLIENT_ID ? 'live' : 'simulated' // NEW: Added API mode
     }
   });
 });
@@ -150,7 +154,7 @@ app.use('*', (req, res) => {
       '/api/email/send-welcome-email',
       '/api/email/send-password-reset',
       '/api/email/send-song-reviewed',
-      '/api/email/send-top10-chart', // NEW: Added top10 chart endpoint
+      '/api/email/send-top10-chart',
       '/api/email/test',
       '/api/trends/music',
       '/api/trends/content-ideas',
@@ -160,7 +164,7 @@ app.use('*', (req, res) => {
       '/api/reddit-admin/admin',
       '/api/reddit-admin/cron-status',
       '/api/reddit-admin/manual-post',
-      '/api/reddit-admin/create-educational-post', // NEW: Added educational post
+      '/api/reddit-admin/create-educational-post',
       '/api/reddit-admin/create-top50-post',
       '/api/reddit-admin/reset-counts',
       '/api/reddit-admin/targets',
@@ -169,6 +173,7 @@ app.use('*', (req, res) => {
       '/api/reddit-admin/generate-reply',
       '/api/reddit-admin/analyze-post',
       '/api/reddit-admin/test-gemini',
+      '/api/reddit-admin/test-reddit', // NEW: Added test-reddit endpoint
       '/api/reddit-admin/auth',
       '/api/reddit-admin/posts',
       '/api/reddit-admin/analytics',
@@ -201,11 +206,13 @@ if (process.env.NODE_ENV !== 'production') {
     console.log(`📈 Trends API: http://localhost:${PORT}/api/trends/music`);
     console.log(`🔗 Reddit Admin: http://localhost:${PORT}/api/reddit-admin/admin`);
     console.log(`🤖 Reddit Automation: http://localhost:${PORT}/api/reddit-admin/cron-status`);
-    console.log(`📚 Educational Posts: http://localhost:${PORT}/api/reddit-admin/create-educational-post`); // NEW: Added educational posts
+    console.log(`🔌 Reddit API Test: http://localhost:${PORT}/api/reddit-admin/test-reddit`); // NEW: Added test-reddit
+    console.log(`📚 Educational Posts: http://localhost:${PORT}/api/reddit-admin/create-educational-post`);
     console.log(`🎵 Top 50 Promotion: http://localhost:${PORT}/api/reddit-admin/create-top50-post`);
     console.log(`🤖 Gemini AI: http://localhost:${PORT}/api/reddit-admin/test-gemini`);
     console.log(`⏰ Cron Endpoint: http://localhost:${PORT}/api/reddit-admin/cron`);
-    console.log(`🏆 Chart Notifications: http://localhost:${PORT}/api/email/send-top10-chart`); // NEW: Added chart notifications
-    console.log(`📊 Stats: 52 comments/day + 2-3 educational posts/week across 6 subreddits (2.8M+ audience)`); // NEW: Added stats
+    console.log(`🏆 Chart Notifications: http://localhost:${PORT}/api/email/send-top10-chart`);
+    console.log(`📊 Stats: 52 comments/day + 2-3 educational posts/week across 6 subreddits (2.8M+ audience)`);
+    console.log(`🔐 Reddit API: ${process.env.REDDIT_CLIENT_ID ? 'LIVE INTEGRATION' : 'SIMULATION MODE'}`); // NEW: Added API mode status
   });
 }
