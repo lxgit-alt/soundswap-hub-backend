@@ -261,12 +261,53 @@ const checkFirebaseConnection = async () => {
   }
 };
 
-// Initialize posting activity (optimized)
+// Add this function to automatically reset daily counts
+const autoResetDailyCounts = async () => {
+  try {
+    const currentDate = new Date().toLocaleDateString('en-US', { timeZone: APP_TIMEZONE });
+    const lastResetDate = postingActivity.lastResetDate;
+    
+    // If lastResetDate doesn't exist or is different from current date, reset counts
+    if (!lastResetDate || lastResetDate !== currentDate) {
+      console.log(`🔄 Auto-resetting daily counts (last reset: ${lastResetDate}, current: ${currentDate})`);
+      
+      // Reset all daily counts
+      Object.keys(postingActivity.dailyCounts).forEach(key => {
+        postingActivity.dailyCounts[key] = 0;
+      });
+      Object.keys(postingActivity.educationalCounts).forEach(key => {
+        postingActivity.educationalCounts[key] = 0;
+      });
+      
+      // Reset last posted timestamps
+      postingActivity.lastPosted = {};
+      postingActivity.lastEducationalPosted = {};
+      
+      // Update last reset date
+      postingActivity.lastResetDate = currentDate;
+      
+      // Save to Firebase
+      await quickSavePostingActivity(postingActivity);
+      
+      console.log('✅ Daily counts automatically reset for new day');
+      return true;
+    }
+    
+    return false; // No reset needed
+  } catch (error) {
+    console.error('❌ Error auto-resetting daily counts:', error);
+    return false;
+  }
+};
+
+// Update the initializePostingActivity function to include lastResetDate
 const initializePostingActivity = async () => {
   try {
     const activityRef = collection(db, POSTING_ACTIVITY_COLLECTION);
     const q = query(activityRef, orderBy('timestamp', 'desc'), limit(1));
     const snapshot = await getDocs(q);
+    
+    const currentDate = new Date().toLocaleDateString('en-US', { timeZone: APP_TIMEZONE });
     
     if (snapshot.empty) {
       const initialActivity = {
@@ -278,6 +319,7 @@ const initializePostingActivity = async () => {
         totalEducationalPosts: 0,
         lastCronRun: null,
         githubActionsRuns: 0,
+        lastResetDate: currentDate, // NEW
         redditUsername: null,
         timestamp: new Date().toISOString()
       };
@@ -292,6 +334,28 @@ const initializePostingActivity = async () => {
       return initialActivity;
     } else {
       const activityDoc = snapshot.docs[0].data();
+      
+      // Check if we need to reset for new day
+      if (!activityDoc.lastResetDate || activityDoc.lastResetDate !== currentDate) {
+        console.log(`🔄 New day detected, resetting counts (last: ${activityDoc.lastResetDate}, current: ${currentDate})`);
+        
+        // Reset counts for new day
+        Object.keys(activityDoc.dailyCounts).forEach(key => {
+          activityDoc.dailyCounts[key] = 0;
+        });
+        Object.keys(activityDoc.educationalCounts).forEach(key => {
+          activityDoc.educationalCounts[key] = 0;
+        });
+        
+        activityDoc.lastPosted = {};
+        activityDoc.lastEducationalPosted = {};
+        activityDoc.lastResetDate = currentDate;
+        
+        // Save the reset activity
+        await addDoc(activityRef, activityDoc);
+        console.log('✅ Reset daily counts for new day');
+      }
+      
       console.log('✅ Loaded existing posting activity');
       return activityDoc;
     }
@@ -301,7 +365,10 @@ const initializePostingActivity = async () => {
   }
 };
 
+// Update getFallbackActivity to include lastResetDate
 const getFallbackActivity = () => {
+  const currentDate = new Date().toLocaleDateString('en-US', { timeZone: APP_TIMEZONE });
+  
   const fallbackActivity = {
     dailyCounts: {},
     educationalCounts: {},
@@ -311,6 +378,7 @@ const getFallbackActivity = () => {
     totalEducationalPosts: 0,
     lastCronRun: null,
     githubActionsRuns: 0,
+    lastResetDate: currentDate, // NEW
     redditUsername: null,
     timestamp: new Date().toISOString()
   };
@@ -323,551 +391,15 @@ const getFallbackActivity = () => {
   return fallbackActivity;
 };
 
-// Quick save posting activity (optimized)
-const quickSavePostingActivity = async (activity) => {
-  try {
-    const activityRef = collection(db, POSTING_ACTIVITY_COLLECTION);
-    await addDoc(activityRef, {
-      ...activity,
-      timestamp: new Date().toISOString()
-    });
-  } catch (error) {
-    console.error('❌ Error saving posting activity:', error);
-  }
-};
-
-// Store scheduled post in Firebase (optimized)
-const quickStoreScheduledPost = async (postData) => {
-  try {
-    const postsRef = collection(db, SCHEDULED_POSTS_COLLECTION);
-    const docRef = await addDoc(postsRef, {
-      ...postData,
-      createdAt: new Date().toISOString(),
-      posted: false,
-      postedAt: null,
-      redditData: null
-    });
-    return docRef.id;
-  } catch (error) {
-    console.error('❌ Error storing scheduled post:', error);
-    return null;
-  }
-};
-
-// Store educational post in Firebase (optimized)
-const quickStoreEducationalPost = async (postData) => {
-  try {
-    const postsRef = collection(db, EDUCATIONAL_POSTS_COLLECTION);
-    const docRef = await addDoc(postsRef, {
-      ...postData,
-      createdAt: new Date().toISOString(),
-      posted: false,
-      postedAt: null,
-      redditData: null
-    });
-    return docRef.id;
-  } catch (error) {
-    console.error('❌ Error storing educational post:', error);
-    return null;
-  }
-};
-
-// Get scheduled posts for current time window (optimized)
-const getScheduledPostsForTimeWindow = async (timeWindow) => {
-  try {
-    const currentDay = getCurrentDayInAppTimezone();
-    const { start, end } = timeWindow;
-    
-    console.log(`🕒 Checking time window: ${start} to ${end} (current: ${timeWindow.current})`);
-    
-    const postsRef = collection(db, SCHEDULED_POSTS_COLLECTION);
-    const q = query(
-      postsRef, 
-      where('scheduledDay', '==', currentDay),
-      where('posted', '==', false)
-    );
-    
-    const snapshot = await getDocs(q);
-    const posts = [];
-    
-    snapshot.forEach(doc => {
-      const post = { id: doc.id, ...doc.data() };
-      // Filter posts within time window
-      if (post.scheduledTime >= start && post.scheduledTime <= end) {
-        posts.push(post);
-      }
-    });
-    
-    console.log(`📊 Found ${posts.length} scheduled posts in Firebase for time window ${start}-${end} on ${currentDay}`);
-    return posts;
-  } catch (error) {
-    console.error('❌ Error getting scheduled posts:', error);
-    return [];
-  }
-};
-
-// Get educational posts for current time window (optimized)
-const getEducationalPostsForTimeWindow = async (timeWindow) => {
-  try {
-    const currentDay = getCurrentDayInAppTimezone();
-    const { start, end } = timeWindow;
-    
-    console.log(`🕒 Checking educational posts time window: ${start} to ${end} (current: ${timeWindow.current})`);
-    
-    const postsRef = collection(db, EDUCATIONAL_POSTS_COLLECTION);
-    const q = query(
-      postsRef, 
-      where('scheduledDay', '==', currentDay),
-      where('posted', '==', false)
-    );
-    
-    const snapshot = await getDocs(q);
-    const posts = [];
-    
-    snapshot.forEach(doc => {
-      const post = { id: doc.id, ...doc.data() };
-      // Filter posts within time window
-      if (post.scheduledTime >= start && post.scheduledTime <= end) {
-        posts.push(post);
-      }
-    });
-    
-    console.log(`📊 Found ${posts.length} educational posts in Firebase for time window ${start}-${end} on ${currentDay}`);
-    return posts;
-  } catch (error) {
-    console.error('❌ Error getting educational posts:', error);
-    return [];
-  }
-};
-
-// Quick mark post as posted with Reddit data
-const quickMarkPostAsPosted = async (postId, collectionName, redditData = null) => {
-  try {
-    const postRef = doc(db, collectionName, postId);
-    await updateDoc(postRef, {
-      posted: true,
-      postedAt: new Date().toISOString(),
-      redditData: redditData
-    });
-    return true;
-  } catch (error) {
-    console.error('❌ Error marking post as posted:', error);
-    return false;
-  }
-};
-
-// ==================== REDDIT TARGET CONFIGURATION ====================
-
-const redditTargets = {
-  'WeAreTheMusicMakers': {
-    name: 'WeAreTheMusicMakers',
-    memberCount: 1800000,
-    description: 'Dedicated to musicians, producers, and enthusiasts',
-    active: true,
-    priority: 'high',
-    postingSchedule: {
-      monday: ['09:00', '14:00', '19:00'],
-      tuesday: ['10:00', '15:00', '20:00'],
-      wednesday: ['09:00', '14:00', '19:00'],
-      thursday: ['10:00', '15:00', '20:00'],
-      friday: ['09:00', '14:00', '19:00'],
-      saturday: ['11:00', '16:00', '21:00'],
-      sunday: ['11:00', '16:00', '21:00']
-    },
-    educationalPostSchedule: {
-      monday: ['11:00'],
-      wednesday: ['15:00'],
-      friday: ['13:00']
-    },
-    preferredStyles: ['helpful', 'expert', 'thoughtful'],
-    soundswapMentionRate: 1.0,
-    dailyCommentLimit: 8,
-    educationalPostLimit: 1,
-    keywords: ['production', 'mixing', 'mastering', 'DAW', 'audio', 'music theory']
-  },
-  'MusicProduction': {
-    name: 'MusicProduction',
-    memberCount: 500000,
-    description: 'Focus on music production techniques and tools',
-    active: true,
-    priority: 'high',
-    postingSchedule: {
-      monday: ['08:00', '13:00', '18:00'],
-      tuesday: ['09:00', '14:00', '19:00'],
-      wednesday: ['08:00', '13:00', '18:00'],
-      thursday: ['09:00', '14:00', '19:00'],
-      friday: ['08:00', '13:00', '18:00'],
-      saturday: ['12:00', '17:00', '22:00'],
-      sunday: ['12:00', '17:00', '22:00']
-    },
-    educationalPostSchedule: {
-      tuesday: ['12:00'],
-      thursday: ['16:00']
-    },
-    preferredStyles: ['expert', 'helpful', 'technical'],
-    soundswapMentionRate: 1.0,
-    dailyCommentLimit: 6,
-    educationalPostLimit: 1,
-    keywords: ['production', 'mixing', 'plugins', 'gear', 'workflow', 'techniques']
-  },
-  'IndieMusicFeedback': {
-    name: 'IndieMusicFeedback',
-    memberCount: 100000,
-    description: 'Community for indie musicians to share and get feedback',
-    active: true,
-    priority: 'medium',
-    postingSchedule: {
-      monday: ['10:00', '16:00'],
-      tuesday: ['11:00', '17:00'],
-      wednesday: ['10:00', '16:00'],
-      thursday: ['11:00', '17:00'],
-      friday: ['10:00', '16:00'],
-      saturday: ['13:00', '19:00'],
-      sunday: ['13:00', '19:00']
-    },
-    educationalPostSchedule: {
-      wednesday: ['14:00'],
-      sunday: ['15:00']
-    },
-    preferredStyles: ['supportive', 'helpful', 'enthusiastic'],
-    soundswapMentionRate: 1.0,
-    dailyCommentLimit: 10,
-    educationalPostLimit: 1,
-    keywords: ['feedback', 'review', 'indie', 'new music', 'critique']
-  },
-  'ThisIsOurMusic': {
-    name: 'ThisIsOurMusic',
-    memberCount: 200000,
-    description: 'Share your original music with the community',
-    active: true,
-    priority: 'medium',
-    postingSchedule: {
-      monday: ['11:00', '17:00'],
-      tuesday: ['12:00', '18:00'],
-      wednesday: ['11:00', '17:00'],
-      thursday: ['12:00', '18:00'],
-      friday: ['11:00', '17:00'],
-      saturday: ['14:00', '20:00'],
-      sunday: ['14:00', '20:00']
-    },
-    educationalPostSchedule: {
-      monday: ['12:00'],
-      friday: ['16:00']
-    },
-    preferredStyles: ['enthusiastic', 'supportive', 'casual'],
-    soundswapMentionRate: 1.0,
-    dailyCommentLimit: 8,
-    educationalPostLimit: 1,
-    keywords: ['original music', 'new release', 'songwriting', 'performance']
-  },
-  'MusicPromotion': {
-    name: 'MusicPromotion',
-    memberCount: 150000,
-    description: 'Promote your music and discover new artists',
-    active: true,
-    priority: 'medium',
-    postingSchedule: {
-      monday: ['09:00', '15:00', '21:00'],
-      tuesday: ['10:00', '16:00', '22:00'],
-      wednesday: ['09:00', '15:00', '21:00'],
-      thursday: ['10:00', '16:00', '22:00'],
-      friday: ['09:00', '15:00', '21:00'],
-      saturday: ['12:00', '18:00'],
-      sunday: ['12:00', '18:00']
-    },
-    educationalPostSchedule: {
-      tuesday: ['11:00'],
-      thursday: ['14:00'],
-      saturday: ['13:00']
-    },
-    preferredStyles: ['enthusiastic', 'casual', 'supportive'],
-    soundswapMentionRate: 1.0,
-    dailyCommentLimit: 12,
-    educationalPostLimit: 1,
-    keywords: ['promotion', 'marketing', 'streaming', 'social media', 'growth']
-  },
-  'ShareYourMusic': {
-    name: 'ShareYourMusic',
-    memberCount: 80000,
-    description: 'Share your music and connect with other creators',
-    active: true,
-    priority: 'medium',
-    postingSchedule: {
-      monday: ['12:00', '18:00'],
-      tuesday: ['13:00', '19:00'],
-      wednesday: ['12:00', '18:00'],
-      thursday: ['13:00', '19:00'],
-      friday: ['12:00', '18:00'],
-      saturday: ['15:00', '21:00'],
-      sunday: ['15:00', '21:00']
-    },
-    educationalPostSchedule: {
-      thursday: ['15:00'],
-      sunday: ['16:00']
-    },
-    preferredStyles: ['supportive', 'casual', 'enthusiastic'],
-    soundswapMentionRate: 1.0,
-    dailyCommentLimit: 8,
-    educationalPostLimit: 1,
-    keywords: ['share', 'new track', 'feedback', 'collaboration']
-  }
-};
-
-// ==================== OPTIMIZED CRON SCHEDULER ====================
-
-// Initialize posting activity
-let postingActivity = await initializePostingActivity();
-
-// Test Reddit connection on startup
-const redditConnection = await testRedditConnection();
-if (redditConnection.success) {
-  postingActivity.redditUsername = redditConnection.username;
-  await quickSavePostingActivity(postingActivity);
-}
-
-// Generate posts only for current time window (optimized)
-const generatePostsForTimeWindow = async (timeWindow) => {
-  try {
-    const currentDay = getCurrentDayInAppTimezone();
-    const { start, end } = timeWindow;
-    
-    console.log(`🔄 Generating posts for current time window: ${start} to ${end} on ${currentDay}`);
-    
-    let totalGenerated = 0;
-    
-    // Generate regular comments for current window only
-    for (const [subreddit, config] of Object.entries(redditTargets)) {
-      if (config.active && config.postingSchedule[currentDay]) {
-        const times = config.postingSchedule[currentDay];
-        
-        for (const time of times) {
-          // Only generate if within current time window
-          if (time >= start && time <= end) {
-            const style = config.preferredStyles[Math.floor(Math.random() * config.preferredStyles.length)];
-            
-            // Generate comment content quickly
-            const samplePosts = getSamplePostsForSubreddit(subreddit);
-            const postTitle = samplePosts[Math.floor(Math.random() * samplePosts.length)];
-            const commentResponse = await quickGenerateAIComment(postTitle, "", subreddit, "", style);
-            
-            if (commentResponse.success) {
-              await quickStoreScheduledPost({
-                subreddit,
-                scheduledDay: currentDay,
-                scheduledTime: time,
-                style: style,
-                type: 'comment',
-                content: commentResponse.comment,
-                dailyLimit: config.dailyCommentLimit,
-                keywords: config.keywords
-              });
-              
-              totalGenerated++;
-              console.log(`✅ Generated comment for r/${subreddit} at ${time} (within current window)`);
-            }
-          }
-        }
-      }
-    }
-    
-    console.log(`✅ Generated ${totalGenerated} posts for time window ${start}-${end} on ${currentDay}`);
-    return { success: true, totalGenerated };
-    
-  } catch (error) {
-    console.error('❌ Error generating posts for time window:', error);
-    return { success: false, error: error.message };
-  }
-};
-
-// Quick AI comment generation (optimized prompt)
-const quickGenerateAIComment = async (postTitle, postContent, subreddit, context, style) => {
-  try {
-    if (!process.env.GOOGLE_GEMINI_API_KEY) {
-      return { success: false, message: 'Google Gemini API key not configured' };
-    }
-
-    const targetConfig = redditTargets[subreddit];
-    const selectedStyle = style || (targetConfig ? targetConfig.preferredStyles[0] : 'helpful');
-
-    const model = genAI.getGenerativeModel({ 
-      model: 'gemini-2.0-flash'
-    });
-
-    // Optimized prompt for faster response
-    const prompt = `
-Write a short, casual Reddit comment (2 sentences max) that:
-- Responds naturally to: "${postTitle}"
-- Mentions soundswap.live organically
-- Sounds like a real music enthusiast
-- Uses ${selectedStyle} tone
-
-Keep it brief and human-like:`;
-
-    const result = await model.generateContent(prompt);
-    const response = await result.response;
-    let comment = response.text().trim();
-
-    // Quick soundswap.live check
-    if (!comment.toLowerCase().includes('soundswap.live')) {
-      comment = `${comment} Check out soundswap.live for music promotion!`;
-    }
-
-    return {
-      success: true,
-      comment: comment,
-      style: selectedStyle,
-      subreddit: subreddit
-    };
-
-  } catch (error) {
-    console.error('❌ Error generating AI comment:', error);
-    // Return fallback comment
-    return {
-      success: true,
-      comment: `Great post! As a musician, I found soundswap.live really helpful for getting my music out there.`,
-      style: 'casual',
-      subreddit: subreddit
-    };
-  }
-};
-
-// Optimized sample posts
-const getSamplePostsForSubreddit = (subreddit) => {
-  const samplePosts = {
-    'WeAreTheMusicMakers': [
-      "Just finished my first EP!",
-      "Struggling with vocal mixing",
-      "New studio equipment arrived"
-    ],
-    'MusicProduction': [
-      "Ear fatigue during long sessions",
-      "New studio monitors review",
-      "Best VST plugins?"
-    ],
-    'IndieMusicFeedback': [
-      "Feedback on my new indie track",
-      "First single released!",
-      "Songwriting feedback needed"
-    ],
-    'ThisIsOurMusic': [
-      "Latest composition shared",
-      "New album preview",
-      "Experimenting with new sounds"
-    ],
-    'MusicPromotion': [
-      "Promotion strategies?",
-      "Streaming milestone reached",
-      "Best platforms for artists?"
-    ],
-    'ShareYourMusic': [
-      "Sharing my latest track",
-      "New demo uploaded",
-      "Collaboration results"
-    ]
-  };
-  
-  return samplePosts[subreddit] || ["Great music discussion!"];
-};
-
-// Function to generate educational posts about SoundSwap
-const generateEducationalPost = async (subreddit) => {
-  try {
-    if (!process.env.GOOGLE_GEMINI_API_KEY) {
-      return { success: false, message: 'Google Gemini API key not configured' };
-    }
-
-    const model = genAI.getGenerativeModel({ 
-      model: 'gemini-2.0-flash'
-    });
-
-    const prompt = `
-Create a short educational Reddit post about SoundSwap for r/${subreddit}.
-Focus on: FREE platform, organic promotion, weekly Top 50 chart.
-Keep it concise and mention soundswap.live naturally.
-Write as a SoundSwap marketing representative:`;
-
-    const result = await model.generateContent(prompt);
-    const response = await result.response;
-    const text = response.text().trim();
-
-    // Simple parsing
-    const lines = text.split('\n');
-    let title = lines[0] || `Why SoundSwap is Great for Musicians in r/${subreddit}`;
-    let content = lines.slice(1).join('\n') || `Hey r/${subreddit}! SoundSwap is a completely FREE platform that helps artists grow organically. Check out soundswap.live!`;
-
-    if (!content.toLowerCase().includes('soundswap.live')) {
-      content += `\n\nLearn more at soundswap.live`;
-    }
-
-    return {
-      success: true,
-      title: title.substring(0, 200),
-      content: content.substring(0, 1000),
-      subreddit: subreddit,
-      type: 'educational'
-    };
-
-  } catch (error) {
-    console.error('❌ Error generating educational post:', error);
-    return {
-      success: false,
-      message: 'Failed to generate educational post',
-      error: error.message
-    };
-  }
-};
-
-// Function to generate Top 50 chart promotion post
-const generateTop50PromotionPost = async (subreddit) => {
-  try {
-    if (!process.env.GOOGLE_GEMINI_API_KEY) {
-      return { success: false, message: 'Google Gemini API key not configured' };
-    }
-
-    const model = genAI.getGenerativeModel({ 
-      model: 'gemini-2.0-flash'
-    });
-
-    const prompt = `
-Write a short Reddit post inviting r/${subreddit} artists to submit to SoundSwap's weekly Top 50 chart.
-Mention: soundswap.live, free submission, featured promotion.
-Keep it casual and exciting:`;
-
-    const result = await model.generateContent(prompt);
-    const response = await result.response;
-    const text = response.text().trim();
-
-    const lines = text.split('\n');
-    let title = lines[0] || `r/${subreddit} artists - Submit to SoundSwap's Weekly Top 50!`;
-    let content = lines.slice(1).join('\n') || `Hey everyone! SoundSwap is running a weekly Top 50 chart and looking for submissions. It's free and top artists get featured promotion! Check out soundswap.live`;
-
-    if (!content.toLowerCase().includes('soundswap.live')) {
-      content += `\n\nSubmit at soundswap.live!`;
-    }
-
-    return {
-      success: true,
-      title: title.substring(0, 200),
-      content: content.substring(0, 1000),
-      subreddit: subreddit
-    };
-
-  } catch (error) {
-    console.error('❌ Error generating Top 50 promotion post:', error);
-    return {
-      success: false,
-      message: 'Failed to generate Top 50 promotion post',
-      error: error.message
-    };
-  }
-};
-
-// Main optimized function to run scheduled posts with REAL Reddit posting
+// Update the main runScheduledPosts function to include auto-reset at the beginning
 export const runScheduledPosts = async () => {
   const startTime = Date.now();
-  const timeout = 8000; // 8 second timeout for Vercel
+  const timeout = 8000;
   
   try {
+    // AUTO-RESET DAILY COUNTS (add this at the beginning)
+    await autoResetDailyCounts();
+    
     postingActivity.lastCronRun = new Date().toISOString();
     postingActivity.githubActionsRuns++;
     
@@ -1008,6 +540,7 @@ export const runScheduledPosts = async () => {
       timeWindow: timeWindow,
       redditConnected: redditConnection.success,
       redditUsername: postingActivity.redditUsername,
+      lastResetDate: postingActivity.lastResetDate, // NEW
       timestamp: new Date().toISOString()
     };
   } catch (error) {
@@ -1024,15 +557,7 @@ export const runScheduledPosts = async () => {
   }
 };
 
-console.log('🚀 Reddit Auto-Poster initialized (GitHub Actions + Firebase + REAL Reddit API)');
-console.log(`⏰ Timezone: ${APP_TIMEZONE}`);
-console.log(`📅 Current time: ${getCurrentTimeInAppTimezone()} on ${getCurrentDayInAppTimezone()}`);
-console.log(`🕒 Posting window: ${POSTING_WINDOW_MINUTES} minutes`);
-console.log(`🤖 Reddit API: ${redditConnection.success ? `Connected as ${redditConnection.username}` : 'NOT CONNECTED'}`);
-
-// ==================== OPTIMIZED ENDPOINTS ====================
-
-// Quick cron status endpoint
+// Also update the cron-status endpoint to show lastResetDate
 router.get('/cron-status', async (req, res) => {
   try {
     const currentTime = getCurrentTimeInAppTimezone();
@@ -1054,11 +579,12 @@ router.get('/cron-status', async (req, res) => {
         totalEducationalPosts: postingActivity.totalEducationalPosts,
         githubActionsRuns: postingActivity.githubActionsRuns,
         lastCronRun: postingActivity.lastCronRun,
+        lastResetDate: postingActivity.lastResetDate, // NEW
         firebase: firebaseConnected ? 'connected' : 'disconnected',
         reddit: {
           connected: redditConnection.success,
           username: postingActivity.redditUsername,
-          posting: 'REAL_POSTS' // Indicate real posting is enabled
+          posting: 'REAL_POSTS'
         }
       },
       timestamp: new Date().toISOString()
