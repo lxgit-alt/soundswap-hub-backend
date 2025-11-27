@@ -4,7 +4,7 @@ const REDDIT_CONFIG = {
   clientSecret: process.env.REDDIT_CLIENT_SECRET,
   username: process.env.REDDIT_USERNAME,
   password: process.env.REDDIT_PASSWORD,
-  userAgent: 'SoundSwapBot/2.0 (by /u/lcy_Gas_949)'
+  userAgent: 'SoundSwapBot/1.0 (by /u/lcy_Gas_949)'
 };
 
 // Target subreddits
