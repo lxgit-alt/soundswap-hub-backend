@@ -547,8 +547,9 @@ const postToReddit = async (subreddit, content, style, type = 'comment', title =
       console.log(`📝 Simulating educational post to r/${subreddit}: ${title}`);
       result = { success: true, redditData: { permalink: `https://reddit.com/r/${subreddit}/simulated_post` } };
     } else {
-      // For now, we'll simulate comments since Reddit API integration needs proper setup
-      console.log(`💬 Simulating comment to r/${subreddit}: ${content.substring(0, 100)}...`);
+      // FIX: Check if content is defined before calling substring
+      const contentPreview = content ? content.substring(0, 100) : 'NO CONTENT';
+      console.log(`💬 Simulating comment to r/${subreddit}: ${contentPreview}...`);
       result = { success: true, redditData: { permalink: `https://reddit.com/r/${subreddit}/comments/simulated_comment` } };
     }
     
@@ -1138,7 +1139,6 @@ router.post('/cron', async (req, res) => {
   }
 });
 
-// [Keep all your other existing endpoints exactly as they were...]
 // Add GET endpoint for /cron to show available endpoints
 router.get('/cron', (req, res) => {
   const currentTime = getCurrentTimeInAppTimezone();

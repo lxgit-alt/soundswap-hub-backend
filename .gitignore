@@ -9,4 +9,5 @@ node_modules/
 .env.local
 .env.test
 .env.production
-exchangeCode.js
+quickExchange.js
+reddit-config.js
