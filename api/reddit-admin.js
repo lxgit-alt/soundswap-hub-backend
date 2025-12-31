@@ -140,15 +140,22 @@ const redditClient = new snoowrap({
 // Enhanced Reddit connection test with rate limit awareness
 const testRedditConnection = async () => {
   try {
-    // Check rate limits first
-    const rateLimits = await redditClient.getMe().getRateLimitInfo();
+    // Get user info first
+    const me = await redditClient.getMe();
+    
+    // Check rate limits from snoowrap client
+    const rateLimits = {
+      remaining: redditClient.ratelimitRemaining || 60,
+      reset: redditClient.ratelimitReset,
+      used: redditClient.ratelimitUsed || 0
+    };
+    
     console.log('📊 Reddit Rate Limits:', {
       remaining: rateLimits.remaining,
-      reset: new Date(rateLimits.reset * 1000).toISOString(),
+      reset: rateLimits.reset ? new Date(rateLimits.reset * 1000).toISOString() : 'unknown',
       used: rateLimits.used
     });
     
-    const me = await redditClient.getMe();
     console.log(`✅ Reddit API connected successfully. Logged in as: ${me.name}`);
     return { 
       success: true, 
@@ -463,26 +470,50 @@ const quickMarkPostAsPosted = async (postId, collectionName, redditData = null) 
 
 const checkRateLimit = async () => {
   try {
-    const rateLimits = await redditClient.getMe().getRateLimitInfo();
+    // Get your Reddit account info - this automatically checks rate limits
+    const me = await redditClient.getMe();
+    
+    // Snoowrap automatically tracks rate limits in the client
+    // We can check the last response headers for rate limit info
+    const rateLimitRemaining = redditClient.ratelimitRemaining;
+    const rateLimitReset = redditClient.ratelimitReset;
+    const rateLimitUsed = redditClient.ratelimitUsed;
     
     postingActivity.rateLimitInfo = {
       lastCheck: new Date().toISOString(),
-      remaining: rateLimits.remaining,
-      resetTime: new Date(rateLimits.reset * 1000).toISOString(),
-      used: rateLimits.used
+      remaining: rateLimitRemaining || 60, // Fallback to 60 if unknown
+      resetTime: rateLimitReset ? new Date(rateLimitReset * 1000).toISOString() : null,
+      used: rateLimitUsed || 0
     };
     
-    console.log(`📊 Rate Limits: ${rateLimits.remaining} remaining, reset at ${postingActivity.rateLimitInfo.resetTime}`);
+    console.log(`📊 Rate Limits: ${postingActivity.rateLimitInfo.remaining} remaining`);
     
-    if (rateLimits.remaining < 10) {
+    // If we don't have rate limit info, proceed cautiously
+    if (rateLimitRemaining === null || rateLimitRemaining === undefined) {
+      console.log('⚠️ Rate limit info unavailable, proceeding with caution');
+      return true;
+    }
+    
+    if (rateLimitRemaining < 10) {
       console.warn('⚠️ Rate limit low! Waiting for reset...');
       return false;
     }
     
     return true;
   } catch (error) {
-    console.error('❌ Error checking rate limits:', error);
-    return true; // Proceed cautiously
+    console.error('❌ Error checking rate limits:', error.message);
+    // If we can't check rate limits, proceed with caution
+    return true;
+  }
+};
+
+// Safe rate limit check that won't break the promise chain
+const safeCheckRateLimit = async () => {
+  try {
+    return await checkRateLimit();
+  } catch (error) {
+    console.warn('⚠️ Safe rate limit check failed, proceeding anyway:', error.message);
+    return true; // Always return true to prevent breaking the chain
   }
 };
 
@@ -988,7 +1019,7 @@ Check it out at soundswap.live if you're looking to streamline your workflow!
 const postToReddit = async (subreddit, content, style, type = 'comment', title = '', keywords = []) => {
   try {
     // Check rate limits before posting
-    const canPost = await checkRateLimit();
+    const canPost = await safeCheckRateLimit();
     if (!canPost) {
       throw new Error('Rate limit too low');
     }
@@ -1189,7 +1220,7 @@ if (redditConnection.success) {
     postingActivity.rateLimitInfo = {
       lastCheck: new Date().toISOString(),
       remaining: redditConnection.rateLimits.remaining,
-      resetTime: new Date(redditConnection.rateLimits.reset * 1000).toISOString()
+      resetTime: redditConnection.rateLimits.reset ? new Date(redditConnection.rateLimits.reset * 1000).toISOString() : null
     };
   }
   await quickSavePostingActivity(postingActivity);
@@ -1226,7 +1257,7 @@ export const runScheduledPosts = async () => {
     }
     
     // Check rate limits
-    const rateLimitOk = await checkRateLimit();
+    const rateLimitOk = await safeCheckRateLimit();
     if (!rateLimitOk) {
       console.warn('⚠️ Rate limit check failed, proceeding with caution');
     }
@@ -1760,7 +1791,7 @@ router.post('/post-premium-feature', async (req, res) => {
     }
     
     // Check rate limits
-    const canPost = await checkRateLimit();
+    const canPost = await safeCheckRateLimit();
     if (!canPost) {
       return res.status(429).json({
         success: false,
