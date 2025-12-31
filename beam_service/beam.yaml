@@ -1,0 +1,39 @@
+app: "vidgen-ai-professional-style-video-generation"
+sdk:
+  language: python
+  version: "3.11"
+
+runtime:
+  cpu: 8
+  memory: 64Gi
+  gpu: A10G
+  image: python3.11-cuda11.8
+
+build:
+  commands:
+    # Install ALL required system dependencies
+    - apt-get update && apt-get install -y ffmpeg libsm6 libxext6 libfontconfig1 libxrender1 imagemagick libmagickwand-dev
+    # Configure ImageMagick policy for video/image processing
+    - sed -i 's/rights="none" pattern="PDF"/rights="read|write" pattern="PDF"/' /etc/ImageMagick-6/policy.xml || true
+    - sed -i 's/rights="none" pattern="MP4"/rights="read|write" pattern="MP4"/' /etc/ImageMagick-6/policy.xml || true
+    # Create necessary directories
+    - mkdir -p /app/fonts /app/textures /app/models
+    # Copy fonts from your package to system location
+    - cp -r /app/backend/beam/fonts/* /usr/share/fonts/ 2>/dev/null || true
+    - cp -r /app/fonts/* /usr/share/fonts/ 2>/dev/null || true
+    - fc-cache -f -v
+
+functions:
+  - name: generate-lyric-video-pro
+    handler: app.py:generate_lyric_video_pro
+    max_retries: 3
+    timeout: 300
+    runtime:
+      cpu: 8
+      memory: 64Gi
+      gpu: A10G
+    environment:
+      - CLOUDINARY_CLOUD_NAME
+      - CLOUDINARY_API_KEY
+      - CLOUDINARY_API_SECRET
+      - HF_TOKEN

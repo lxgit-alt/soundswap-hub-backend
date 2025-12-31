@@ -4,9 +4,24 @@
     {
       "src": "server.js",
       "use": "@vercel/node"
+    },
+    {
+      "src": "api/generate-video.js",
+      "use": "@vercel/node"
     }
   ],
   "routes": [
+    {
+      "src": "/api/generate-video/(.*)",
+      "dest": "/api/generate-video.js",
+      "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+      "headers": {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type, Authorization, X-CSRF-Token, X-Requested-With, Accept, Accept-Version, Content-Length, Content-MD5, Date, X-Api-Version",
+        "Access-Control-Allow-Credentials": "true"
+      }
+    },
     {
       "src": "/api/reddit-admin/(.*)",
       "dest": "/server.js",
@@ -27,5 +42,42 @@
       "dest": "/server.js",
       "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
     }
-  ]
+  ],
+  "functions": {
+    "api/generate-video.js": {
+      "maxDuration": 60,
+      "memory": 2048,
+      "runtime": "nodejs18.x"
+    },
+    "server.js": {
+      "maxDuration": 10,
+      "memory": 1024
+    }
+  },
+  "env": {
+    "PYTHONPATH": "/var/task",
+    "NODE_ENV": "production",
+    "NODE_OPTIONS": "--max-old-space-size=2048",
+    "HF_TOKEN": "@hf_token",
+    "REPLICATE_API_TOKEN": "@replicate_api_token",
+    "BEAM_API_KEY": "@beam_api_key",
+    "BEAM_APP_ID": "@beam_app_id",
+    "BEAM_WEBHOOK_SECRET": "@beam_webhook_secret",
+    "CLOUDINARY_CLOUD_NAME": "@cloudinary_cloud_name",
+    "CLOUDINARY_API_KEY": "@cloudinary_api_key",
+    "CLOUDINARY_API_SECRET": "@cloudinary_api_secret",
+    "GEMINI_API_KEY": "@gemini_api_key",
+    "APP_TIMEZONE": "America/New_York",
+    "CRON_SECRET": "@cron_secret",
+    "GMAIL_USER": "@gmail_user",
+    "GMAIL_PASS": "@gmail_pass",
+    "REDDIT_CLIENT_ID": "@reddit_client_id",
+    "REDDIT_CLIENT_SECRET": "@reddit_client_secret",
+    "REDDIT_USERNAME": "@reddit_username",
+    "REDDIT_PASSWORD": "@reddit_password",
+    "VIDEO_STORAGE_PATH": "/tmp/videos",
+    "MAX_VIDEO_AGE_HOURS": "24",
+    "VIDEO_CLEANUP_INTERVAL": "3600000"
+  },
+  "regions": ["iad1"]
 }

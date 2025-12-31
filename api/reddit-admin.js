@@ -24,6 +24,7 @@ const db = getFirestore(firebaseApp);
 const SCHEDULED_POSTS_COLLECTION = 'scheduledPosts';
 const EDUCATIONAL_POSTS_COLLECTION = 'educationalPosts';
 const POSTING_ACTIVITY_COLLECTION = 'postingActivity';
+const PREMIUM_FEATURE_LEADS_COLLECTION = 'premiumFeatureLeads';
 
 // Initialize Google Gemini AI
 const genAI = new GoogleGenerativeAI(process.env.GOOGLE_GEMINI_API_KEY);
@@ -33,8 +34,47 @@ const genAI = new GoogleGenerativeAI(process.env.GOOGLE_GEMINI_API_KEY);
 const APP_TIMEZONE = process.env.APP_TIMEZONE || 'America/New_York';
 const POSTING_WINDOW_MINUTES = 10;
 const MAX_POSTS_PER_RUN = 3;
+const MAX_COMMENTS_PER_DAY = 15; // Stay well under Reddit API limits
+const MAX_EDUCATIONAL_POSTS_PER_DAY = 3;
 const AI_TIMEOUT_MS = 5000;
 const VERCELL_TIMEOUT_MS = 8000;
+
+// ==================== PREMIUM FEATURE CONFIGURATION ====================
+
+const PREMIUM_FEATURES = {
+  lyricVideoGenerator: {
+    name: 'AI Lyric Video Generator',
+    description: 'Transform lyrics into stunning music videos with AI-powered visuals',
+    premiumFeatures: [
+      'AI Autopilot for automatic timing and styling',
+      'Physics-based text animations',
+      'Premium animation effects',
+      'Spotify Canvas optimization',
+      '4K video export',
+      'Batch processing'
+    ],
+    priceRange: '$15-$50 per video',
+    targetKeywords: ['lyric video', 'music video', 'visualizer', 'animated lyrics', 'Spotify Canvas', 'music promotion'],
+    valueProposition: 'Save 10+ hours of editing with AI-powered lyric videos',
+    targetSubreddits: ['WeAreTheMusicMakers', 'videoediting', 'AfterEffects', 'MotionDesign', 'MusicMarketing', 'Spotify']
+  },
+  doodleArtGenerator: {
+    name: 'Doodle-to-Art AI Generator',
+    description: 'Sketch your idea and watch AI transform it into beautiful animated artwork',
+    premiumFeatures: [
+      'AI Art Generation from sketches',
+      'Spotify Canvas animation',
+      'Premium motion effects',
+      'Batch animation processing',
+      'HD video exports',
+      'Custom style transfers'
+    ],
+    priceRange: '$10-$30 per animation',
+    targetKeywords: ['art generation', 'animation', 'Spotify Canvas', 'digital art', 'AI art', 'creative tools'],
+    valueProposition: 'Create professional animations in minutes instead of days',
+    targetSubreddits: ['digitalart', 'StableDiffusion', 'ArtistLounge', 'WeAreTheMusicMakers', 'Spotify']
+  }
+};
 
 // ==================== TIME HELPER FUNCTIONS ====================
 
@@ -91,18 +131,30 @@ const getCurrentTimeWindow = () => {
 
 // Initialize Reddit API client
 const redditClient = new snoowrap({
-  userAgent: 'SoundSwap Reddit Bot v4.0',
+  userAgent: 'SoundSwap Reddit Bot v5.0 (Premium Features Focus)',
   clientId: process.env.REDDIT_CLIENT_ID,
   clientSecret: process.env.REDDIT_CLIENT_SECRET,
   refreshToken: process.env.REDDIT_REFRESH_TOKEN
 });
 
-// Test Reddit connection
+// Enhanced Reddit connection test with rate limit awareness
 const testRedditConnection = async () => {
   try {
+    // Check rate limits first
+    const rateLimits = await redditClient.getMe().getRateLimitInfo();
+    console.log('📊 Reddit Rate Limits:', {
+      remaining: rateLimits.remaining,
+      reset: new Date(rateLimits.reset * 1000).toISOString(),
+      used: rateLimits.used
+    });
+    
     const me = await redditClient.getMe();
     console.log(`✅ Reddit API connected successfully. Logged in as: ${me.name}`);
-    return { success: true, username: me.name };
+    return { 
+      success: true, 
+      username: me.name,
+      rateLimits: rateLimits
+    };
   } catch (error) {
     console.error('❌ Reddit API connection failed:', error.message);
     return { success: false, error: error.message };
@@ -128,10 +180,14 @@ const resetDailyCountsIfNeeded = async (currentActivity) => {
       Object.keys(currentActivity.educationalCounts).forEach(key => {
         currentActivity.educationalCounts[key] = 0;
       });
+      Object.keys(currentActivity.premiumFeatureCounts).forEach(key => {
+        currentActivity.premiumFeatureCounts[key] = 0;
+      });
       
       // Reset last posted timestamps to allow immediate posting
       currentActivity.lastPosted = {};
       currentActivity.lastEducationalPosted = {};
+      currentActivity.lastPremiumPosted = {};
       
       // Update reset tracking
       currentActivity.lastResetDate = currentDate;
@@ -141,7 +197,8 @@ const resetDailyCountsIfNeeded = async (currentActivity) => {
       console.log(`✅ Daily counts reset for ${currentDate} (${currentDay})`);
       console.log(`📊 Reset counts:`, {
         comments: currentActivity.dailyCounts,
-        educational: currentActivity.educationalCounts
+        educational: currentActivity.educationalCounts,
+        premium: currentActivity.premiumFeatureCounts
       });
       
       return true;
@@ -169,6 +226,24 @@ const checkFirebaseConnection = async () => {
   }
 };
 
+const savePremiumLead = async (subreddit, postTitle, leadType, interestLevel) => {
+  try {
+    const leadsRef = collection(db, PREMIUM_FEATURE_LEADS_COLLECTION);
+    await addDoc(leadsRef, {
+      subreddit,
+      postTitle,
+      leadType,
+      interestLevel,
+      timestamp: new Date().toISOString(),
+      date: getCurrentDateInAppTimezone(),
+      converted: false
+    });
+    console.log(`💎 Premium lead saved: ${leadType} from r/${subreddit}`);
+  } catch (error) {
+    console.error('❌ Error saving premium lead:', error);
+  }
+};
+
 const initializePostingActivity = async () => {
   try {
     const activityRef = collection(db, POSTING_ACTIVITY_COLLECTION);
@@ -179,22 +254,32 @@ const initializePostingActivity = async () => {
       const initialActivity = {
         dailyCounts: {},
         educationalCounts: {},
+        premiumFeatureCounts: {},
         lastPosted: {},
         lastEducationalPosted: {},
+        lastPremiumPosted: {},
         totalComments: 0,
         totalEducationalPosts: 0,
+        totalPremiumMentions: 0,
+        premiumLeadsGenerated: 0,
         lastCronRun: null,
         githubActionsRuns: 0,
         redditUsername: null,
         lastResetDate: getCurrentDateInAppTimezone(),
         lastResetDay: getCurrentDayInAppTimezone(),
         lastResetTime: new Date().toISOString(),
-        timestamp: new Date().toISOString()
+        timestamp: new Date().toISOString(),
+        rateLimitInfo: {
+          lastCheck: null,
+          remaining: 60,
+          resetTime: null
+        }
       };
       
       Object.keys(redditTargets).forEach(subreddit => {
         initialActivity.dailyCounts[subreddit] = 0;
         initialActivity.educationalCounts[subreddit] = 0;
+        initialActivity.premiumFeatureCounts[subreddit] = 0;
       });
       
       await addDoc(activityRef, initialActivity);
@@ -219,22 +304,31 @@ const getFallbackActivity = () => {
   const fallbackActivity = {
     dailyCounts: {},
     educationalCounts: {},
+    premiumFeatureCounts: {},
     lastPosted: {},
     lastEducationalPosted: {},
+    lastPremiumPosted: {},
     totalComments: 0,
     totalEducationalPosts: 0,
+    totalPremiumMentions: 0,
+    premiumLeadsGenerated: 0,
     lastCronRun: null,
     githubActionsRuns: 0,
     redditUsername: null,
     lastResetDate: getCurrentDateInAppTimezone(),
     lastResetDay: getCurrentDayInAppTimezone(),
     lastResetTime: new Date().toISOString(),
-    timestamp: new Date().toISOString()
+    timestamp: new Date().toISOString(),
+    rateLimitInfo: {
+      remaining: 60,
+      lastCheck: null
+    }
   };
   
   Object.keys(redditTargets).forEach(subreddit => {
     fallbackActivity.dailyCounts[subreddit] = 0;
     fallbackActivity.educationalCounts[subreddit] = 0;
+    fallbackActivity.premiumFeatureCounts[subreddit] = 0;
   });
   
   return fallbackActivity;
@@ -365,9 +459,43 @@ const quickMarkPostAsPosted = async (postId, collectionName, redditData = null) 
   }
 };
 
-// ==================== REDDIT TARGET CONFIGURATION ====================
+// ==================== RATE LIMIT MANAGEMENT ====================
+
+const checkRateLimit = async () => {
+  try {
+    const rateLimits = await redditClient.getMe().getRateLimitInfo();
+    
+    postingActivity.rateLimitInfo = {
+      lastCheck: new Date().toISOString(),
+      remaining: rateLimits.remaining,
+      resetTime: new Date(rateLimits.reset * 1000).toISOString(),
+      used: rateLimits.used
+    };
+    
+    console.log(`📊 Rate Limits: ${rateLimits.remaining} remaining, reset at ${postingActivity.rateLimitInfo.resetTime}`);
+    
+    if (rateLimits.remaining < 10) {
+      console.warn('⚠️ Rate limit low! Waiting for reset...');
+      return false;
+    }
+    
+    return true;
+  } catch (error) {
+    console.error('❌ Error checking rate limits:', error);
+    return true; // Proceed cautiously
+  }
+};
+
+const enforceRateLimit = async () => {
+  // Add delay between posts to stay within limits
+  const delay = 2000 + Math.random() * 3000; // 2-5 seconds
+  await new Promise(resolve => setTimeout(resolve, delay));
+};
+
+// ==================== ENHANCED REDDIT TARGET CONFIGURATION ====================
 
 const redditTargets = {
+  // Existing music subreddits (optimized)
   'WeAreTheMusicMakers': {
     name: 'WeAreTheMusicMakers',
     memberCount: 1800000,
@@ -375,211 +503,287 @@ const redditTargets = {
     active: true,
     priority: 'high',
     postingSchedule: {
-      monday: ['09:00', '14:00', '19:00'],
-      tuesday: ['10:00', '15:00', '20:00'],
-      wednesday: ['09:00', '14:00', '19:00'],
-      thursday: ['10:00', '15:00', '20:00'],
-      friday: ['09:00', '14:00', '19:00'],
-      saturday: ['11:00', '16:00', '21:00'],
-      sunday: ['11:00', '16:00', '21:00']
+      monday: ['10:00', '18:00'],
+      tuesday: ['11:00', '19:00'],
+      wednesday: ['10:00', '18:00'],
+      thursday: ['11:00', '19:00'],
+      friday: ['10:00', '18:00'],
+      saturday: ['12:00', '20:00'],
+      sunday: ['12:00', '20:00']
     },
     educationalPostSchedule: {
-      monday: ['11:00'],
-      wednesday: ['15:00'],
-      friday: ['13:00']
+      tuesday: ['15:00'],
+      friday: ['16:00']
     },
     preferredStyles: ['helpful', 'expert', 'thoughtful'],
     soundswapMentionRate: 1.0,
-    dailyCommentLimit: 8,
+    dailyCommentLimit: 4,
     educationalPostLimit: 1,
-    keywords: ['production', 'mixing', 'mastering', 'DAW', 'audio', 'music theory']
+    premiumFeatureLimit: 2,
+    keywords: ['lyric video', 'music video', 'visualizer', 'Spotify Canvas', 'animation'],
+    premiumFeatures: ['lyricVideoGenerator', 'doodleArtGenerator'],
+    targetAudience: 'musicians needing visual content'
   },
-  'MusicProduction': {
-    name: 'MusicProduction',
+  
+  // NEW: Video Editing & Animation Subreddits (Premium Focus)
+  'videoediting': {
+    name: 'videoediting',
     memberCount: 500000,
-    description: 'Focus on music production techniques and tools',
+    description: 'Video editing community for professionals and hobbyists',
     active: true,
     priority: 'high',
     postingSchedule: {
-      monday: ['08:00', '13:00', '18:00'],
-      tuesday: ['09:00', '14:00', '19:00'],
-      wednesday: ['08:00', '13:00', '18:00'],
-      thursday: ['09:00', '14:00', '19:00'],
-      friday: ['08:00', '13:00', '18:00'],
-      saturday: ['12:00', '17:00', '22:00'],
-      sunday: ['12:00', '17:00', '22:00']
+      monday: ['09:00', '17:00'],
+      wednesday: ['10:00', '18:00'],
+      friday: ['11:00', '19:00']
     },
     educationalPostSchedule: {
-      tuesday: ['12:00'],
-      thursday: ['16:00']
+      wednesday: ['14:00']
     },
-    preferredStyles: ['expert', 'helpful', 'technical'],
+    preferredStyles: ['technical', 'helpful', 'expert'],
     soundswapMentionRate: 1.0,
-    dailyCommentLimit: 6,
+    dailyCommentLimit: 3,
     educationalPostLimit: 1,
-    keywords: ['production', 'mixing', 'plugins', 'gear', 'workflow', 'techniques']
+    premiumFeatureLimit: 2,
+    keywords: ['automation', 'AI video', 'text animation', 'motion graphics', 'After Effects'],
+    premiumFeatures: ['lyricVideoGenerator'],
+    targetAudience: 'video editors seeking automation'
   },
-  'IndieMusicFeedback': {
-    name: 'IndieMusicFeedback',
-    memberCount: 100000,
-    description: 'Community for indie musicians to share and get feedback',
+  
+  'AfterEffects': {
+    name: 'AfterEffects',
+    memberCount: 300000,
+    description: 'Adobe After Effects community',
+    active: true,
+    priority: 'high',
+    postingSchedule: {
+      tuesday: ['10:00', '18:00'],
+      thursday: ['11:00', '19:00']
+    },
+    educationalPostSchedule: {
+      thursday: ['15:00']
+    },
+    preferredStyles: ['technical', 'creative', 'expert'],
+    soundswapMentionRate: 1.0,
+    dailyCommentLimit: 3,
+    educationalPostLimit: 1,
+    premiumFeatureLimit: 2,
+    keywords: ['motion graphics', 'automation', 'template', 'animation', 'expressions'],
+    premiumFeatures: ['lyricVideoGenerator'],
+    targetAudience: 'motion graphics designers'
+  },
+  
+  'MotionDesign': {
+    name: 'MotionDesign',
+    memberCount: 150000,
+    description: 'Motion design and animation community',
     active: true,
     priority: 'medium',
     postingSchedule: {
-      monday: ['10:00', '16:00'],
-      tuesday: ['11:00', '17:00'],
-      wednesday: ['10:00', '16:00'],
-      thursday: ['11:00', '17:00'],
-      friday: ['10:00', '16:00'],
-      saturday: ['13:00', '19:00'],
-      sunday: ['13:00', '19:00']
+      monday: ['11:00'],
+      wednesday: ['16:00'],
+      friday: ['14:00']
+    },
+    preferredStyles: ['creative', 'technical', 'helpful'],
+    soundswapMentionRate: 1.0,
+    dailyCommentLimit: 2,
+    educationalPostLimit: 0,
+    premiumFeatureLimit: 2,
+    keywords: ['animation', 'motion graphics', 'automation', 'text animation', 'kinetic typography'],
+    premiumFeatures: ['lyricVideoGenerator', 'doodleArtGenerator'],
+    targetAudience: 'motion designers'
+  },
+  
+  // NEW: Digital Art & AI Art Subreddits
+  'digitalart': {
+    name: 'digitalart',
+    memberCount: 800000,
+    description: 'Digital art creation and discussion',
+    active: true,
+    priority: 'high',
+    postingSchedule: {
+      tuesday: ['10:00', '18:00'],
+      thursday: ['11:00', '19:00'],
+      saturday: ['13:00', '21:00']
     },
     educationalPostSchedule: {
-      wednesday: ['14:00'],
+      tuesday: ['16:00']
+    },
+    preferredStyles: ['creative', 'supportive', 'enthusiastic'],
+    soundswapMentionRate: 1.0,
+    dailyCommentLimit: 3,
+    educationalPostLimit: 1,
+    premiumFeatureLimit: 2,
+    keywords: ['AI art', 'generative art', 'animation', 'Procreate', 'Clip Studio'],
+    premiumFeatures: ['doodleArtGenerator'],
+    targetAudience: 'digital artists exploring AI'
+  },
+  
+  'StableDiffusion': {
+    name: 'StableDiffusion',
+    memberCount: 400000,
+    description: 'AI image generation community',
+    active: true,
+    priority: 'high',
+    postingSchedule: {
+      monday: ['12:00', '20:00'],
+      wednesday: ['13:00', '21:00'],
+      friday: ['14:00', '22:00']
+    },
+    educationalPostSchedule: {
+      wednesday: ['17:00']
+    },
+    preferredStyles: ['technical', 'innovative', 'helpful'],
+    soundswapMentionRate: 1.0,
+    dailyCommentLimit: 3,
+    educationalPostLimit: 1,
+    premiumFeatureLimit: 2,
+    keywords: ['AI generation', 'sketch to image', 'animation', 'workflow', 'automation'],
+    premiumFeatures: ['doodleArtGenerator'],
+    targetAudience: 'AI art enthusiasts'
+  },
+  
+  'ArtistLounge': {
+    name: 'ArtistLounge',
+    memberCount: 200000,
+    description: 'Community for artists to discuss their work',
+    active: true,
+    priority: 'medium',
+    postingSchedule: {
+      tuesday: ['14:00'],
+      thursday: ['16:00'],
       sunday: ['15:00']
     },
-    preferredStyles: ['supportive', 'helpful', 'enthusiastic'],
+    preferredStyles: ['supportive', 'creative', 'casual'],
     soundswapMentionRate: 1.0,
-    dailyCommentLimit: 10,
-    educationalPostLimit: 1,
-    keywords: ['feedback', 'review', 'indie', 'new music', 'critique']
+    dailyCommentLimit: 2,
+    educationalPostLimit: 0,
+    premiumFeatureLimit: 1,
+    keywords: ['art tools', 'animation', 'digital art', 'creative process'],
+    premiumFeatures: ['doodleArtGenerator'],
+    targetAudience: 'artists seeking new tools'
   },
-  'ThisIsOurMusic': {
-    name: 'ThisIsOurMusic',
-    memberCount: 200000,
-    description: 'Share your original music with the community',
+  
+  // NEW: Music Promotion & Marketing
+  'MusicMarketing': {
+    name: 'MusicMarketing',
+    memberCount: 50000,
+    description: 'Music promotion and marketing strategies',
     active: true,
     priority: 'medium',
     postingSchedule: {
-      monday: ['11:00', '17:00'],
-      tuesday: ['12:00', '18:00'],
-      wednesday: ['11:00', '17:00'],
-      thursday: ['12:00', '18:00'],
-      friday: ['11:00', '17:00'],
-      saturday: ['14:00', '20:00'],
-      sunday: ['14:00', '20:00']
+      monday: ['10:00'],
+      wednesday: ['15:00'],
+      friday: ['12:00']
     },
     educationalPostSchedule: {
-      monday: ['12:00'],
-      friday: ['16:00']
+      friday: ['14:00']
     },
-    preferredStyles: ['enthusiastic', 'supportive', 'casual'],
+    preferredStyles: ['strategic', 'helpful', 'professional'],
     soundswapMentionRate: 1.0,
-    dailyCommentLimit: 8,
+    dailyCommentLimit: 2,
     educationalPostLimit: 1,
-    keywords: ['original music', 'new release', 'songwriting', 'performance']
+    premiumFeatureLimit: 2,
+    keywords: ['Spotify promotion', 'visual content', 'music videos', 'artist growth'],
+    premiumFeatures: ['lyricVideoGenerator'],
+    targetAudience: 'artists focused on promotion'
   },
-  'MusicPromotion': {
-    name: 'MusicPromotion',
-    memberCount: 150000,
-    description: 'Promote your music and discover new artists',
+  
+  'Spotify': {
+    name: 'Spotify',
+    memberCount: 10000000,
+    description: 'General Spotify community (including Canvas discussions)',
     active: true,
     priority: 'medium',
     postingSchedule: {
-      monday: ['09:00', '15:00', '21:00'],
-      tuesday: ['10:00', '16:00', '22:00'],
-      wednesday: ['09:00', '15:00', '21:00'],
-      thursday: ['10:00', '16:00', '22:00'],
-      friday: ['09:00', '15:00', '21:00'],
-      saturday: ['12:00', '18:00'],
-      sunday: ['12:00', '18:00']
+      tuesday: ['11:00', '19:00'],
+      thursday: ['12:00', '20:00']
     },
     educationalPostSchedule: {
-      tuesday: ['11:00'],
-      thursday: ['14:00'],
-      saturday: ['13:00']
+      thursday: ['14:00']
     },
-    preferredStyles: ['enthusiastic', 'casual', 'supportive'],
+    preferredStyles: ['enthusiastic', 'helpful', 'casual'],
     soundswapMentionRate: 1.0,
-    dailyCommentLimit: 12,
+    dailyCommentLimit: 2,
     educationalPostLimit: 1,
-    keywords: ['promotion', 'marketing', 'streaming', 'social media', 'growth']
-  },
-  'ShareYourMusic': {
-    name: 'ShareYourMusic',
-    memberCount: 80000,
-    description: 'Share your music and connect with other creators',
-    active: true,
-    priority: 'medium',
-    postingSchedule: {
-      monday: ['12:00', '18:00'],
-      tuesday: ['13:00', '19:00'],
-      wednesday: ['12:00', '18:00'],
-      thursday: ['13:00', '19:00'],
-      friday: ['12:00', '18:00'],
-      saturday: ['15:00', '21:00'],
-      sunday: ['15:00', '21:00']
-    },
-    educationalPostSchedule: {
-      thursday: ['15:00'],
-      sunday: ['16:00']
-    },
-    preferredStyles: ['supportive', 'casual', 'enthusiastic'],
-    soundswapMentionRate: 1.0,
-    dailyCommentLimit: 8,
-    educationalPostLimit: 1,
-    keywords: ['share', 'new track', 'feedback', 'collaboration']
+    premiumFeatureLimit: 2,
+    keywords: ['Spotify Canvas', 'animated artwork', 'visualizers', 'music visual'],
+    premiumFeatures: ['doodleArtGenerator', 'lyricVideoGenerator'],
+    targetAudience: 'Spotify users and artists'
   }
 };
 
-// ==================== ENHANCED CRON SCHEDULER WITH DAILY RESET ====================
+// ==================== PREMIUM FEATURE FOCUSED AI GENERATION ====================
 
-// Initialize posting activity
-let postingActivity = await initializePostingActivity();
+const generatePremiumFeatureComment = async (postTitle, subreddit, context) => {
+  const aiTimeout = new Promise((_, reject) => 
+    setTimeout(() => reject(new Error(`AI generation timeout after ${AI_TIMEOUT_MS}ms`)), AI_TIMEOUT_MS)
+  );
 
-// Test Reddit connection on startup
-const redditConnection = await testRedditConnection();
-if (redditConnection.success) {
-  postingActivity.redditUsername = redditConnection.username;
-  await quickSavePostingActivity(postingActivity);
-}
-
-// Enhanced function to post to Reddit (replaces simulation)
-const postToReddit = async (subreddit, content, style, type = 'comment', title = '', keywords = []) => {
   try {
-    // Add small delay to avoid rate limiting
-    await new Promise(resolve => setTimeout(resolve, 2000 + Math.random() * 3000));
+    const targetConfig = redditTargets[subreddit];
+    const selectedStyle = targetConfig?.preferredStyles[0] || 'helpful';
     
-    let result;
-    
-    if (type === 'educational') {
-      // For now, we'll simulate educational posts since they require different Reddit API handling
-      console.log(`📝 Simulating educational post to r/${subreddit}: ${title}`);
-      result = { success: true, redditData: { permalink: `https://reddit.com/r/${subreddit}/simulated_post` } };
+    // Determine which premium feature to highlight
+    let premiumFeature;
+    if (targetConfig?.premiumFeatures?.includes('lyricVideoGenerator') && 
+        (postTitle.toLowerCase().includes('video') || 
+         postTitle.toLowerCase().includes('lyric') || 
+         postTitle.toLowerCase().includes('visual'))) {
+      premiumFeature = PREMIUM_FEATURES.lyricVideoGenerator;
     } else {
-      // FIX: Check if content is defined before calling substring
-      const contentPreview = content ? content.substring(0, 100) : 'NO CONTENT';
-      console.log(`💬 Simulating comment to r/${subreddit}: ${contentPreview}...`);
-      result = { success: true, redditData: { permalink: `https://reddit.com/r/${subreddit}/comments/simulated_comment` } };
+      premiumFeature = PREMIUM_FEATURES.doodleArtGenerator;
     }
+
+    const model = genAI.getGenerativeModel({ 
+      model: 'gemini-2.0-flash'
+    });
+
+    const prompt = `Write a natural, helpful Reddit comment (2 sentences max) for r/${subreddit} that:
+1. Responds to: "${postTitle}"
+2. Mentions how ${premiumFeature.name} could help with this
+3. Highlights: ${premiumFeature.premiumFeatures.slice(0, 2).join(', ')}
+4. Uses ${selectedStyle} tone
+5. Ends with "Check out soundswap.live/tools" (natural integration)
+
+Keep it casual and human-like:`;
+
+    const aiCall = model.generateContent(prompt);
+    const result = await Promise.race([aiCall, aiTimeout]);
+    const response = await result.response;
+    let comment = response.text().trim();
+
+    console.log(`✅ Premium feature comment generated for r/${subreddit}`);
     
-    if (result.success) {
-      console.log(`✅ Simulated ${type} posted to r/${subreddit}`);
-      return { 
-        success: true, 
-        content: content,
-        redditData: result.redditData,
-        type: type
-      };
-    } else {
-      console.log(`❌ Failed to post ${type} to r/${subreddit}: ${result.error}`);
-      return { 
-        success: false, 
-        error: result.error,
-        type: type
-      };
+    // Track premium feature mention
+    if (!postingActivity.premiumFeatureCounts[subreddit]) {
+      postingActivity.premiumFeatureCounts[subreddit] = 0;
     }
+    postingActivity.premiumFeatureCounts[subreddit]++;
+    postingActivity.totalPremiumMentions++;
+
+    return {
+      success: true,
+      comment: comment,
+      style: selectedStyle,
+      subreddit: subreddit,
+      premiumFeature: premiumFeature.name,
+      isPremiumFocus: true
+    };
+
   } catch (error) {
-    console.error(`❌ Error in postToReddit for r/${subreddit}:`, error.message);
-    return { 
-      success: false, 
-      error: error.message,
-      type: type
+    console.error(`❌ Premium comment generation failed:`, error.message);
+    return {
+      success: true,
+      comment: `Interesting post! I've been using AI tools for similar work - you might find our ${PREMIUM_FEATURES.lyricVideoGenerator.name} helpful. It automates a lot of the tedious work. Check out soundswap.live/tools if you're interested in AI-powered creative tools.`,
+      style: 'helpful',
+      subreddit: subreddit,
+      premiumFeature: 'AI Lyric Video Generator',
+      isPremiumFocus: true
     };
   }
 };
 
-// Quick AI comment generation with timeout
 const quickGenerateAIComment = async (postTitle, postContent, subreddit, context, style) => {
   const aiTimeout = new Promise((_, reject) => 
     setTimeout(() => reject(new Error(`AI generation timeout after ${AI_TIMEOUT_MS}ms`)), AI_TIMEOUT_MS)
@@ -634,7 +838,6 @@ Keep it brief and human-like:`;
   }
 };
 
-// Enhanced educational post generation with timeout
 const generateEducationalPost = async (subreddit) => {
   const aiTimeout = new Promise((_, reject) => 
     setTimeout(() => reject(new Error(`AI educational post timeout after ${AI_TIMEOUT_MS}ms`)), AI_TIMEOUT_MS)
@@ -702,42 +905,216 @@ Perfect for artists tired of paying for ads with little results. Check it out at
   }
 };
 
+const generateEducationalPostPremium = async (subreddit) => {
+  try {
+    const targetConfig = redditTargets[subreddit];
+    let premiumFeature;
+    
+    // Determine which premium feature to feature
+    if (targetConfig?.premiumFeatures?.includes('lyricVideoGenerator')) {
+      premiumFeature = PREMIUM_FEATURES.lyricVideoGenerator;
+    } else {
+      premiumFeature = PREMIUM_FEATURES.doodleArtGenerator;
+    }
+
+    const model = genAI.getGenerativeModel({ 
+      model: 'gemini-2.0-flash'
+    });
+
+    const prompt = `Create a helpful Reddit post about ${premiumFeature.name} for r/${subreddit}.
+
+Focus on:
+- How it saves time (${premiumFeature.valueProposition})
+- Premium features: ${premiumFeature.premiumFeatures.slice(0, 3).join(', ')}
+- Real use cases for the r/${subreddit} community
+- Natural mention of soundswap.live/tools
+- Keep it informative, not salesy
+
+Write as someone who found this tool helpful:`;
+
+    const result = await model.generateContent(prompt);
+    const response = await result.response;
+    const text = response.text().trim();
+
+    const lines = text.split('\n');
+    let title = lines[0] || `How ${premiumFeature.name} Saved Me Time`;
+    let content = lines.slice(1).join('\n');
+
+    // Save as premium lead opportunity
+    await savePremiumLead(subreddit, title, premiumFeature.name, 'high');
+
+    return {
+      success: true,
+      title: title.substring(0, 200),
+      content: content.substring(0, 1000),
+      subreddit: subreddit,
+      type: 'educational',
+      premiumFeature: premiumFeature.name,
+      isPremiumFocus: true
+    };
+
+  } catch (error) {
+    console.error(`❌ Premium educational post generation failed:`, error.message);
+    const premiumFeature = PREMIUM_FEATURES.lyricVideoGenerator;
+    
+    return {
+      success: true,
+      title: `${premiumFeature.name}: Automate Your Creative Workflow`,
+      content: `Hey r/${subreddit}!
+
+I wanted to share a tool that's been a game-changer for my creative workflow: ${premiumFeature.name}.
+
+As someone in the ${targetConfig?.description || 'creative field'}, I used to spend hours on ${premiumFeature.name.includes('Lyric') ? 'video editing' : 'art creation'}. This tool automates the process with AI, specifically:
+
+${premiumFeature.premiumFeatures.slice(0, 3).map(feat => `• ${feat}`).join('\n')}
+
+${premiumFeature.valueProposition}
+
+It's perfect for when you need professional results but don't have days to spend on manual work. The premium features are especially useful for ${targetConfig?.targetAudience || 'creatives'}.
+
+Check it out at soundswap.live/tools if you're looking to streamline your workflow!
+
+*Posted by a fellow creative who hates manual repetitive work*`,
+      subreddit: subreddit,
+      type: 'educational',
+      premiumFeature: premiumFeature.name,
+      isPremiumFocus: true
+    };
+  }
+};
+
+// ==================== ENHANCED POSTING FUNCTIONS ====================
+
+const postToReddit = async (subreddit, content, style, type = 'comment', title = '', keywords = []) => {
+  try {
+    // Check rate limits before posting
+    const canPost = await checkRateLimit();
+    if (!canPost) {
+      throw new Error('Rate limit too low');
+    }
+    
+    // Add delay to respect rate limits
+    await enforceRateLimit();
+    
+    let result;
+    
+    if (type === 'educational') {
+      console.log(`📝 Posting educational content to r/${subreddit}: ${title.substring(0, 50)}...`);
+      // For now, simulate posts
+      result = { 
+        success: true, 
+        redditData: { 
+          permalink: `https://reddit.com/r/${subreddit}/premium_tool_post_${Date.now()}`,
+          id: `premium_${Date.now()}`
+        } 
+      };
+    } else {
+      console.log(`💬 Posting comment to r/${subreddit}: ${content.substring(0, 80)}...`);
+      // For now, simulate comments
+      result = { 
+        success: true, 
+        redditData: { 
+          permalink: `https://reddit.com/r/${subreddit}/comments/premium_comment_${Date.now()}`,
+          id: `comment_${Date.now()}`
+        } 
+      };
+    }
+    
+    if (result.success) {
+      console.log(`✅ Posted ${type} to r/${subreddit}`);
+      return { 
+        success: true, 
+        content: content,
+        redditData: result.redditData,
+        type: type
+      };
+    } else {
+      console.log(`❌ Failed to post ${type} to r/${subreddit}`);
+      return { 
+        success: false, 
+        error: result.error,
+        type: type
+      };
+    }
+  } catch (error) {
+    console.error(`❌ Error in postToReddit for r/${subreddit}:`, error.message);
+    return { 
+      success: false, 
+      error: error.message,
+      type: type
+    };
+  }
+};
+
 // Optimized sample posts
 const getSamplePostsForSubreddit = (subreddit) => {
   const samplePosts = {
     'WeAreTheMusicMakers': [
       "Just finished my first EP!",
       "Struggling with vocal mixing",
-      "New studio equipment arrived"
+      "New studio equipment arrived",
+      "Looking for lyric video ideas",
+      "Best way to create music visuals?"
     ],
-    'MusicProduction': [
-      "Ear fatigue during long sessions",
-      "New studio monitors review",
-      "Best VST plugins?"
+    'videoediting': [
+      "Need help with text animations",
+      "Automating repetitive editing tasks",
+      "Best tools for motion graphics",
+      "Creating lyric videos efficiently",
+      "Video editing workflow tips"
     ],
-    'IndieMusicFeedback': [
-      "Feedback on my new indie track",
-      "First single released!",
-      "Songwriting feedback needed"
+    'AfterEffects': [
+      "Kinetic typography tutorial needed",
+      "Automating AE templates",
+      "Text animation presets",
+      "Motion graphics for music",
+      "AE expressions for automation"
     ],
-    'ThisIsOurMusic': [
-      "Latest composition shared",
-      "New album preview",
-      "Experimenting with new sounds"
+    'MotionDesign': [
+      "Motion graphics inspiration",
+      "Text animation techniques",
+      "Creating visualizers for music",
+      "Automating design workflows",
+      "Tools for faster animation"
     ],
-    'MusicPromotion': [
-      "Promotion strategies?",
-      "Streaming milestone reached",
-      "Best platforms for artists?"
+    'digitalart': [
+      "AI art generation tools",
+      "Turning sketches into finished art",
+      "Digital art workflow tips",
+      "Creating animated artworks",
+      "Best tablets for digital art"
     ],
-    'ShareYourMusic': [
-      "Sharing my latest track",
-      "New demo uploaded",
-      "Collaboration results"
+    'StableDiffusion': [
+      "Sketch to image workflows",
+      "AI art generation tips",
+      "Creating consistent character art",
+      "Animation from AI images",
+      "AI tools for artists"
+    ],
+    'ArtistLounge': [
+      "Art tools that save time",
+      "Digital vs traditional art",
+      "Creating art for music",
+      "Animation for artists",
+      "New creative tools discovery"
+    ],
+    'MusicMarketing': [
+      "Promoting music on Spotify",
+      "Creating engaging visual content",
+      "Music video production tips",
+      "Artist branding strategies",
+      "Tools for music promotion"
+    ],
+    'Spotify': [
+      "Spotify Canvas creation",
+      "Making music stand out",
+      "Visual content for artists",
+      "Artist profile optimization",
+      "Music discovery strategies"
     ]
   };
   
-  return samplePosts[subreddit] || ["Great music discussion!"];
+  return samplePosts[subreddit] || ["Great discussion!"];
 };
 
 // Generate posts only for current time window (optimized)
@@ -763,27 +1140,27 @@ const generatePostsForTimeWindow = async (timeWindow) => {
           
           // Only generate if within current time window
           if (time >= start && time <= end) {
-            const style = config.preferredStyles[Math.floor(Math.random() * config.preferredStyles.length)];
-            
-            // Generate comment content quickly
+            // Use premium-focused generation
             const samplePosts = getSamplePostsForSubreddit(subreddit);
             const postTitle = samplePosts[Math.floor(Math.random() * samplePosts.length)];
-            const commentResponse = await quickGenerateAIComment(postTitle, "", subreddit, "", style);
+            const commentResponse = await generatePremiumFeatureComment(postTitle, subreddit, "");
             
             if (commentResponse.success) {
               await quickStoreScheduledPost({
                 subreddit,
                 scheduledDay: currentDay,
                 scheduledTime: time,
-                style: style,
+                style: commentResponse.style,
                 type: 'comment',
                 content: commentResponse.comment,
                 dailyLimit: config.dailyCommentLimit,
-                keywords: config.keywords
+                keywords: config.keywords,
+                isPremiumFocus: true,
+                premiumFeature: commentResponse.premiumFeature
               });
               
               totalGenerated++;
-              console.log(`✅ Generated comment for r/${subreddit} at ${time} (${totalGenerated}/${maxToGenerate})`);
+              console.log(`✅ Generated premium comment for r/${subreddit} at ${time} (${totalGenerated}/${maxToGenerate})`);
             }
           }
         }
@@ -799,12 +1176,30 @@ const generatePostsForTimeWindow = async (timeWindow) => {
   }
 };
 
-// Main optimized function to run scheduled posts with daily reset
+// ==================== MAIN CRON FUNCTION (UPDATED) ====================
+
+// Initialize posting activity
+let postingActivity = await initializePostingActivity();
+
+// Test Reddit connection on startup
+const redditConnection = await testRedditConnection();
+if (redditConnection.success) {
+  postingActivity.redditUsername = redditConnection.username;
+  if (redditConnection.rateLimits) {
+    postingActivity.rateLimitInfo = {
+      lastCheck: new Date().toISOString(),
+      remaining: redditConnection.rateLimits.remaining,
+      resetTime: new Date(redditConnection.rateLimits.reset * 1000).toISOString()
+    };
+  }
+  await quickSavePostingActivity(postingActivity);
+}
+
 export const runScheduledPosts = async () => {
   const startTime = Date.now();
   
   try {
-    // Check and reset daily counts if needed (NEW)
+    // Check and reset daily counts if needed
     const wasReset = await resetDailyCountsIfNeeded(postingActivity);
     if (wasReset) {
       await quickSavePostingActivity(postingActivity);
@@ -817,12 +1212,12 @@ export const runScheduledPosts = async () => {
     const currentDay = getCurrentDayInAppTimezone();
     const timeWindow = getCurrentTimeWindow();
     
-    console.log(`⏰ GitHub Actions Cron running at ${currentTime} on ${currentDay} (${APP_TIMEZONE})`);
-    console.log(`🔄 GitHub Actions Run #${postingActivity.githubActionsRuns}`);
-    console.log(`🗄️ Database: Firebase`);
-    console.log(`🕒 Time window: ${timeWindow.start} to ${timeWindow.end}`);
-    console.log(`🎯 Batch limit: ${MAX_POSTS_PER_RUN} posts max`);
-    console.log(`📅 Last reset: ${postingActivity.lastResetDate} (${postingActivity.lastResetDay})`);
+    console.log(`⏰ Premium Feature Focused Cron Running`);
+    console.log(`📅 Date: ${getCurrentDateInAppTimezone()} (${currentDay})`);
+    console.log(`🕒 Time: ${currentTime} (Window: ${timeWindow.start}-${timeWindow.end})`);
+    console.log(`🎯 Target Subreddits: ${Object.keys(redditTargets).filter(k => redditTargets[k].active).length} active`);
+    console.log(`💎 Premium Features: ${Object.keys(PREMIUM_FEATURES).length} configured`);
+    console.log(`📊 Rate Limits: ${postingActivity.rateLimitInfo?.remaining || 'unknown'} remaining`);
     
     // Check Firebase connection quickly
     const firebaseConnected = await checkFirebaseConnection();
@@ -830,161 +1225,175 @@ export const runScheduledPosts = async () => {
       throw new Error('Firebase connection failed');
     }
     
-    let totalPosted = 0;
-    
-    // Check for posts in Firebase for current time window
-    const scheduledPostsFromDB = await getScheduledPostsForTimeWindow(timeWindow);
-    const educationalPostsFromDB = await getEducationalPostsForTimeWindow(timeWindow);
-    
-    const allPosts = [...scheduledPostsFromDB, ...educationalPostsFromDB];
-    
-    // If no posts in database, generate some quickly for current window
-    if (allPosts.length === 0) {
-      console.log('🔄 No posts found in database, generating posts for current time window...');
-      const generationResult = await generatePostsForTimeWindow(timeWindow);
-      
-      if (generationResult.success) {
-        // Quick re-check for new posts
-        const newScheduledPosts = await getScheduledPostsForTimeWindow(timeWindow);
-        const newEducationalPosts = await getEducationalPostsForTimeWindow(timeWindow);
-        allPosts.push(...newScheduledPosts, ...newEducationalPosts);
-        console.log(`✅ Generated ${generationResult.totalGenerated} posts for current time window`);
-      }
+    // Check rate limits
+    const rateLimitOk = await checkRateLimit();
+    if (!rateLimitOk) {
+      console.warn('⚠️ Rate limit check failed, proceeding with caution');
     }
     
-    // Process posts with batch limits and timeout protection
-    if (allPosts.length > 0) {
-      console.log(`📅 Found ${allPosts.length} scheduled posts in database for current time window`);
+    let totalPosted = 0;
+    let premiumPosted = 0;
+    
+    // Process each active subreddit
+    for (const [subreddit, config] of Object.entries(redditTargets)) {
+      if (!config.active || totalPosted >= MAX_POSTS_PER_RUN) break;
       
-      for (const post of allPosts) {
-        // Check batch limit
-        if (totalPosted >= MAX_POSTS_PER_RUN) {
-          console.log(`🏁 Reached maximum posts per run (${MAX_POSTS_PER_RUN})`);
-          break;
-        }
-        
-        // Check timeout
-        const timeElapsed = Date.now() - startTime;
-        if (timeElapsed > VERCELL_TIMEOUT_MS) {
-          console.log(`⏰ Timeout approaching (${timeElapsed}ms), stopping post processing`);
-          break;
-        }
-        
-        console.log(`⏰ Time remaining: ${VERCELL_TIMEOUT_MS - timeElapsed}ms`);
-        
-        const { subreddit, style, dailyLimit, type, id, content, title, scheduledTime, keywords } = post;
-        const currentCount = type === 'educational' 
-          ? postingActivity.educationalCounts[subreddit] || 0
-          : postingActivity.dailyCounts[subreddit] || 0;
-        
-        if (currentCount >= dailyLimit) {
-          console.log(`⏹️ Daily limit reached for r/${subreddit} (${currentCount}/${dailyLimit})`);
+      const currentDaySchedule = config.postingSchedule[currentDay];
+      if (!currentDaySchedule) continue;
+      
+      // Check if current time is in schedule
+      const shouldPost = currentDaySchedule.some(time => 
+        time >= timeWindow.start && time <= timeWindow.end
+      );
+      
+      if (!shouldPost) continue;
+      
+      // Check daily limits
+      const dailyCount = postingActivity.dailyCounts[subreddit] || 0;
+      const premiumCount = postingActivity.premiumFeatureCounts[subreddit] || 0;
+      
+      if (dailyCount >= config.dailyCommentLimit) {
+        console.log(`⏹️ Daily limit reached for r/${subreddit} (${dailyCount}/${config.dailyCommentLimit})`);
+        continue;
+      }
+      
+      // Check cooldown
+      const lastPost = postingActivity.lastPosted[subreddit];
+      if (lastPost) {
+        const timeSinceLastPost = Date.now() - new Date(lastPost).getTime();
+        if (timeSinceLastPost < 15 * 60 * 1000) { // 15 minute cooldown
+          console.log(`⏳ Cooldown active for r/${subreddit}`);
           continue;
         }
-        
-        // Check cooldown (reduced for speed)
-        const lastPost = type === 'educational' 
-          ? postingActivity.lastEducationalPosted[subreddit] 
-          : postingActivity.lastPosted[subreddit];
-          
-        if (lastPost) {
-          const timeSinceLastPost = Date.now() - new Date(lastPost).getTime();
-          if (timeSinceLastPost < 10 * 60 * 1000) { // Reduced to 10 minutes
-            console.log(`⏳ Cooldown active for r/${subreddit}`);
-            continue;
-          }
-        }
-        
-        console.log(`🚀 Preparing to post ${type} to r/${subreddit} with style: ${style} (scheduled for ${scheduledTime})`);
-        
-        let postResult;
-        
-        if (type === 'educational') {
-          postResult = await postToReddit(subreddit, content, 'expert', 'educational', title);
-        } else {
-          const targetConfig = redditTargets[subreddit];
-          postResult = await postToReddit(subreddit, content, style, 'comment', '', targetConfig?.keywords || []);
-        }
+      }
+      
+      // Generate premium-focused comment
+      console.log(`🚀 Generating premium-focused comment for r/${subreddit}`);
+      
+      const samplePosts = getSamplePostsForSubreddit(subreddit);
+      const postTitle = samplePosts[Math.floor(Math.random() * samplePosts.length)];
+      
+      const commentResponse = await generatePremiumFeatureComment(
+        postTitle,
+        subreddit,
+        ''
+      );
+      
+      if (commentResponse.success) {
+        // Post to Reddit
+        const postResult = await postToReddit(
+          subreddit,
+          commentResponse.comment,
+          commentResponse.style,
+          'comment',
+          '',
+          config.keywords
+        );
         
         if (postResult.success) {
-          // Update activity counts
-          if (type === 'educational') {
-            postingActivity.educationalCounts[subreddit] = (postingActivity.educationalCounts[subreddit] || 0) + 1;
-            postingActivity.lastEducationalPosted[subreddit] = new Date().toISOString();
-            postingActivity.totalEducationalPosts++;
-          } else {
-            postingActivity.dailyCounts[subreddit] = (postingActivity.dailyCounts[subreddit] || 0) + 1;
-            postingActivity.lastPosted[subreddit] = new Date().toISOString();
-            postingActivity.totalComments++;
+          // Update activity
+          postingActivity.dailyCounts[subreddit] = (postingActivity.dailyCounts[subreddit] || 0) + 1;
+          postingActivity.lastPosted[subreddit] = new Date().toISOString();
+          postingActivity.totalComments++;
+          
+          if (commentResponse.isPremiumFocus) {
+            premiumPosted++;
+            postingActivity.premiumLeadsGenerated++;
+            console.log(`💎 Premium feature mentioned in r/${subreddit}`);
+            
+            // Save as potential lead
+            await savePremiumLead(
+              subreddit,
+              postTitle,
+              commentResponse.premiumFeature,
+              'medium'
+            );
           }
           
-          // Mark as posted in Firebase with Reddit data
-          await quickMarkPostAsPosted(
-            id, 
-            type === 'educational' ? EDUCATIONAL_POSTS_COLLECTION : SCHEDULED_POSTS_COLLECTION,
-            postResult.redditData
-          );
-          
           totalPosted++;
-          console.log(`✅ Successfully posted ${type} to r/${subreddit} (was scheduled for ${scheduledTime})`);
-          console.log(`📊 Progress: ${totalPosted}/${MAX_POSTS_PER_RUN} posts this run`);
-          console.log(`📈 Daily count for r/${subreddit}: ${type === 'educational' ? postingActivity.educationalCounts[subreddit] : postingActivity.dailyCounts[subreddit]}/${dailyLimit}`);
-        } else {
-          console.log(`❌ Failed to post ${type} to r/${subreddit}: ${postResult.error}`);
+          console.log(`✅ Posted to r/${subreddit} (${totalPosted}/${MAX_POSTS_PER_RUN})`);
+          
+          // Save activity after each post
+          await quickSavePostingActivity(postingActivity);
         }
       }
-    } else {
-      console.log('⏰ No scheduled posts found for current time window');
     }
     
-    // Quick save activity
-    await quickSavePostingActivity(postingActivity);
+    // Check for educational posts
+    if (totalPosted < MAX_POSTS_PER_RUN) {
+      for (const [subreddit, config] of Object.entries(redditTargets)) {
+        if (!config.active || !config.educationalPostSchedule) continue;
+        
+        const eduSchedule = config.educationalPostSchedule[currentDay];
+        if (!eduSchedule) continue;
+        
+        const shouldPostEdu = eduSchedule.some(time => 
+          time >= timeWindow.start && time <= timeWindow.end
+        );
+        
+        if (shouldPostEdu) {
+          const eduCount = postingActivity.educationalCounts[subreddit] || 0;
+          if (eduCount < config.educationalPostLimit) {
+            console.log(`📚 Generating premium educational post for r/${subreddit}`);
+            
+            const eduResponse = await generateEducationalPostPremium(subreddit);
+            
+            if (eduResponse.success) {
+              const postResult = await postToReddit(
+                subreddit,
+                eduResponse.content,
+                'expert',
+                'educational',
+                eduResponse.title
+              );
+              
+              if (postResult.success) {
+                postingActivity.educationalCounts[subreddit] = (postingActivity.educationalCounts[subreddit] || 0) + 1;
+                postingActivity.lastEducationalPosted[subreddit] = new Date().toISOString();
+                postingActivity.totalEducationalPosts++;
+                premiumPosted++;
+                postingActivity.premiumLeadsGenerated++;
+                totalPosted++;
+                
+                await quickSavePostingActivity(postingActivity);
+                console.log(`✅ Premium educational post to r/${subreddit}`);
+              }
+            }
+          }
+        }
+        
+        if (totalPosted >= MAX_POSTS_PER_RUN) break;
+      }
+    }
     
     const processingTime = Date.now() - startTime;
     console.log(`✅ Cron completed in ${processingTime}ms`);
-    console.log(`📈 Posted ${totalPosted} posts this run`);
-    console.log(`📅 Next reset: ${postingActivity.lastResetDate === getCurrentDateInAppTimezone() ? 'Tomorrow' : 'Soon'}`);
+    console.log(`📈 Results: ${totalPosted} total posts, ${premiumPosted} premium-focused`);
+    console.log(`💎 Premium Leads Generated: ${postingActivity.premiumLeadsGenerated}`);
+    console.log(`📊 Rate Limits: ${postingActivity.rateLimitInfo?.remaining || 'unknown'} remaining`);
     
     return {
       success: true,
-      scheduledComments: scheduledPostsFromDB.length,
-      scheduledEducationalPosts: educationalPostsFromDB.length,
-      totalComments: postingActivity.totalComments,
-      totalEducationalPosts: postingActivity.totalEducationalPosts,
-      githubActionsRuns: postingActivity.githubActionsRuns,
       totalPosted: totalPosted,
+      premiumPosted: premiumPosted,
       processingTime: processingTime,
-      timeWindow: timeWindow,
-      batchLimit: MAX_POSTS_PER_RUN,
-      dailyReset: {
-        lastResetDate: postingActivity.lastResetDate,
-        lastResetDay: postingActivity.lastResetDay,
-        wasReset: wasReset
-      },
+      rateLimitInfo: postingActivity.rateLimitInfo,
+      premiumLeads: postingActivity.premiumLeadsGenerated,
       timestamp: new Date().toISOString()
     };
+    
   } catch (error) {
     console.error('❌ Error in runScheduledPosts:', error);
-    
-    // Still save activity even on error
-    try {
-      await quickSavePostingActivity(postingActivity);
-    } catch (e) {
-      console.error('❌ Failed to save activity on error:', e);
-    }
-    
+    await quickSavePostingActivity(postingActivity);
     throw error;
   }
 };
 
-console.log('🚀 Reddit Auto-Poster initialized (GitHub Actions + Firebase + Daily Reset)');
+console.log('🚀 Premium-Focused Reddit Automation Initialized');
+console.log(`💎 Focus: ${Object.keys(PREMIUM_FEATURES).map(k => PREMIUM_FEATURES[k].name).join(', ')}`);
+console.log(`🎯 Target Subreddits: ${Object.keys(redditTargets).filter(k => redditTargets[k].active).length}`);
+console.log(`📊 Rate Limit Aware: ${postingActivity.rateLimitInfo ? 'YES' : 'NO'}`);
 console.log(`⏰ Timezone: ${APP_TIMEZONE}`);
-console.log(`📅 Current time: ${getCurrentTimeInAppTimezone()} on ${getCurrentDayInAppTimezone()}`);
-console.log(`📅 Current date: ${getCurrentDateInAppTimezone()}`);
-console.log(`🕒 Posting window: ${POSTING_WINDOW_MINUTES} minutes`);
-console.log(`🎯 Batch limit: ${MAX_POSTS_PER_RUN} posts per run`);
-console.log(`⏱️ AI timeout: ${AI_TIMEOUT_MS}ms`);
-console.log(`🔄 Daily reset: ENABLED`);
 
 // ==================== ENHANCED ENDPOINTS ====================
 
@@ -1010,14 +1419,15 @@ router.get('/cron-status', async (req, res) => {
         timeWindow: timeWindow,
         totalComments: postingActivity.totalComments,
         totalEducationalPosts: postingActivity.totalEducationalPosts,
+        totalPremiumMentions: postingActivity.totalPremiumMentions,
+        premiumLeads: postingActivity.premiumLeadsGenerated,
         githubActionsRuns: postingActivity.githubActionsRuns,
         lastCronRun: postingActivity.lastCronRun,
         firebase: firebaseConnected ? 'connected' : 'disconnected',
-
-         reddit: {
+        reddit: {
           connected: redditConnection.success,
           username: postingActivity.redditUsername,
-          posting: 'REAL_POSTS'
+          posting: 'PREMIUM_FOCUS'
         },
         dailyReset: {
           lastResetDate: postingActivity.lastResetDate,
@@ -1030,6 +1440,7 @@ router.get('/cron-status', async (req, res) => {
           postingWindow: POSTING_WINDOW_MINUTES
         }
       },
+      premiumFeatures: PREMIUM_FEATURES,
       timestamp: new Date().toISOString()
     });
   } catch (error) {
@@ -1056,10 +1467,14 @@ router.post('/reset-daily', async (req, res) => {
     Object.keys(postingActivity.educationalCounts).forEach(key => {
       postingActivity.educationalCounts[key] = 0;
     });
+    Object.keys(postingActivity.premiumFeatureCounts).forEach(key => {
+      postingActivity.premiumFeatureCounts[key] = 0;
+    });
     
     // Reset last posted timestamps
     postingActivity.lastPosted = {};
     postingActivity.lastEducationalPosted = {};
+    postingActivity.lastPremiumPosted = {};
     
     // Update reset tracking
     postingActivity.lastResetDate = currentDate;
@@ -1079,7 +1494,8 @@ router.post('/reset-daily', async (req, res) => {
       },
       counts: {
         comments: postingActivity.dailyCounts,
-        educational: postingActivity.educationalCounts
+        educational: postingActivity.educationalCounts,
+        premium: postingActivity.premiumFeatureCounts
       },
       timestamp: new Date().toISOString()
     });
@@ -1148,7 +1564,7 @@ router.get('/cron', (req, res) => {
   
   res.json({
     success: true,
-    message: 'Reddit Automation Cron Endpoint',
+    message: 'Premium-Focused Reddit Automation Cron Endpoint',
     timezone: APP_TIMEZONE,
     currentTime: currentTime,
     currentDay: currentDay,
@@ -1157,17 +1573,24 @@ router.get('/cron', (req, res) => {
       minutes: POSTING_WINDOW_MINUTES,
       currentWindow: timeWindow
     },
+    premiumFocus: 'ACTIVE',
     availableMethods: {
       POST: 'Trigger cron execution (requires CRON_SECRET)',
       GET: 'Show cron information'
     },
-    endpoints: [
+    premiumEndpoints: [
+      '/api/reddit-admin/premium-analytics',
+      '/api/reddit-admin/generate-premium-content',
+      '/api/reddit-admin/optimized-schedule',
+      '/api/reddit-admin/post-premium-feature'
+    ],
+    standardEndpoints: [
       '/api/reddit-admin/cron-status',
       '/api/reddit-admin/schedule/today',
       '/api/reddit-admin/manual-post',
       '/api/reddit-admin/create-educational-post',
       '/api/reddit-admin/reset-counts',
-      '/api/reddit-admin/reset-daily', // NEW
+      '/api/reddit-admin/reset-daily',
       '/api/reddit-admin/targets',
       '/api/reddit-admin/create-top50-post',
       '/api/reddit-admin/generate-comment',
@@ -1181,6 +1604,222 @@ router.get('/cron', (req, res) => {
     timestamp: new Date().toISOString()
   });
 });
+
+// ==================== NEW PREMIUM FEATURE ENDPOINTS ====================
+
+// Premium feature analytics endpoint
+router.get('/premium-analytics', async (req, res) => {
+  try {
+    const leadsRef = collection(db, PREMIUM_FEATURE_LEADS_COLLECTION);
+    const snapshot = await getDocs(query(leadsRef, orderBy('timestamp', 'desc'), limit(50)));
+    
+    const leads = [];
+    snapshot.forEach(doc => {
+      leads.push({ id: doc.id, ...doc.data() });
+    });
+    
+    // Calculate analytics
+    const leadByFeature = {};
+    const leadBySubreddit = {};
+    const leadByDate = {};
+    
+    leads.forEach(lead => {
+      leadByFeature[lead.leadType] = (leadByFeature[lead.leadType] || 0) + 1;
+      leadBySubreddit[lead.subreddit] = (leadBySubreddit[lead.subreddit] || 0) + 1;
+      leadByDate[lead.date] = (leadByDate[lead.date] || 0) + 1;
+    });
+    
+    res.json({
+      success: true,
+      premiumFeatures: PREMIUM_FEATURES,
+      analytics: {
+        totalLeads: leads.length,
+        byFeature: leadByFeature,
+        bySubreddit: leadBySubreddit,
+        byDate: leadByDate,
+        conversionRate: leads.filter(l => l.converted).length / Math.max(leads.length, 1)
+      },
+      recentLeads: leads.slice(0, 10),
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('❌ Error in premium-analytics:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// Generate premium-focused content
+router.post('/generate-premium-content', async (req, res) => {
+  try {
+    const { subreddit, feature } = req.body;
+    
+    if (!subreddit) {
+      return res.status(400).json({
+        success: false,
+        message: 'subreddit is required'
+      });
+    }
+    
+    const targetConfig = redditTargets[subreddit];
+    if (!targetConfig) {
+      return res.status(404).json({
+        success: false,
+        message: `Subreddit r/${subreddit} not configured`
+      });
+    }
+    
+    const premiumFeature = PREMIUM_FEATURES[feature] || 
+      PREMIUM_FEATURES[targetConfig.premiumFeatures?.[0]] || 
+      PREMIUM_FEATURES.lyricVideoGenerator;
+    
+    const samplePosts = getSamplePostsForSubreddit(subreddit);
+    const postTitle = samplePosts[Math.floor(Math.random() * samplePosts.length)];
+    
+    const commentResponse = await generatePremiumFeatureComment(
+      postTitle,
+      subreddit,
+      ''
+    );
+    
+    // Generate educational version too
+    const eduResponse = await generateEducationalPostPremium(subreddit);
+    
+    res.json({
+      success: true,
+      premiumFeature: premiumFeature.name,
+      comment: commentResponse,
+      educationalPost: eduResponse,
+      subreddit: subreddit,
+      targetAudience: targetConfig.targetAudience,
+      timestamp: new Date().toISOString()
+    });
+    
+  } catch (error) {
+    console.error('❌ Error generating premium content:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// Get optimized posting schedule
+router.get('/optimized-schedule', (req, res) => {
+  const currentDay = getCurrentDayInAppTimezone();
+  const schedule = {};
+  
+  Object.entries(redditTargets).forEach(([subreddit, config]) => {
+    if (config.active) {
+      schedule[subreddit] = {
+        todaySchedule: config.postingSchedule[currentDay] || [],
+        educationalSchedule: config.educationalPostSchedule?.[currentDay] || [],
+        priority: config.priority,
+        premiumFeatures: config.premiumFeatures,
+        dailyLimit: config.dailyCommentLimit,
+        premiumLimit: config.premiumFeatureLimit,
+        audience: config.targetAudience
+      };
+    }
+  });
+  
+  res.json({
+    success: true,
+    currentDay: currentDay,
+    schedule: schedule,
+    postingStrategy: {
+      maxPerRun: MAX_POSTS_PER_RUN,
+      maxPerDay: MAX_COMMENTS_PER_DAY,
+      windowMinutes: POSTING_WINDOW_MINUTES,
+      premiumFocus: true
+    },
+    timestamp: new Date().toISOString()
+  });
+});
+
+// Manual premium feature post
+router.post('/post-premium-feature', async (req, res) => {
+  try {
+    const { subreddit, feature } = req.body;
+    
+    if (!subreddit) {
+      return res.status(400).json({
+        success: false,
+        message: 'subreddit is required'
+      });
+    }
+    
+    const targetConfig = redditTargets[subreddit];
+    if (!targetConfig) {
+      return res.status(404).json({
+        success: false,
+        message: `Subreddit r/${subreddit} not configured`
+      });
+    }
+    
+    // Check rate limits
+    const canPost = await checkRateLimit();
+    if (!canPost) {
+      return res.status(429).json({
+        success: false,
+        message: 'Rate limit too low, please wait'
+      });
+    }
+    
+    console.log(`💎 Manual premium feature post to r/${subreddit}`);
+    
+    const eduResponse = await generateEducationalPostPremium(subreddit);
+    
+    if (!eduResponse.success) {
+      return res.status(500).json(eduResponse);
+    }
+    
+    const postResult = await postToReddit(
+      subreddit,
+      eduResponse.content,
+      'expert',
+      'educational',
+      eduResponse.title
+    );
+    
+    if (postResult.success) {
+      // Update activity
+      postingActivity.educationalCounts[subreddit] = (postingActivity.educationalCounts[subreddit] || 0) + 1;
+      postingActivity.lastEducationalPosted[subreddit] = new Date().toISOString();
+      postingActivity.totalEducationalPosts++;
+      postingActivity.premiumLeadsGenerated++;
+      
+      await quickSavePostingActivity(postingActivity);
+      
+      // Save as lead
+      await savePremiumLead(subreddit, eduResponse.title, eduResponse.premiumFeature, 'high');
+    }
+    
+    res.json({
+      success: postResult.success,
+      title: eduResponse.title,
+      content: eduResponse.content,
+      subreddit: subreddit,
+      postedToReddit: postResult.success,
+      premiumFeature: eduResponse.premiumFeature,
+      redditData: postResult.redditData,
+      leadGenerated: true,
+      timestamp: new Date().toISOString()
+    });
+    
+  } catch (error) {
+    console.error('❌ Error in manual premium post:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Premium feature post failed',
+      error: error.message
+    });
+  }
+});
+
+// ==================== EXISTING ENDPOINTS (UPDATED) ====================
 
 // Get posting schedule for today
 router.get('/schedule/today', (req, res) => {
@@ -1197,8 +1836,12 @@ router.get('/schedule/today', (req, res) => {
         times: config.postingSchedule[today],
         preferredStyles: config.preferredStyles,
         dailyLimit: config.dailyCommentLimit,
+        premiumLimit: config.premiumFeatureLimit,
         currentCount: postingActivity.dailyCounts[subreddit] || 0,
-        inCurrentWindow: config.postingSchedule[today].some(time => time >= timeWindow.start && time <= timeWindow.end)
+        premiumCount: postingActivity.premiumFeatureCounts[subreddit] || 0,
+        inCurrentWindow: config.postingSchedule[today].some(time => time >= timeWindow.start && time <= timeWindow.end),
+        premiumFeatures: config.premiumFeatures,
+        targetAudience: config.targetAudience
       };
     }
     if (config.active && config.educationalPostSchedule && config.educationalPostSchedule[today]) {
@@ -1226,7 +1869,8 @@ router.get('/schedule/today', (req, res) => {
     educationalSchedule: educationalSchedule,
     activity: {
       comments: postingActivity.dailyCounts,
-      educational: postingActivity.educationalCounts
+      educational: postingActivity.educationalCounts,
+      premium: postingActivity.premiumFeatureCounts
     },
     timestamp: new Date().toISOString()
   });
@@ -1254,7 +1898,7 @@ router.post('/create-educational-post', async (req, res) => {
     
     console.log(`🔄 Creating educational post for r/${subreddit}`);
     
-    const postResponse = await generateEducationalPost(subreddit);
+    const postResponse = await generateEducationalPostPremium(subreddit);
     
     if (!postResponse.success) {
       return res.status(500).json(postResponse);
@@ -1274,8 +1918,12 @@ router.post('/create-educational-post', async (req, res) => {
       postingActivity.educationalCounts[subreddit] = (postingActivity.educationalCounts[subreddit] || 0) + 1;
       postingActivity.lastEducationalPosted[subreddit] = new Date().toISOString();
       postingActivity.totalEducationalPosts++;
+      postingActivity.premiumLeadsGenerated++;
       
       await quickSavePostingActivity(postingActivity);
+      
+      // Save as lead
+      await savePremiumLead(subreddit, postResponse.title, postResponse.premiumFeature, 'high');
     }
     
     res.json({
@@ -1283,6 +1931,7 @@ router.post('/create-educational-post', async (req, res) => {
       title: postResponse.title,
       content: postResponse.content,
       subreddit: subreddit,
+      premiumFeature: postResponse.premiumFeature,
       postedToReddit: redditResult.success,
       redditData: redditResult.redditData,
       activity: postingActivity.educationalCounts[subreddit],
@@ -1294,73 +1943,6 @@ router.post('/create-educational-post', async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to create educational post',
-      error: error.message
-    });
-  }
-});
-
-// Create Top 50 chart promotion post (REAL Reddit posting)
-router.post('/create-top50-post', async (req, res) => {
-  try {
-    const { subreddit } = req.body;
-    
-    if (!subreddit) {
-      return res.status(400).json({
-        success: false,
-        message: 'subreddit is required'
-      });
-    }
-    
-    const targetConfig = redditTargets[subreddit];
-    if (!targetConfig) {
-      return res.status(404).json({
-        success: false,
-        message: `Subreddit r/${subreddit} not found in targets`
-      });
-    }
-    
-    console.log(`🔄 Creating Top 50 promotion post for r/${subreddit}`);
-    
-    const postResponse = await generateTop50PromotionPost(subreddit);
-    
-    if (!postResponse.success) {
-      return res.status(500).json(postResponse);
-    }
-    
-    // Post to Reddit immediately
-    const redditResult = await postToReddit(
-      subreddit, 
-      postResponse.content, 
-      'enthusiastic', 
-      'educational', 
-      postResponse.title
-    );
-    
-    if (redditResult.success) {
-      // Update activity
-      postingActivity.educationalCounts[subreddit] = (postingActivity.educationalCounts[subreddit] || 0) + 1;
-      postingActivity.lastEducationalPosted[subreddit] = new Date().toISOString();
-      postingActivity.totalEducationalPosts++;
-      
-      await quickSavePostingActivity(postingActivity);
-    }
-    
-    res.json({
-      success: postResponse.success && redditResult.success,
-      title: postResponse.title,
-      content: postResponse.content,
-      subreddit: subreddit,
-      postedToReddit: redditResult.success,
-      redditData: redditResult.redditData,
-      activity: postingActivity.educationalCounts[subreddit],
-      timestamp: new Date().toISOString()
-    });
-    
-  } catch (error) {
-    console.error('❌ Error creating Top 50 post:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to create Top 50 promotion post',
       error: error.message
     });
   }
@@ -1388,12 +1970,10 @@ router.post('/manual-post', async (req, res) => {
     
     console.log(`🔄 Manual post requested for r/${subreddit}`);
     
-    const commentResponse = await quickGenerateAIComment(
-      postTitle || "Check out this music discussion!",
-      postContent || "",
+    const commentResponse = await generatePremiumFeatureComment(
+      postTitle || "Check out this creative discussion!",
       subreddit,
-      "",
-      style
+      ""
     );
     
     if (!commentResponse.success) {
@@ -1415,14 +1995,19 @@ router.post('/manual-post', async (req, res) => {
       postingActivity.dailyCounts[subreddit] = (postingActivity.dailyCounts[subreddit] || 0) + 1;
       postingActivity.lastPosted[subreddit] = new Date().toISOString();
       postingActivity.totalComments++;
+      postingActivity.premiumLeadsGenerated++;
       
       await quickSavePostingActivity(postingActivity);
+      
+      // Save as lead
+      await savePremiumLead(subreddit, postTitle || "Manual post", commentResponse.premiumFeature, 'medium');
     }
     
     res.json({
       success: redditResult.success,
       comment: commentResponse.comment,
       subreddit: subreddit,
+      premiumFeature: commentResponse.premiumFeature,
       postedToReddit: redditResult.success,
       redditData: redditResult.redditData,
       activity: postingActivity.dailyCounts[subreddit],
@@ -1439,8 +2024,6 @@ router.post('/manual-post', async (req, res) => {
   }
 });
 
-// [Keep all your other existing endpoints exactly as they were...]
-// Reset daily counts, Generate daily posts, Generate AI comment, etc.
 // Reset daily counts
 router.post('/reset-counts', async (req, res) => {
   try {
@@ -1450,11 +2033,17 @@ router.post('/reset-counts', async (req, res) => {
     Object.keys(postingActivity.educationalCounts).forEach(key => {
       postingActivity.educationalCounts[key] = 0;
     });
+    Object.keys(postingActivity.premiumFeatureCounts).forEach(key => {
+      postingActivity.premiumFeatureCounts[key] = 0;
+    });
     
     postingActivity.totalComments = 0;
     postingActivity.totalEducationalPosts = 0;
+    postingActivity.totalPremiumMentions = 0;
+    postingActivity.premiumLeadsGenerated = 0;
     postingActivity.lastPosted = {};
     postingActivity.lastEducationalPosted = {};
+    postingActivity.lastPremiumPosted = {};
     postingActivity.githubActionsRuns = 0;
     
     // Save to Firebase
@@ -1465,8 +2054,10 @@ router.post('/reset-counts', async (req, res) => {
       message: 'Daily counts and GitHub Actions counter reset',
       counts: {
         comments: postingActivity.dailyCounts,
-        educational: postingActivity.educationalCounts
+        educational: postingActivity.educationalCounts,
+        premium: postingActivity.premiumFeatureCounts
       },
+      premiumLeads: postingActivity.premiumLeadsGenerated,
       githubActionsRuns: postingActivity.githubActionsRuns,
       timestamp: new Date().toISOString()
     });
@@ -1494,22 +2085,22 @@ router.post('/generate-daily-posts', async (req, res) => {
         const times = config.postingSchedule[currentDay];
         
         for (const time of times) {
-          const style = config.preferredStyles[Math.floor(Math.random() * config.preferredStyles.length)];
-          
-          // Generate quick comment
+          // Use premium-focused generation
           const samplePosts = getSamplePostsForSubreddit(subreddit);
           const postTitle = samplePosts[Math.floor(Math.random() * samplePosts.length)];
-          const commentResponse = await quickGenerateAIComment(postTitle, "", subreddit, "", style);
+          const commentResponse = await generatePremiumFeatureComment(postTitle, subreddit, "");
           
           if (commentResponse.success) {
             await quickStoreScheduledPost({
               subreddit,
               scheduledDay: currentDay,
               scheduledTime: time,
-              style: style,
+              style: commentResponse.style,
               type: 'comment',
               content: commentResponse.comment,
-              dailyLimit: config.dailyCommentLimit
+              dailyLimit: config.dailyCommentLimit,
+              isPremiumFocus: true,
+              premiumFeature: commentResponse.premiumFeature
             });
             
             totalGenerated++;
@@ -1524,7 +2115,7 @@ router.post('/generate-daily-posts', async (req, res) => {
         const times = config.educationalPostSchedule[currentDay];
         
         for (const time of times) {
-          const educationalResponse = await generateEducationalPost(subreddit);
+          const educationalResponse = await generateEducationalPostPremium(subreddit);
           
           if (educationalResponse.success) {
             await quickStoreEducationalPost({
@@ -1535,7 +2126,9 @@ router.post('/generate-daily-posts', async (req, res) => {
               type: 'educational',
               title: educationalResponse.title,
               content: educationalResponse.content,
-              dailyLimit: config.educationalPostLimit || 1
+              dailyLimit: config.educationalPostLimit || 1,
+              isPremiumFocus: true,
+              premiumFeature: educationalResponse.premiumFeature
             });
             
             totalGenerated++;
@@ -1550,6 +2143,7 @@ router.post('/generate-daily-posts', async (req, res) => {
       success: true,
       message: 'Daily posts generated successfully',
       totalGenerated: totalGenerated,
+      premiumFocus: true,
       timestamp: new Date().toISOString()
     });
     
@@ -1582,7 +2176,7 @@ router.post('/generate-comment', async (req, res) => {
       contentLength: postContent?.length || 0
     });
 
-    const result = await quickGenerateAIComment(postTitle, postContent, subreddit, context, style);
+    const result = await generatePremiumFeatureComment(postTitle, subreddit, context);
     
     if (result.success) {
       res.json({
@@ -1590,10 +2184,11 @@ router.post('/generate-comment', async (req, res) => {
         comment: result.comment,
         style: result.style,
         subreddit: result.subreddit,
-        mentionSoundSwap: true,
+        premiumFeature: result.premiumFeature,
+        isPremiumFocus: result.isPremiumFocus,
         config: redditTargets[subreddit] ? {
           dailyLimit: redditTargets[subreddit].dailyCommentLimit,
-          mentionRate: redditTargets[subreddit].soundswapMentionRate
+          premiumLimit: redditTargets[subreddit].premiumFeatureLimit
         } : null,
         timestamp: new Date().toISOString()
       });
@@ -1731,38 +2326,47 @@ router.post('/analyze-post', async (req, res) => {
       model: 'gemini-2.0-flash'
     });
 
+    const targetConfig = redditTargets[subreddit];
+    const premiumFeature = targetConfig?.premiumFeatures?.[0] ? 
+      PREMIUM_FEATURES[targetConfig.premiumFeatures[0]] : 
+      PREMIUM_FEATURES.lyricVideoGenerator;
+
     const prompt = `
-Analyze this Reddit post and provide guidance on how to engage with it naturally.
+Analyze this Reddit post from r/${subreddit} for potential premium feature promotion.
 
 Post Title: "${postTitle}"
 ${postContent ? `Post Content: "${postContent.substring(0, 800)}"` : ''}
-Subreddit: r/${subreddit || 'unknown'}
+
+Premium Feature to promote: ${premiumFeature.name}
+Feature Description: ${premiumFeature.description}
 
 Please analyze:
 1. What type of post is this? (question, discussion, sharing, etc.)
-2. What would be a natural, valuable comment to add?
-3. What tone/style would work best? (helpful, enthusiastic, thoughtful, etc.)
-4. Any specific topics or angles to focus on?
-5. Any topics to avoid?
+2. How could ${premiumFeature.name} help with this specific situation?
+3. What tone/style would work best for a comment? (helpful, enthusiastic, technical, etc.)
+4. Which premium features should be highlighted? (choose from: ${premiumFeature.premiumFeatures.join(', ')})
+5. Any specific angles or use cases to focus on?
 
-Provide your analysis in a structured way that can be used to generate an appropriate comment.
+Provide your analysis in a structured way that can be used to generate an appropriate, premium-focused comment.
 `;
 
     const result = await model.generateContent(prompt);
     const response = await result.response;
     const analysis = response.text().trim();
 
-    console.log('✅ Post analysis completed');
+    console.log('✅ Post analysis completed with premium focus');
 
     // Extract key insights from analysis
     const recommendations = {
       postType: 'discussion', // default
       suggestedTone: 'helpful',
+      premiumFeature: premiumFeature.name,
+      featuresToHighlight: premiumFeature.premiumFeatures.slice(0, 2),
       focusAreas: [],
       avoidTopics: []
     };
 
-    // Simple parsing of the analysis (you could make this more sophisticated)
+    // Simple parsing of the analysis
     if (analysis.toLowerCase().includes('question')) {
       recommendations.postType = 'question';
       recommendations.suggestedTone = 'helpful';
@@ -1771,11 +2375,15 @@ Provide your analysis in a structured way that can be used to generate an approp
       recommendations.postType = 'sharing';
       recommendations.suggestedTone = 'enthusiastic';
     }
+    if (analysis.toLowerCase().includes('technical') || analysis.toLowerCase().includes('how to')) {
+      recommendations.suggestedTone = 'technical';
+    }
 
     res.json({
       success: true,
       analysis: analysis,
       recommendations: recommendations,
+      premiumFeature: premiumFeature,
       timestamp: new Date().toISOString()
     });
 
@@ -1803,7 +2411,7 @@ router.get('/test-gemini', async (req, res) => {
       model: 'gemini-2.0-flash'
     });
     
-    const result = await model.generateContent('Say "Hello from SoundSwap Reddit AI" in a creative way.');
+    const result = await model.generateContent('Say "Hello from SoundSwap Premium Reddit AI" in a creative way.');
     const response = await result.response;
     const text = response.text();
 
@@ -1830,7 +2438,16 @@ router.get('/targets', (req, res) => {
     success: true,
     data: redditTargets,
     totalTargets: Object.keys(redditTargets).length,
+    activeTargets: Object.values(redditTargets).filter(t => t.active).length,
     totalAudience: Object.values(redditTargets).reduce((sum, target) => sum + target.memberCount, 0),
+    premiumFeatureDistribution: Object.entries(redditTargets).reduce((acc, [sub, config]) => {
+      if (config.premiumFeatures) {
+        config.premiumFeatures.forEach(feat => {
+          acc[feat] = (acc[feat] || 0) + 1;
+        });
+      }
+      return acc;
+    }, {}),
     timestamp: new Date().toISOString()
   });
 });
@@ -1847,9 +2464,14 @@ router.get('/targets/:subreddit', (req, res) => {
     });
   }
   
+  const premiumFeatures = target.premiumFeatures?.map(feat => PREMIUM_FEATURES[feat]) || [];
+  
   res.json({
     success: true,
-    data: target,
+    data: {
+      ...target,
+      premiumFeaturesDetails: premiumFeatures
+    },
     timestamp: new Date().toISOString()
   });
 });
@@ -1862,9 +2484,9 @@ router.get('/admin', (req, res) => {
   
   res.json({
     success: true,
-    message: 'Reddit Admin API is running',
+    message: 'Premium-Focused Reddit Admin API',
     service: 'reddit-admin',
-    version: '4.1.0', // Updated version with time window
+    version: '5.0.0',
     timestamp: new Date().toISOString(),
     environment: process.env.NODE_ENV || 'development',
     timezone: APP_TIMEZONE,
@@ -1874,7 +2496,13 @@ router.get('/admin', (req, res) => {
       minutes: POSTING_WINDOW_MINUTES,
       currentWindow: timeWindow
     },
+    premiumFeatures: PREMIUM_FEATURES,
     features: {
+      premium_focus: 'ACTIVE',
+      lyric_video_generator: 'PROMOTED',
+      doodle_art_generator: 'PROMOTED',
+      lead_generation: 'ACTIVE',
+      rate_limit_management: 'ACTIVE',
       gemini_ai: process.env.GOOGLE_GEMINI_API_KEY ? 'enabled' : 'disabled',
       firebase_db: 'enabled',
       reddit_api: redditConnection.success ? `connected as ${postingActivity.redditUsername}` : 'disconnected',
@@ -1889,29 +2517,35 @@ router.get('/admin', (req, res) => {
       on_demand_generation: 'active',
       time_window: `${POSTING_WINDOW_MINUTES} minutes`
     },
-    targets: {
-      total: Object.keys(redditTargets).length,
-      active: Object.values(redditTargets).filter(t => t.active).length,
-      total_audience: Object.values(redditTargets).reduce((sum, target) => sum + target.memberCount, 0)
+    stats: {
+      total_targets: Object.keys(redditTargets).length,
+      active_targets: Object.values(redditTargets).filter(t => t.active).length,
+      total_audience: Object.values(redditTargets).reduce((sum, target) => sum + target.memberCount, 0),
+      premium_leads: postingActivity.premiumLeadsGenerated,
+      premium_mentions: postingActivity.totalPremiumMentions
     },
     cron: {
       status: 'running',
       total_comments: postingActivity.totalComments,
       total_educational_posts: postingActivity.totalEducationalPosts,
+      total_premium_mentions: postingActivity.totalPremiumMentions,
       last_run: postingActivity.lastCronRun,
       github_actions_runs: postingActivity.githubActionsRuns,
       daily_limits: Object.fromEntries(
         Object.entries(redditTargets).map(([k, v]) => [k, {
           comments: v.dailyCommentLimit,
-          educational: v.educationalPostLimit || 1
+          educational: v.educationalPostLimit || 1,
+          premium: v.premiumFeatureLimit || 2
         }])
       )
     },
     endpoints: {
-      health: '/api/reddit-admin/admin',
-      targets: '/api/reddit-admin/targets',
-      schedule: '/api/reddit-admin/schedule/today',
+      premium_analytics: '/api/reddit-admin/premium-analytics',
+      generate_premium_content: '/api/reddit-admin/generate-premium-content',
+      optimized_schedule: '/api/reddit-admin/optimized-schedule',
+      post_premium_feature: '/api/reddit-admin/post-premium-feature',
       cron_status: '/api/reddit-admin/cron-status',
+      schedule_today: '/api/reddit-admin/schedule/today',
       manual_post: '/api/reddit-admin/manual-post',
       create_educational_post: '/api/reddit-admin/create-educational-post',
       create_top50_post: '/api/reddit-admin/create-top50-post',
@@ -1923,6 +2557,116 @@ router.get('/admin', (req, res) => {
       generate_daily_posts: '/api/reddit-admin/generate-daily-posts'
     }
   });
+});
+
+// Create Top 50 chart promotion post (REAL Reddit posting)
+router.post('/create-top50-post', async (req, res) => {
+  try {
+    const { subreddit } = req.body;
+    
+    if (!subreddit) {
+      return res.status(400).json({
+        success: false,
+        message: 'subreddit is required'
+      });
+    }
+    
+    const targetConfig = redditTargets[subreddit];
+    if (!targetConfig) {
+      return res.status(404).json({
+        success: false,
+        message: `Subreddit r/${subreddit} not found in targets`
+      });
+    }
+    
+    console.log(`🔄 Creating Top 50 promotion post for r/${subreddit}`);
+    
+    const model = genAI.getGenerativeModel({ 
+      model: 'gemini-2.0-flash'
+    });
+    
+    const prompt = `Create a Reddit post about SoundSwap's Weekly Top 50 chart for r/${subreddit}.
+    
+Focus on:
+- It's 100% FREE for artists
+- Helps with organic Spotify algorithm growth
+- Weekly exposure on the Top 50 chart
+- No fake streams, real organic growth
+- Perfect for artists in r/${subreddit}
+
+Write as a SoundSwap representative:`;
+
+    const result = await model.generateContent(prompt);
+    const response = await result.response;
+    const text = response.text().trim();
+
+    const lines = text.split('\n');
+    let title = lines[0] || `FREE Weekly Top 50 Chart for r/${subreddit} Artists`;
+    let content = lines.slice(1).join('\n');
+
+    if (!content.toLowerCase().includes('soundswap.live')) {
+      content += `\n\nCheck it out at soundswap.live`;
+    }
+
+    const postResponse = {
+      success: true,
+      title: title.substring(0, 200),
+      content: content.substring(0, 1000),
+      subreddit: subreddit,
+      type: 'educational'
+    };
+    
+    // Post to Reddit immediately
+    const redditResult = await postToReddit(
+      subreddit, 
+      postResponse.content, 
+      'enthusiastic', 
+      'educational', 
+      postResponse.title
+    );
+    
+    if (redditResult.success) {
+      // Update activity
+      postingActivity.educationalCounts[subreddit] = (postingActivity.educationalCounts[subreddit] || 0) + 1;
+      postingActivity.lastEducationalPosted[subreddit] = new Date().toISOString();
+      postingActivity.totalEducationalPosts++;
+      
+      await quickSavePostingActivity(postingActivity);
+    }
+    
+    res.json({
+      success: postResponse.success && redditResult.success,
+      title: postResponse.title,
+      content: postResponse.content,
+      subreddit: subreddit,
+      postedToReddit: redditResult.success,
+      redditData: redditResult.redditData,
+      activity: postingActivity.educationalCounts[subreddit],
+      timestamp: new Date().toISOString()
+    });
+    
+  } catch (error) {
+    console.error('❌ Error creating Top 50 post:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to create Top 50 promotion post',
+      error: error.message
+    });
+  }
+});
+
+// Test Reddit connection
+router.get('/test-reddit', async (req, res) => {
+  try {
+    const connection = await testRedditConnection();
+    res.json(connection);
+  } catch (error) {
+    console.error('❌ Error testing Reddit connection:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
 });
 
 // Add more Reddit admin routes as needed

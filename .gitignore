@@ -11,5 +11,7 @@ node_modules/
 .env.production
 quickExchange.js
 reddit-config.js
+verifyAccount.js
+.venv/
 
 

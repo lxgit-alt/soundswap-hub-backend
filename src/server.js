@@ -28,7 +28,7 @@ app.get('/', (req, res) => {
   res.json({
     success: true,
     message: "SoundSwap API - Backend service is running",
-    version: "1.0.0"
+    version: "1.5.0"
   });
 });
 

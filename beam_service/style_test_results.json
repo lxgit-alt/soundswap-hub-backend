@@ -1,0 +1,42 @@
+{
+  "dreamy_ethereal": {
+    "success": false,
+    "error": "MoviePy Error: creation of None failed because of the following error:\n\n[WinError 2] The system cannot find the file specified.\n\n.This error can be due to the fact that ImageMagick is not installed on your computer, or (for Windows users) that you didn't specify the path to the ImageMagick binary in file conf.py, or that the path you specified is incorrect"
+  },
+  "industrial_grunge": {
+    "success": false,
+    "error": "MoviePy Error: creation of None failed because of the following error:\n\n[WinError 2] The system cannot find the file specified.\n\n.This error can be due to the fact that ImageMagick is not installed on your computer, or (for Windows users) that you didn't specify the path to the ImageMagick binary in file conf.py, or that the path you specified is incorrect"
+  },
+  "retro_80s_vapourwave": {
+    "success": false,
+    "error": "MoviePy Error: creation of None failed because of the following error:\n\n[WinError 2] The system cannot find the file specified.\n\n.This error can be due to the fact that ImageMagick is not installed on your computer, or (for Windows users) that you didn't specify the path to the ImageMagick binary in file conf.py, or that the path you specified is incorrect"
+  },
+  "handwritten_doodle": {
+    "success": false,
+    "error": "MoviePy Error: creation of None failed because of the following error:\n\n[WinError 2] The system cannot find the file specified.\n\n.This error can be due to the fact that ImageMagick is not installed on your computer, or (for Windows users) that you didn't specify the path to the ImageMagick binary in file conf.py, or that the path you specified is incorrect"
+  },
+  "dynamic_glitch": {
+    "success": false,
+    "error": "MoviePy Error: creation of None failed because of the following error:\n\n[WinError 2] The system cannot find the file specified.\n\n.This error can be due to the fact that ImageMagick is not installed on your computer, or (for Windows users) that you didn't specify the path to the ImageMagick binary in file conf.py, or that the path you specified is incorrect"
+  },
+  "minimalist_typography": {
+    "success": false,
+    "error": "MoviePy Error: creation of None failed because of the following error:\n\n[WinError 2] The system cannot find the file specified.\n\n.This error can be due to the fact that ImageMagick is not installed on your computer, or (for Windows users) that you didn't specify the path to the ImageMagick binary in file conf.py, or that the path you specified is incorrect"
+  },
+  "cinematic_storytelling": {
+    "success": false,
+    "error": "MoviePy Error: creation of None failed because of the following error:\n\n[WinError 2] The system cannot find the file specified.\n\n.This error can be due to the fact that ImageMagick is not installed on your computer, or (for Windows users) that you didn't specify the path to the ImageMagick binary in file conf.py, or that the path you specified is incorrect"
+  },
+  "lofi_nostalgia": {
+    "success": false,
+    "error": "MoviePy Error: creation of None failed because of the following error:\n\n[WinError 2] The system cannot find the file specified.\n\n.This error can be due to the fact that ImageMagick is not installed on your computer, or (for Windows users) that you didn't specify the path to the ImageMagick binary in file conf.py, or that the path you specified is incorrect"
+  },
+  "space_cosmic": {
+    "success": false,
+    "error": "MoviePy Error: creation of None failed because of the following error:\n\n[WinError 2] The system cannot find the file specified.\n\n.This error can be due to the fact that ImageMagick is not installed on your computer, or (for Windows users) that you didn't specify the path to the ImageMagick binary in file conf.py, or that the path you specified is incorrect"
+  },
+  "abstract_conceptual": {
+    "success": false,
+    "error": "MoviePy Error: creation of None failed because of the following error:\n\n[WinError 2] The system cannot find the file specified.\n\n.This error can be due to the fact that ImageMagick is not installed on your computer, or (for Windows users) that you didn't specify the path to the ImageMagick binary in file conf.py, or that the path you specified is incorrect"
+  }
+}
