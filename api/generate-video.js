@@ -1384,14 +1384,4 @@ setInterval(() => {
   }
 }, 10 * 60 * 1000);
 
-export const config = {
-  api: {
-    bodyParser: {
-      sizeLimit: '50mb'
-    },
-    responseLimit: '50mb',
-    externalResolver: true
-  }
-};
-
 export default router;

@@ -744,7 +744,7 @@ const generatePremiumFeatureComment = async (postTitle, subreddit, context) => {
 2. Mentions how ${premiumFeature.name} could help with this
 3. Highlights: ${premiumFeature.premiumFeatures.slice(0, 2).join(', ')}
 4. Uses ${selectedStyle} tone
-5. Ends with "Check out soundswap.live/tools" (natural integration)
+5. Ends with "Check out soundswap.live" (natural integration)
 
 Keep it casual and human-like:`;
 
@@ -775,7 +775,7 @@ Keep it casual and human-like:`;
     console.error(`❌ Premium comment generation failed:`, error.message);
     return {
       success: true,
-      comment: `Interesting post! I've been using AI tools for similar work - you might find our ${PREMIUM_FEATURES.lyricVideoGenerator.name} helpful. It automates a lot of the tedious work. Check out soundswap.live/tools if you're interested in AI-powered creative tools.`,
+      comment: `Interesting post! I've been using AI tools for similar work - you might find our ${PREMIUM_FEATURES.lyricVideoGenerator.name} helpful. It automates a lot of the tedious work. Check out soundswap.live if you're interested in AI-powered creative tools.`,
       style: 'helpful',
       subreddit: subreddit,
       premiumFeature: 'AI Lyric Video Generator',
@@ -927,7 +927,7 @@ Focus on:
 - How it saves time (${premiumFeature.valueProposition})
 - Premium features: ${premiumFeature.premiumFeatures.slice(0, 3).join(', ')}
 - Real use cases for the r/${subreddit} community
-- Natural mention of soundswap.live/tools
+- Natural mention of soundswap.live
 - Keep it informative, not salesy
 
 Write as someone who found this tool helpful:`;
@@ -972,7 +972,7 @@ ${premiumFeature.valueProposition}
 
 It's perfect for when you need professional results but don't have days to spend on manual work. The premium features are especially useful for ${targetConfig?.targetAudience || 'creatives'}.
 
-Check it out at soundswap.live/tools if you're looking to streamline your workflow!
+Check it out at soundswap.live if you're looking to streamline your workflow!
 
 *Posted by a fellow creative who hates manual repetitive work*`,
       subreddit: subreddit,
