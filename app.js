@@ -3,7 +3,6 @@ import cors from 'cors';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import helmet from 'helmet';
-import trendsRoutes from './src/api/trends.js';
 import redditAdminRoutes from './src/api/reddit-admin.js';
 import emailRoutes from './src/api/send-welcome-email.js';
 import lyricVideoRoutes from './src/api/generate-video.js';
