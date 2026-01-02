@@ -807,7 +807,7 @@ const generatePremiumFeatureComment = async (postTitle, subreddit, context) => {
     }
 
     const model = genAI.getGenerativeModel({ 
-      model: 'gemini-2.0-flash-lite'
+      model: 'gemini-3-flash'
     });
 
     const prompt = `Write a natural, helpful Reddit comment (2 sentences max) for r/${subreddit} that:
@@ -874,7 +874,7 @@ const quickGenerateAIComment = async (postTitle, postContent, subreddit, context
     const selectedStyle = style || (targetConfig ? targetConfig.preferredStyles[0] : 'helpful');
 
     const model = genAI.getGenerativeModel({ 
-      model: 'gemini-2.0-flash-lite'
+      model: 'gemini-3-flash'
     });
 
     const prompt = `
@@ -925,7 +925,7 @@ const generateEducationalPost = async (subreddit) => {
     }
 
     const model = genAI.getGenerativeModel({ 
-      model: 'gemini-2.0-flash-lite'
+      model: 'gemini-3-flash'
     });
 
     const prompt = `
@@ -995,7 +995,7 @@ const generateEducationalPostPremium = async (subreddit) => {
 
   try {
     const model = genAI.getGenerativeModel({ 
-      model: 'gemini-2.0-flash-lite'
+      model: 'gemini-3-flash'
     });
 
     const prompt = `Create a helpful Reddit post about ${premiumFeature.name} for r/${subreddit}.
@@ -2320,7 +2320,7 @@ router.post('/generate-reply', async (req, res) => {
     });
 
     const model = genAI.getGenerativeModel({ 
-      model: 'gemini-2.0-flash-lite'
+      model: 'gemini-3-flash'
     });
 
     // Different tones for different relationships
@@ -2410,7 +2410,7 @@ router.post('/analyze-post', async (req, res) => {
     console.log('🔍 Analyzing post for commenting strategy:', { subreddit });
 
     const model = genAI.getGenerativeModel({ 
-      model: 'gemini-2.0-flash-lite'
+      model: 'gemini-3-flash'
     });
 
     const targetConfig = redditTargets[subreddit];
@@ -2495,7 +2495,7 @@ router.get('/test-gemini', async (req, res) => {
     }
 
     const model = genAI.getGenerativeModel({ 
-      model: 'gemini-2.0-flash-lite'
+      model: 'gemini-3-flash'
     });
     
     const result = await model.generateContent('Say "Hello from SoundSwap Premium Reddit AI" in a creative way.');
@@ -2669,7 +2669,7 @@ router.post('/create-top50-post', async (req, res) => {
     console.log(`🔄 Creating Top 50 promotion post for r/${subreddit}`);
     
     const model = genAI.getGenerativeModel({ 
-      model: 'gemini-2.0-flash-lite'
+      model: 'gemini-3-flash'
     });
     
     const prompt = `Create a Reddit post about SoundSwap's Weekly Top 50 chart for r/${subreddit}.
