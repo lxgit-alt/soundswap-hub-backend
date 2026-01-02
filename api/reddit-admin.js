@@ -807,7 +807,7 @@ const generatePremiumFeatureComment = async (postTitle, subreddit, context) => {
     }
 
     const model = genAI.getGenerativeModel({ 
-      model: 'gemini-2.0-flash'
+      model: 'gemini-2.0-flash-lite'
     });
 
     const prompt = `Write a natural, helpful Reddit comment (2 sentences max) for r/${subreddit} that:
@@ -844,12 +844,17 @@ Keep it casual and human-like:`;
 
   } catch (error) {
     console.error(`❌ Premium comment generation failed:`, error.message);
+    
+    // Fallback to hardcoded response when AI fails
+    const fallbackFeature = PREMIUM_FEATURES.lyricVideoGenerator;
+    const fallbackComment = `Interesting post! I've been using ${fallbackFeature.name} for similar work - it automates ${fallbackFeature.valueProposition}. Check out soundswap.live if you're interested in AI-powered creative tools.`;
+    
     return {
       success: true,
-      comment: `Interesting post! I've been using AI tools for similar work - you might find our ${PREMIUM_FEATURES.lyricVideoGenerator.name} helpful. It automates a lot of the tedious work. Check out soundswap.live if you're interested in AI-powered creative tools.`,
+      comment: fallbackComment,
       style: 'helpful',
       subreddit: subreddit,
-      premiumFeature: 'AI Lyric Video Generator',
+      premiumFeature: fallbackFeature.name,
       isPremiumFocus: true
     };
   }
@@ -869,7 +874,7 @@ const quickGenerateAIComment = async (postTitle, postContent, subreddit, context
     const selectedStyle = style || (targetConfig ? targetConfig.preferredStyles[0] : 'helpful');
 
     const model = genAI.getGenerativeModel({ 
-      model: 'gemini-2.0-flash'
+      model: 'gemini-2.0-flash-lite'
     });
 
     const prompt = `
@@ -920,7 +925,7 @@ const generateEducationalPost = async (subreddit) => {
     }
 
     const model = genAI.getGenerativeModel({ 
-      model: 'gemini-2.0-flash'
+      model: 'gemini-2.0-flash-lite'
     });
 
     const prompt = `
@@ -977,19 +982,20 @@ Perfect for artists tired of paying for ads with little results. Check it out at
 };
 
 const generateEducationalPostPremium = async (subreddit) => {
-  try {
-    const targetConfig = redditTargets[subreddit];
-    let premiumFeature;
-    
-    // Determine which premium feature to feature
-    if (targetConfig?.premiumFeatures?.includes('lyricVideoGenerator')) {
-      premiumFeature = PREMIUM_FEATURES.lyricVideoGenerator;
-    } else {
-      premiumFeature = PREMIUM_FEATURES.doodleArtGenerator;
-    }
+  // Define targetConfig at the function scope so it's available in catch block
+  const targetConfig = redditTargets[subreddit];
+  let premiumFeature;
+  
+  // Determine which premium feature to feature
+  if (targetConfig?.premiumFeatures?.includes('lyricVideoGenerator')) {
+    premiumFeature = PREMIUM_FEATURES.lyricVideoGenerator;
+  } else {
+    premiumFeature = PREMIUM_FEATURES.doodleArtGenerator;
+  }
 
+  try {
     const model = genAI.getGenerativeModel({ 
-      model: 'gemini-2.0-flash'
+      model: 'gemini-2.0-flash-lite'
     });
 
     const prompt = `Create a helpful Reddit post about ${premiumFeature.name} for r/${subreddit}.
@@ -1026,8 +1032,8 @@ Write as someone who found this tool helpful:`;
 
   } catch (error) {
     console.error(`❌ Premium educational post generation failed:`, error.message);
-    const premiumFeature = PREMIUM_FEATURES.lyricVideoGenerator;
     
+    // Use targetConfig which is now defined at function scope
     return {
       success: true,
       title: `${premiumFeature.name}: Automate Your Creative Workflow`,
@@ -2314,7 +2320,7 @@ router.post('/generate-reply', async (req, res) => {
     });
 
     const model = genAI.getGenerativeModel({ 
-      model: 'gemini-2.0-flash'
+      model: 'gemini-2.0-flash-lite'
     });
 
     // Different tones for different relationships
@@ -2404,7 +2410,7 @@ router.post('/analyze-post', async (req, res) => {
     console.log('🔍 Analyzing post for commenting strategy:', { subreddit });
 
     const model = genAI.getGenerativeModel({ 
-      model: 'gemini-2.0-flash'
+      model: 'gemini-2.0-flash-lite'
     });
 
     const targetConfig = redditTargets[subreddit];
@@ -2489,7 +2495,7 @@ router.get('/test-gemini', async (req, res) => {
     }
 
     const model = genAI.getGenerativeModel({ 
-      model: 'gemini-2.0-flash'
+      model: 'gemini-2.0-flash-lite'
     });
     
     const result = await model.generateContent('Say "Hello from SoundSwap Premium Reddit AI" in a creative way.');
@@ -2663,7 +2669,7 @@ router.post('/create-top50-post', async (req, res) => {
     console.log(`🔄 Creating Top 50 promotion post for r/${subreddit}`);
     
     const model = genAI.getGenerativeModel({ 
-      model: 'gemini-2.0-flash'
+      model: 'gemini-2.0-flash-lite'
     });
     
     const prompt = `Create a Reddit post about SoundSwap's Weekly Top 50 chart for r/${subreddit}.
