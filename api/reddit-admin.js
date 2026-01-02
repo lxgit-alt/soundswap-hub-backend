@@ -511,41 +511,38 @@ const quickMarkPostAsPosted = async (postId, collectionName, redditData = null) 
 const checkRateLimit = async () => {
   try {
     // Get your Reddit account info - this automatically checks rate limits
-    await redditClient.getMe();
+    const me = await redditClient.getMe();
     
     // Snoowrap automatically tracks rate limits in the client
+    // We can check the last response headers for rate limit info
     const rateLimitRemaining = redditClient.ratelimitRemaining;
     const rateLimitReset = redditClient.ratelimitReset;
     const rateLimitUsed = redditClient.ratelimitUsed;
     
-    // Fix: Ensure we don't pass -Infinity to Date or timers
-    // If rateLimitReset is null or undefined, default to a safe 60s from now
-    const resetTimestamp = rateLimitReset ? (rateLimitReset * 1000) : (Date.now() + 60000);
-    
     postingActivity.rateLimitInfo = {
       lastCheck: new Date().toISOString(),
-      remaining: (rateLimitRemaining !== null && rateLimitRemaining !== undefined) ? rateLimitRemaining : 60,
-      resetTime: new Date(resetTimestamp).toISOString(),
+      remaining: rateLimitRemaining || 60, // Fallback to 60 if unknown
+      resetTime: rateLimitReset ? new Date(rateLimitReset * 1000).toISOString() : null,
       used: rateLimitUsed || 0
     };
     
     console.log(`📊 Rate Limits: ${postingActivity.rateLimitInfo.remaining} remaining`);
     
+    // If we don't have rate limit info, proceed cautiously
     if (rateLimitRemaining === null || rateLimitRemaining === undefined) {
       console.log('⚠️ Rate limit info unavailable, proceeding with caution');
       return true;
     }
     
-    // Safety buffer: if we have 10 or fewer requests left, pause
     if (rateLimitRemaining < 10) {
-      const waitTime = Math.max(0, resetTimestamp - Date.now());
-      console.warn(`⚠️ Rate limit low! Waiting ${Math.ceil(waitTime / 1000)}s for reset...`);
+      console.warn('⚠️ Rate limit low! Waiting for reset...');
       return false;
     }
     
     return true;
   } catch (error) {
     console.error('❌ Error checking rate limits:', error.message);
+    // If we can't check rate limits, proceed with caution
     return true;
   }
 };
@@ -556,18 +553,14 @@ const safeCheckRateLimit = async () => {
     return await checkRateLimit();
   } catch (error) {
     console.warn('⚠️ Safe rate limit check failed, proceeding anyway:', error.message);
-    return true; 
+    return true; // Always return true to prevent breaking the chain
   }
 };
 
 const enforceRateLimit = async () => {
   // Add delay between posts to stay within limits
-  // Fix: Ensure delay is never NaN or Negative
-  const baseDelay = 2000;
-  const randomJitter = Math.random() * 3000;
-  const finalDelay = Math.max(0, baseDelay + randomJitter); 
-  
-  await new Promise(resolve => setTimeout(resolve, finalDelay));
+  const delay = 2000 + Math.random() * 3000; // 2-5 seconds
+  await new Promise(resolve => setTimeout(resolve, delay));
 };
 
 // ==================== ENHANCED REDDIT TARGET CONFIGURATION ====================
