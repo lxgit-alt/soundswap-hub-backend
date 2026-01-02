@@ -180,6 +180,11 @@ const resetDailyCountsIfNeeded = async (currentActivity) => {
     if (!currentActivity.lastResetDate || currentActivity.lastResetDate !== currentDate) {
       console.log(`🔄 New day detected! Resetting daily counts from ${currentActivity.lastResetDate || 'never'} to ${currentDate}`);
       
+      // Initialize counts if they don't exist
+      currentActivity.dailyCounts = currentActivity.dailyCounts || {};
+      currentActivity.educationalCounts = currentActivity.educationalCounts || {};
+      currentActivity.premiumFeatureCounts = currentActivity.premiumFeatureCounts || {};
+      
       // Reset all daily counts
       Object.keys(currentActivity.dailyCounts).forEach(key => {
         currentActivity.dailyCounts[key] = 0;
@@ -192,9 +197,9 @@ const resetDailyCountsIfNeeded = async (currentActivity) => {
       });
       
       // Reset last posted timestamps to allow immediate posting
-      currentActivity.lastPosted = {};
-      currentActivity.lastEducationalPosted = {};
-      currentActivity.lastPremiumPosted = {};
+      currentActivity.lastPosted = currentActivity.lastPosted || {};
+      currentActivity.lastEducationalPosted = currentActivity.lastEducationalPosted || {};
+      currentActivity.lastPremiumPosted = currentActivity.lastPremiumPosted || {};
       
       // Update reset tracking
       currentActivity.lastResetDate = currentDate;
@@ -295,6 +300,41 @@ const initializePostingActivity = async () => {
     } else {
       const activityDoc = snapshot.docs[0].data();
       console.log('✅ Loaded existing posting activity');
+      
+      // Ensure all required fields exist
+      activityDoc.dailyCounts = activityDoc.dailyCounts || {};
+      activityDoc.educationalCounts = activityDoc.educationalCounts || {};
+      activityDoc.premiumFeatureCounts = activityDoc.premiumFeatureCounts || {};
+      activityDoc.lastPosted = activityDoc.lastPosted || {};
+      activityDoc.lastEducationalPosted = activityDoc.lastEducationalPosted || {};
+      activityDoc.lastPremiumPosted = activityDoc.lastPremiumPosted || {};
+      activityDoc.totalComments = activityDoc.totalComments || 0;
+      activityDoc.totalEducationalPosts = activityDoc.totalEducationalPosts || 0;
+      activityDoc.totalPremiumMentions = activityDoc.totalPremiumMentions || 0;
+      activityDoc.premiumLeadsGenerated = activityDoc.premiumLeadsGenerated || 0;
+      activityDoc.githubActionsRuns = activityDoc.githubActionsRuns || 0;
+      activityDoc.redditUsername = activityDoc.redditUsername || null;
+      activityDoc.lastResetDate = activityDoc.lastResetDate || getCurrentDateInAppTimezone();
+      activityDoc.lastResetDay = activityDoc.lastResetDay || getCurrentDayInAppTimezone();
+      activityDoc.lastResetTime = activityDoc.lastResetTime || new Date().toISOString();
+      activityDoc.rateLimitInfo = activityDoc.rateLimitInfo || {
+        lastCheck: null,
+        remaining: 60,
+        resetTime: null
+      };
+      
+      // Initialize counts for any new subreddits that aren't in the existing data
+      Object.keys(redditTargets).forEach(subreddit => {
+        if (activityDoc.dailyCounts[subreddit] === undefined) {
+          activityDoc.dailyCounts[subreddit] = 0;
+        }
+        if (activityDoc.educationalCounts[subreddit] === undefined) {
+          activityDoc.educationalCounts[subreddit] = 0;
+        }
+        if (activityDoc.premiumFeatureCounts[subreddit] === undefined) {
+          activityDoc.premiumFeatureCounts[subreddit] = 0;
+        }
+      });
       
       // Check if we need to reset daily counts
       await resetDailyCountsIfNeeded(activityDoc);
@@ -1491,6 +1531,11 @@ router.post('/reset-daily', async (req, res) => {
     
     console.log(`🔄 Manual daily reset requested for ${currentDate} (${currentDay})`);
     
+    // Ensure counts objects exist
+    postingActivity.dailyCounts = postingActivity.dailyCounts || {};
+    postingActivity.educationalCounts = postingActivity.educationalCounts || {};
+    postingActivity.premiumFeatureCounts = postingActivity.premiumFeatureCounts || {};
+    
     // Reset all daily counts
     Object.keys(postingActivity.dailyCounts).forEach(key => {
       postingActivity.dailyCounts[key] = 0;
@@ -1503,9 +1548,9 @@ router.post('/reset-daily', async (req, res) => {
     });
     
     // Reset last posted timestamps
-    postingActivity.lastPosted = {};
-    postingActivity.lastEducationalPosted = {};
-    postingActivity.lastPremiumPosted = {};
+    postingActivity.lastPosted = postingActivity.lastPosted || {};
+    postingActivity.lastEducationalPosted = postingActivity.lastEducationalPosted || {};
+    postingActivity.lastPremiumPosted = postingActivity.lastPremiumPosted || {};
     
     // Update reset tracking
     postingActivity.lastResetDate = currentDate;
@@ -2058,6 +2103,11 @@ router.post('/manual-post', async (req, res) => {
 // Reset daily counts
 router.post('/reset-counts', async (req, res) => {
   try {
+    // Ensure counts objects exist
+    postingActivity.dailyCounts = postingActivity.dailyCounts || {};
+    postingActivity.educationalCounts = postingActivity.educationalCounts || {};
+    postingActivity.premiumFeatureCounts = postingActivity.premiumFeatureCounts || {};
+    
     Object.keys(postingActivity.dailyCounts).forEach(key => {
       postingActivity.dailyCounts[key] = 0;
     });
@@ -2072,9 +2122,9 @@ router.post('/reset-counts', async (req, res) => {
     postingActivity.totalEducationalPosts = 0;
     postingActivity.totalPremiumMentions = 0;
     postingActivity.premiumLeadsGenerated = 0;
-    postingActivity.lastPosted = {};
-    postingActivity.lastEducationalPosted = {};
-    postingActivity.lastPremiumPosted = {};
+    postingActivity.lastPosted = postingActivity.lastPosted || {};
+    postingActivity.lastEducationalPosted = postingActivity.lastEducationalPosted || {};
+    postingActivity.lastPremiumPosted = postingActivity.lastPremiumPosted || {};
     postingActivity.githubActionsRuns = 0;
     
     // Save to Firebase
