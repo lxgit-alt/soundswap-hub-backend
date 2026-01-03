@@ -3,7 +3,7 @@ import axios from 'axios';
 
 const clientId = 'JM2psbmhT_TnliyRNSLK0A';
 const clientSecret = 'v5MKeSGA297TmMbq9kUhIAPOck4ehA';
-const refreshToken = '211184898158870-GLUOReULkkKF1vAdo7cPMW_ndFQexQ';
+const refreshToken = ' ';
 
 async function verifyAccount() {
   try {
