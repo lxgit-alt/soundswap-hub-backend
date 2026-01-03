@@ -994,7 +994,7 @@ const generatePremiumFeatureComment = async (postTitle, postContent, subreddit, 
     }
 
     const model = genAI.getGenerativeModel({ 
-      model: 'gemini-3-flash'
+      model: 'gemini-2.5-flash-lite'
     });
 
     // Bridge Technique: Act as a helpful community member
@@ -1339,7 +1339,7 @@ const quickGenerateAIComment = async (postTitle, postContent, subreddit, context
     const selectedStyle = style || (targetConfig ? targetConfig.preferredStyles[0] : 'helpful');
 
     const model = genAI.getGenerativeModel({ 
-      model: 'gemini-3-flash'
+      model: 'gemini-2.5-flash-lite'
     });
 
     const prompt = `
@@ -1390,7 +1390,7 @@ const generateEducationalPost = async (subreddit) => {
     }
 
     const model = genAI.getGenerativeModel({ 
-      model: 'gemini-3-flash'
+      model: 'gemini-2.5-flash-lite'
     });
 
     const prompt = `
@@ -1460,7 +1460,7 @@ const generateEducationalPostPremium = async (subreddit) => {
 
   try {
     const model = genAI.getGenerativeModel({ 
-      model: 'gemini-3-flash'
+      model: 'gemini-2.5-flash-lite'
     });
 
     const prompt = `Create a helpful Reddit post about ${premiumFeature.name} for r/${subreddit}.
@@ -2791,7 +2791,7 @@ router.post('/generate-reply', async (req, res) => {
     });
 
     const model = genAI.getGenerativeModel({ 
-      model: 'gemini-3-flash'
+      model: 'gemini-2.5-flash-lite'
     });
 
     // Different tones for different relationships
@@ -2928,7 +2928,7 @@ router.get('/test-gemini', async (req, res) => {
     }
 
     const model = genAI.getGenerativeModel({ 
-      model: 'gemini-3-flash'
+      model: 'gemini-2.5-flash-lite'
     });
     
     const result = await model.generateContent('Say "Hello from SoundSwap Premium Reddit AI" in a creative way.');
@@ -3119,7 +3119,7 @@ router.post('/create-top50-post', async (req, res) => {
     console.log(`🔄 Creating Top 50 promotion post for r/${subreddit}`);
     
     const model = genAI.getGenerativeModel({ 
-      model: 'gemini-3-flash'
+      model: 'gemini-2.5-flash-litesh-lite'
     });
     
     const prompt = `Create a Reddit post about SoundSwap's Weekly Top 50 chart for r/${subreddit}.
