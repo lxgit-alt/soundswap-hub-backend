@@ -253,18 +253,9 @@ const testRedditConnection = async () => {
       used: redditClient.ratelimitUsed || 0
     };
     
-    // FIX: Handle 'unknown' or invalid reset times to prevent -Infinity timeout
-    let resetTime = 'unknown';
-    let resetTimestamp = null;
-    
-    if (rateLimits.reset && typeof rateLimits.reset === 'number' && !isNaN(rateLimits.reset)) {
-      resetTimestamp = new Date(rateLimits.reset * 1000);
-      resetTime = resetTimestamp.toISOString();
-    }
-    
     console.log('📊 Reddit Rate Limits:', {
       remaining: rateLimits.remaining,
-      reset: resetTime,
+      reset: rateLimits.reset ? new Date(rateLimits.reset * 1000).toISOString() : 'unknown',
       used: rateLimits.used
     });
     
@@ -272,11 +263,7 @@ const testRedditConnection = async () => {
     return { 
       success: true, 
       username: me.name,
-      rateLimits: {
-        ...rateLimits,
-        reset: resetTime,
-        resetTimestamp: resetTimestamp
-      }
+      rateLimits: rateLimits
     };
   } catch (error) {
     console.error('❌ Reddit API connection failed:', error.message);
@@ -726,16 +713,10 @@ const checkRateLimit = async () => {
     const rateLimitReset = redditClient.ratelimitReset;
     const rateLimitUsed = redditClient.ratelimitUsed;
     
-    // FIX: Handle undefined or invalid reset times
-    let resetTimeISO = null;
-    if (rateLimitReset && typeof rateLimitReset === 'number' && !isNaN(rateLimitReset)) {
-      resetTimeISO = new Date(rateLimitReset * 1000).toISOString();
-    }
-    
     postingActivity.rateLimitInfo = {
       lastCheck: new Date().toISOString(),
       remaining: rateLimitRemaining || 60, // Fallback to 60 if unknown
-      resetTime: resetTimeISO,
+      resetTime: rateLimitReset ? new Date(rateLimitReset * 1000).toISOString() : null,
       used: rateLimitUsed || 0
     };
     
