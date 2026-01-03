@@ -253,9 +253,29 @@ const testRedditConnection = async () => {
       used: redditClient.ratelimitUsed || 0
     };
     
+    // FIX: Handle 'unknown' or invalid reset times to prevent -Infinity timeout
+    let resetTime = 'unknown';
+    let resetTimestamp = null;
+    
+    // Check if reset is a valid number and positive
+    if (typeof rateLimits.reset === 'number' && rateLimits.reset > 0 && !isNaN(rateLimits.reset)) {
+      try {
+        resetTimestamp = new Date(rateLimits.reset * 1000);
+        // Check if date is valid
+        if (resetTimestamp instanceof Date && !isNaN(resetTimestamp.getTime())) {
+          resetTime = resetTimestamp.toISOString();
+        } else {
+          resetTime = 'invalid date';
+        }
+      } catch (dateError) {
+        console.warn('⚠️ Could not parse reset time:', dateError.message);
+        resetTime = 'parse error';
+      }
+    }
+    
     console.log('📊 Reddit Rate Limits:', {
       remaining: rateLimits.remaining,
-      reset: rateLimits.reset ? new Date(rateLimits.reset * 1000).toISOString() : 'unknown',
+      reset: resetTime,
       used: rateLimits.used
     });
     
@@ -263,7 +283,11 @@ const testRedditConnection = async () => {
     return { 
       success: true, 
       username: me.name,
-      rateLimits: rateLimits
+      rateLimits: {
+        ...rateLimits,
+        reset: resetTime,
+        resetTimestamp: resetTimestamp
+      }
     };
   } catch (error) {
     console.error('❌ Reddit API connection failed:', error.message);
@@ -713,10 +737,23 @@ const checkRateLimit = async () => {
     const rateLimitReset = redditClient.ratelimitReset;
     const rateLimitUsed = redditClient.ratelimitUsed;
     
+    // FIX: Handle undefined or invalid reset times
+    let resetTimeISO = null;
+    if (typeof rateLimitReset === 'number' && rateLimitReset > 0 && !isNaN(rateLimitReset)) {
+      try {
+        const resetDate = new Date(rateLimitReset * 1000);
+        if (resetDate instanceof Date && !isNaN(resetDate.getTime())) {
+          resetTimeISO = resetDate.toISOString();
+        }
+      } catch (dateError) {
+        console.warn('⚠️ Could not parse reset time in checkRateLimit:', dateError.message);
+      }
+    }
+    
     postingActivity.rateLimitInfo = {
       lastCheck: new Date().toISOString(),
       remaining: rateLimitRemaining || 60, // Fallback to 60 if unknown
-      resetTime: rateLimitReset ? new Date(rateLimitReset * 1000).toISOString() : null,
+      resetTime: resetTimeISO,
       used: rateLimitUsed || 0
     };
     
