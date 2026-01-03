@@ -649,6 +649,11 @@
   "resolved" "https://registry.npmjs.org/@protobufjs/utf8/-/utf8-1.1.0.tgz"
   "version" "1.1.0"
 
+"@stablelib/base64@^1.0.0":
+  "integrity" "sha512-1bnPQqSxSuc3Ii6MhBysoWCg58j97aUjuCSZrGSmDxNqtytIi0k8utUenAwTZN4V5mXXYGsVUI9zeBqy+jBOSQ=="
+  "resolved" "https://registry.npmjs.org/@stablelib/base64/-/base64-1.0.1.tgz"
+  "version" "1.0.1"
+
 "@tootallnate/once@2":
   "integrity" "sha512-XCuKFP5PS55gnMVu3dty8KPatLqUoy/ZYzDzAGCQ8JNFCkLXzmI7vNHCR+XpbZaMWQK/vQubr7PkYq8g470J/A=="
   "resolved" "https://registry.npmjs.org/@tootallnate/once/-/once-2.0.0.tgz"
@@ -1209,6 +1214,13 @@
   "resolved" "https://registry.npmjs.org/destroy/-/destroy-1.2.0.tgz"
   "version" "1.2.0"
 
+"dodopayments@^2.13.1":
+  "integrity" "sha512-awA3WM6m8vPIaD6k6fNV57Hk6dwooBdyNDbWpXdG8OPrdmma8qjt5NOILRvjHseRWGm2/LewJFq/Md0HFROA4w=="
+  "resolved" "https://registry.npmjs.org/dodopayments/-/dodopayments-2.13.1.tgz"
+  "version" "2.13.1"
+  dependencies:
+    "standardwebhooks" "^1.0.0"
+
 "dotenv@^16.6.1":
   "integrity" "sha512-uBq4egWHTcTt33a72vpSG0z3HnPuIl6NqYcTrKEg2azoEyl2hpW0zqlxysq2pK9HlDIHyHyakeYaYnSAwd8bow=="
   "resolved" "https://registry.npmjs.org/dotenv/-/dotenv-16.6.1.tgz"
@@ -1461,6 +1473,11 @@
   "integrity" "sha512-DCXu6Ifhqcks7TZKY3Hxp3y6qphY5SJZmrWMDrKcERSOXWQdMhU9Ig/PYrzyw/ul9jOIyh0N4M0tbC5hodg8dw=="
   "resolved" "https://registry.npmjs.org/fast-levenshtein/-/fast-levenshtein-2.0.6.tgz"
   "version" "2.0.6"
+
+"fast-sha256@^1.3.0":
+  "integrity" "sha512-n11RGP/lrWEFI/bWdygLxhI+pVeo1ZYIVwvvPkW7azl/rOy+F3HYRZ2K5zeE9mmkhQppyv9sQFx0JM9UabnpPQ=="
+  "resolved" "https://registry.npmjs.org/fast-sha256/-/fast-sha256-1.3.0.tgz"
+  "version" "1.3.0"
 
 "fast-text-encoding@^1.0.0", "fast-text-encoding@^1.0.3":
   "integrity" "sha512-VhXlQgj9ioXCqGstD37E/HBeqEGV/qOD/kmbVG8h5xKBYvM1L3lR1Zn4555cQ8GkYbJa8aJSipLPndE1k6zK2w=="
@@ -2861,6 +2878,14 @@
     "jsbn" "~0.1.0"
     "safer-buffer" "^2.0.2"
     "tweetnacl" "~0.14.0"
+
+"standardwebhooks@^1.0.0":
+  "integrity" "sha512-BbHGOQK9olHPMvQNHWul6MYlrRTAOKn03rOe4A8O3CLWhNf4YHBqq2HJKKC+sfqpxiBY52pNeesD6jIiLDz8jg=="
+  "resolved" "https://registry.npmjs.org/standardwebhooks/-/standardwebhooks-1.0.0.tgz"
+  "version" "1.0.0"
+  dependencies:
+    "@stablelib/base64" "^1.0.0"
+    "fast-sha256" "^1.3.0"
 
 "statuses@2.0.1":
   "integrity" "sha512-RwNA9Z/7PrK06rYLIzFMlaF+l73iwpzsqRIFgbMLbTcLD6cOao82TaWefPXQvB2fOC4AjuYSEndS7N/mTCbkdQ=="

@@ -33,15 +33,15 @@ const genAI = new GoogleGenerativeAI(process.env.GOOGLE_GEMINI_API_KEY);
 
 const APP_TIMEZONE = process.env.APP_TIMEZONE || 'America/New_York';
 const POSTING_WINDOW_MINUTES = 10;
-const MAX_POSTS_PER_RUN = 3;
-const MAX_COMMENTS_PER_DAY = 15; // Stay well under Reddit API limits
+const MAX_POSTS_PER_RUN = 1; // Reduced from 3 to 1 to prevent timeout
+const MAX_COMMENTS_PER_DAY = 15;
 const MAX_EDUCATIONAL_POSTS_PER_DAY = 3;
-const AI_TIMEOUT_MS = 4000; // Reduced from 5000
+const AI_TIMEOUT_MS = 4000;
 const VERCELL_TIMEOUT_MS = 8000;
-const GOLDEN_HOUR_WINDOW_MINUTES = 60; // Check last 60 minutes for fresh posts
+const GOLDEN_HOUR_WINDOW_MINUTES = 60;
 
 // ==================== OPTIMIZED SUBREDDIT PROCESSING ====================
-// "Offset Method" - Process 6 subreddits at a time instead of all 9
+// UPDATED: Now processes only 1 subreddit per run to prevent timeouts
 
 const getCurrentHourInAppTimezone = () => {
   const now = new Date();
@@ -52,22 +52,16 @@ const getCurrentHourInAppTimezone = () => {
   }).slice(0, 2);
 };
 
-const getOptimizedSubredditsForCurrentRun = () => {
+const getOptimizedSubredditForCurrentRun = () => {
   const allActiveSubreddits = Object.keys(redditTargets).filter(k => redditTargets[k].active);
   const currentHour = parseInt(getCurrentHourInAppTimezone()) || 0;
   
-  // Use modulo operator to get starting index that changes every hour
-  const startIndex = currentHour % allActiveSubreddits.length;
+  // Use modulo operator to get a single subreddit for this run
+  const index = currentHour % allActiveSubreddits.length;
+  const selectedSubreddit = allActiveSubreddits[index];
   
-  // Take only 6 subreddits for this run (instead of all 9)
-  const optimizedSubreddits = [];
-  for (let i = 0; i < 6; i++) {
-    const index = (startIndex + i) % allActiveSubreddits.length;
-    optimizedSubreddits.push(allActiveSubreddits[index]);
-  }
-  
-  console.log(`🔄 Offset Method: Hour ${currentHour}, Start index: ${startIndex}, Processing ${optimizedSubreddits.length}/${allActiveSubreddits.length} subreddits`);
-  return optimizedSubreddits;
+  console.log(`🔄 Single Subreddit Method: Hour ${currentHour}, Selected: r/${selectedSubreddit}, Processing 1/${allActiveSubreddits.length} subreddits`);
+  return [selectedSubreddit];
 };
 
 // ==================== PAIN POINT INTENT TRIGGERS ====================
@@ -281,9 +275,9 @@ const fetchFreshPostsFromSubreddit = async (subreddit, timeWindowMinutes = 60) =
     const now = Math.floor(Date.now() / 1000);
     const timeThreshold = now - (timeWindowMinutes * 60);
     
-    // OPTIMIZATION: Fetch only 10 posts instead of 25
+    // OPTIMIZATION: Fetch only 5 posts instead of 10
     const posts = await redditClient.getSubreddit(subreddit).getNew({
-      limit: 10 // Reduced from 25
+      limit: 5 // Reduced from 10
     });
     
     // Filter posts from the last timeWindowMinutes
@@ -1066,7 +1060,7 @@ Mention how ${premiumFeature.name} can help. Include soundswap.live. Use ${selec
 
 // ==================== OPTIMIZED GOLDEN HOUR POST PROCESSING ====================
 
-const findAndRespondToPainPointPosts = async (subreddit, maxPosts = 2) => {
+const findAndRespondToPainPointPosts = async (subreddit, maxPosts = 1) => {
   try {
     console.log(`🎯 Starting Golden Hour scan for r/${subreddit}`);
     
@@ -1432,176 +1426,95 @@ export const runScheduledPosts = async () => {
       console.warn('⚠️ Rate limit check failed, proceeding with caution');
     }
     
-    // OPTIMIZATION: Get only 6 subreddits for this run using Offset Method
-    const optimizedSubreddits = getOptimizedSubredditsForCurrentRun();
-    console.log(`🎯 Processing subreddits: ${optimizedSubreddits.join(', ')}`);
+    // UPDATED: Get only 1 subreddit for this run using Single Subreddit Method
+    const optimizedSubreddits = getOptimizedSubredditForCurrentRun();
+    const selectedSubreddit = optimizedSubreddits[0];
+    console.log(`🎯 Processing single subreddit: r/${selectedSubreddit}`);
     
     let totalPosted = 0;
     let premiumPosted = 0;
     let goldenHourPosted = 0;
     
-    // STRATEGY 1: Golden Hour first (first 3 subreddits)
+    // STRATEGY 1: Golden Hour first (only the selected subreddit)
     console.log('\n🎯 STRATEGY 1: Golden Hour Scanning (Last 60 minutes)');
     
-    const goldenHourSubreddits = optimizedSubreddits.slice(0, 3);
-    
-    for (const subreddit of goldenHourSubreddits) {
-      const config = redditTargets[subreddit];
-      if (!config || !config.active || totalPosted >= MAX_POSTS_PER_RUN) continue;
+    const config = redditTargets[selectedSubreddit];
+    if (config && config.active) {
+      console.log(`\n🔍 Scanning r/${selectedSubreddit} for Golden Hour opportunities...`);
       
-      console.log(`\n🔍 Scanning r/${subreddit} for Golden Hour opportunities...`);
-      
-      const goldenHourResult = await findAndRespondToPainPointPosts(subreddit, 1); // Max 1 response per subreddit
+      const goldenHourResult = await findAndRespondToPainPointPosts(selectedSubreddit, 1); // Max 1 response per run
       
       if (goldenHourResult.success && goldenHourResult.responsesPosted > 0) {
         totalPosted += goldenHourResult.responsesPosted;
         goldenHourPosted += goldenHourResult.responsesPosted;
         premiumPosted += goldenHourResult.responsesPosted;
         
-        console.log(`✅ Golden Hour: Posted ${goldenHourResult.responsesPosted} responses in r/${subreddit}`);
+        console.log(`✅ Golden Hour: Posted ${goldenHourResult.responsesPosted} responses in r/${selectedSubreddit}`);
         
         // Save activity after Golden Hour posts
         await quickSavePostingActivity(postingActivity);
-      }
-      
-      // Early exit if we've reached the limit
-      if (totalPosted >= MAX_POSTS_PER_RUN) break;
-    }
-    
-    // STRATEGY 2: Bridge Technique - Scheduled posts (remaining subreddits)
-    console.log('\n🎯 STRATEGY 2: Scheduled Posts with Bridge Technique');
-    
-    if (totalPosted < MAX_POSTS_PER_RUN) {
-      const bridgeSubreddits = optimizedSubreddits.slice(3);
-      
-      for (const subreddit of bridgeSubreddits) {
-        const config = redditTargets[subreddit];
-        if (!config.active || totalPosted >= MAX_POSTS_PER_RUN) break;
+      } else {
+        console.log(`⏳ No Golden Hour opportunities found in r/${selectedSubreddit}`);
         
-        const currentDaySchedule = config.postingSchedule[currentDay];
-        if (!currentDaySchedule) continue;
-        
-        // Check if current time is in schedule
-        const shouldPost = currentDaySchedule.some(time => 
-          time >= timeWindow.start && time <= timeWindow.end
-        );
-        
-        if (!shouldPost) continue;
-        
-        // Check daily limits
-        const dailyCount = postingActivity.dailyCounts[subreddit] || 0;
-        const premiumCount = postingActivity.premiumFeatureCounts[subreddit] || 0;
-        
-        if (dailyCount >= config.dailyCommentLimit) {
-          console.log(`⏹️ Daily limit reached for r/${subreddit} (${dailyCount}/${config.dailyCommentLimit})`);
-          continue;
-        }
-        
-        // Generate premium-focused comment
-        console.log(`🚀 Generating Bridge Technique comment for r/${subreddit}`);
-        
-        const simulatedPainPoint = config.painPointFocus?.[0] || 'frustration';
-        const painPoints = [simulatedPainPoint];
-        
-        const samplePosts = getSamplePostsForSubreddit(subreddit);
-        const postTitle = samplePosts[Math.floor(Math.random() * samplePosts.length)];
-        
-        const commentResponse = await generatePremiumFeatureComment(
-          postTitle,
-          '',
-          subreddit,
-          painPoints
-        );
-        
-        if (commentResponse.success) {
-          // Post to Reddit
-          const postResult = await postToReddit(
-            subreddit,
-            commentResponse.comment,
-            commentResponse.style,
-            'comment',
-            '',
-            config.keywords
-          );
+        // If no Golden Hour posts, try bridge technique as fallback
+        if (totalPosted === 0) {
+          console.log(`\n🎯 STRATEGY 2: Bridge Technique as Fallback`);
           
-          if (postResult.success) {
-            // Update activity
-            postingActivity.dailyCounts[subreddit] = (postingActivity.dailyCounts[subreddit] || 0) + 1;
-            postingActivity.lastPosted[subreddit] = new Date().toISOString();
-            postingActivity.totalComments++;
+          const dailyCount = postingActivity.dailyCounts[selectedSubreddit] || 0;
+          
+          if (dailyCount < config.dailyCommentLimit) {
+            console.log(`🚀 Generating Bridge Technique comment for r/${selectedSubreddit}`);
             
-            if (commentResponse.isPremiumFocus) {
-              premiumPosted++;
-              postingActivity.premiumLeadsGenerated++;
-              console.log(`💎 Premium feature mentioned in r/${subreddit}`);
-              
-              // Save as potential lead
-              await savePremiumLead(
-                subreddit,
-                postTitle,
-                commentResponse.premiumFeature,
-                'medium',
-                painPoints
-              );
-            }
+            const simulatedPainPoint = config.painPointFocus?.[0] || 'frustration';
+            const painPoints = [simulatedPainPoint];
             
-            totalPosted++;
-            console.log(`✅ Posted to r/${subreddit} (${totalPosted}/${MAX_POSTS_PER_RUN})`);
+            const samplePosts = getSamplePostsForSubreddit(selectedSubreddit);
+            const postTitle = samplePosts[Math.floor(Math.random() * samplePosts.length)];
             
-            // Save activity after each post
-            await quickSavePostingActivity(postingActivity);
-          }
-        }
-        
-        // Early exit
-        if (totalPosted >= MAX_POSTS_PER_RUN) break;
-      }
-    }
-    
-    // Check for educational posts (only if we have capacity)
-    if (totalPosted < MAX_POSTS_PER_RUN) {
-      console.log('\n🎯 STRATEGY 3: Educational Posts');
-      
-      for (const subreddit of optimizedSubreddits) {
-        const config = redditTargets[subreddit];
-        if (!config.active || !config.educationalPostSchedule) continue;
-        
-        const eduSchedule = config.educationalPostSchedule[currentDay];
-        if (!eduSchedule) continue;
-        
-        const shouldPostEdu = eduSchedule.some(time => 
-          time >= timeWindow.start && time <= timeWindow.end
-        );
-        
-        if (shouldPostEdu) {
-          const eduCount = postingActivity.educationalCounts[subreddit] || 0;
-          if (eduCount < config.educationalPostLimit) {
-            console.log(`📚 Generating premium educational post for r/${subreddit}`);
+            const commentResponse = await generatePremiumFeatureComment(
+              postTitle,
+              '',
+              selectedSubreddit,
+              painPoints
+            );
             
-            const eduResponse = await generateEducationalPostPremium(subreddit);
-            
-            if (eduResponse.success) {
+            if (commentResponse.success) {
+              // Post to Reddit
               const postResult = await postToReddit(
-                subreddit,
-                eduResponse.content,
-                'expert',
-                'educational',
-                eduResponse.title
+                selectedSubreddit,
+                commentResponse.comment,
+                commentResponse.style,
+                'comment',
+                '',
+                config.keywords
               );
               
               if (postResult.success) {
-                postingActivity.educationalCounts[subreddit] = (postingActivity.educationalCounts[subreddit] || 0) + 1;
-                postingActivity.lastEducationalPosted[subreddit] = new Date().toISOString();
-                postingActivity.totalEducationalPosts++;
-                premiumPosted++;
-                postingActivity.premiumLeadsGenerated++;
+                // Update activity
+                postingActivity.dailyCounts[selectedSubreddit] = (postingActivity.dailyCounts[selectedSubreddit] || 0) + 1;
+                postingActivity.lastPosted[selectedSubreddit] = new Date().toISOString();
+                postingActivity.totalComments++;
+                
+                if (commentResponse.isPremiumFocus) {
+                  premiumPosted++;
+                  postingActivity.premiumLeadsGenerated++;
+                  console.log(`💎 Premium feature mentioned in r/${selectedSubreddit}`);
+                  
+                  // Save as potential lead
+                  await savePremiumLead(
+                    selectedSubreddit,
+                    postTitle,
+                    commentResponse.premiumFeature,
+                    'medium',
+                    painPoints
+                  );
+                }
+                
                 totalPosted++;
+                console.log(`✅ Posted to r/${selectedSubreddit} (${totalPosted}/${MAX_POSTS_PER_RUN})`);
                 
+                // Save activity after each post
                 await quickSavePostingActivity(postingActivity);
-                console.log(`✅ Premium educational post to r/${subreddit}`);
-                
-                // Early exit
-                if (totalPosted >= MAX_POSTS_PER_RUN) break;
               }
             }
           }
@@ -1648,7 +1561,7 @@ console.log(`💎 Premium Features: ${Object.keys(PREMIUM_FEATURES).map(k => PRE
 console.log(`🎯 Target Subreddits: ${Object.keys(redditTargets).filter(k => redditTargets[k].active).length}`);
 console.log(`📊 Rate Limit Aware: ${postingActivity.rateLimitInfo ? 'YES' : 'NO'}`);
 console.log(`⏰ Timezone: ${APP_TIMEZONE}`);
-console.log(`🔧 Offset Method: Processing 6/9 subreddits per run with hourly rotation`);
+console.log(`🔧 Single Subreddit Method: Processing 1/9 subreddits per run with hourly rotation`);
 
 // ==================== ENHANCED ENDPOINTS ====================
 
@@ -1660,7 +1573,7 @@ router.get('/cron-status', async (req, res) => {
     const currentDate = getCurrentDateInAppTimezone();
     const timeWindow = getCurrentTimeWindow();
     const currentHour = getCurrentHourInAppTimezone();
-    const optimizedSubreddits = getOptimizedSubredditsForCurrentRun();
+    const optimizedSubreddits = getOptimizedSubredditForCurrentRun();
     
     // Quick Firebase check
     const firebaseConnected = await checkFirebaseConnection();
@@ -1697,10 +1610,11 @@ router.get('/cron-status', async (req, res) => {
           aiTimeout: AI_TIMEOUT_MS,
           postingWindow: POSTING_WINDOW_MINUTES,
           goldenHourWindow: GOLDEN_HOUR_WINDOW_MINUTES,
-          offsetMethod: 'ACTIVE',
+          singleSubredditMethod: 'ACTIVE',
           currentHour: currentHour,
-          processingSubreddits: optimizedSubreddits.length,
-          totalSubreddits: Object.keys(redditTargets).filter(k => redditTargets[k].active).length
+          processingSubreddits: 1,
+          totalSubreddits: Object.keys(redditTargets).filter(k => redditTargets[k].active).length,
+          selectedSubreddit: optimizedSubreddits[0]
         },
         goldenHourStats: postingActivity.goldenHourStats
       },
@@ -1808,7 +1722,7 @@ router.post('/cron', async (req, res) => {
       message: 'GitHub Actions cron execution completed',
       ...result,
       optimized: true,
-      offsetMethod: 'active'
+      singleSubredditMethod: 'active'
     });
   } catch (error) {
     console.error('❌ Error in GitHub Actions cron:', error);
@@ -1834,7 +1748,7 @@ router.get('/cron', (req, res) => {
   const currentDate = getCurrentDateInAppTimezone();
   const timeWindow = getCurrentTimeWindow();
   const currentHour = getCurrentHourInAppTimezone();
-  const optimizedSubreddits = getOptimizedSubredditsForCurrentRun();
+  const optimizedSubreddits = getOptimizedSubredditForCurrentRun();
   
   res.json({
     success: true,
@@ -1852,11 +1766,11 @@ router.get('/cron', (req, res) => {
       description: 'Checks last 60 minutes for pain point posts'
     },
     optimization: {
-      offsetMethod: 'ACTIVE',
+      singleSubredditMethod: 'ACTIVE',
       currentHour: currentHour,
-      processingSubreddits: optimizedSubreddits.length,
+      processingSubreddits: 1,
       totalSubreddits: Object.keys(redditTargets).filter(k => redditTargets[k].active).length,
-      subredditsForThisRun: optimizedSubreddits
+      selectedSubreddit: optimizedSubreddits[0]
     },
     premiumFocus: 'ACTIVE_WITH_GOLDEN_HOUR',
     availableMethods: {
@@ -2013,7 +1927,7 @@ router.post('/generate-premium-content', async (req, res) => {
 router.get('/optimized-schedule', (req, res) => {
   const currentDay = getCurrentDayInAppTimezone();
   const currentHour = getCurrentHourInAppTimezone();
-  const optimizedSubreddits = getOptimizedSubredditsForCurrentRun();
+  const optimizedSubreddits = getOptimizedSubredditForCurrentRun();
   
   const schedule = {};
   
@@ -2039,10 +1953,10 @@ router.get('/optimized-schedule', (req, res) => {
     success: true,
     currentDay: currentDay,
     currentHour: currentHour,
-    offsetMethod: {
+    singleSubredditMethod: {
       active: true,
-      processingSubreddits: optimizedSubreddits.length,
-      subredditsForThisRun: optimizedSubreddits
+      processingSubreddits: 1,
+      selectedSubreddit: optimizedSubreddits[0]
     },
     schedule: schedule,
     postingStrategy: {
@@ -2139,7 +2053,7 @@ router.post('/post-premium-feature', async (req, res) => {
 // Golden Hour scan endpoint
 router.post('/golden-hour-scan', async (req, res) => {
   try {
-    const { subreddit, maxPosts = 2 } = req.body;
+    const { subreddit, maxPosts = 1 } = req.body;
     
     if (!subreddit) {
       return res.status(400).json({
@@ -2190,7 +2104,7 @@ router.get('/schedule/today', (req, res) => {
   const currentDate = getCurrentDateInAppTimezone();
   const timeWindow = getCurrentTimeWindow();
   const currentHour = getCurrentHourInAppTimezone();
-  const optimizedSubreddits = getOptimizedSubredditsForCurrentRun();
+  const optimizedSubreddits = getOptimizedSubredditForCurrentRun();
   
   const schedule = {};
   const educationalSchedule = {};
@@ -2231,11 +2145,11 @@ router.get('/schedule/today', (req, res) => {
     timezone: APP_TIMEZONE,
     timeWindow: timeWindow,
     goldenHourWindow: `${GOLDEN_HOUR_WINDOW_MINUTES} minutes`,
-    offsetMethod: {
+    singleSubredditMethod: {
       active: true,
       currentHour: currentHour,
-      processingSubreddits: optimizedSubreddits.length,
-      subredditsForThisRun: optimizedSubreddits
+      processingSubreddits: 1,
+      selectedSubreddit: optimizedSubreddits[0]
     },
     dailyReset: {
       lastResetDate: postingActivity.lastResetDate,
@@ -2742,7 +2656,7 @@ router.get('/admin', (req, res) => {
   const currentDay = getCurrentDayInAppTimezone();
   const timeWindow = getCurrentTimeWindow();
   const currentHour = getCurrentHourInAppTimezone();
-  const optimizedSubreddits = getOptimizedSubredditsForCurrentRun();
+  const optimizedSubreddits = getOptimizedSubredditForCurrentRun();
   
   res.json({
     success: true,
@@ -2763,11 +2677,11 @@ router.get('/admin', (req, res) => {
       description: 'Scans last 60 minutes for pain point posts'
     },
     optimization: {
-      offsetMethod: 'ACTIVE',
+      singleSubredditMethod: 'ACTIVE',
       currentHour: currentHour,
-      processingSubreddits: optimizedSubreddits.length,
-      subredditsForThisRun: optimizedSubreddits,
-      description: 'Processes 6/9 subreddits per run with hourly rotation'
+      processingSubreddits: 1,
+      selectedSubreddit: optimizedSubreddits[0],
+      description: 'Processes 1/9 subreddits per run with hourly rotation'
     },
     premiumFeatures: PREMIUM_FEATURES,
     features: {
@@ -2786,7 +2700,7 @@ router.get('/admin', (req, res) => {
       auto_posting: 'active',
       cron_scheduler: 'github-actions',
       educational_posts: 'active',
-      offset_method: 'active',
+      single_subreddit_method: 'active',
       performance_optimized: 'yes'
     },
     stats: {

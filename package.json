@@ -28,6 +28,7 @@
     "axios": "^1.13.2",
     "buffer": "^6.0.3",
     "cors": "^2.8.5",
+    "dodopayments": "^2.13.1",
     "dotenv": "^16.6.1",
     "express": "^4.18.0",
     "express-rate-limit": "^8.2.1",
