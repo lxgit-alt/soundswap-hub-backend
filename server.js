@@ -1,3 +1,4 @@
+// server.js - Main Express server (FIXED)
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
@@ -9,7 +10,15 @@ import bodyParser from 'body-parser';
 import redditAdminRoutes from './api/reddit-admin.js';
 import emailRoutes from './api/send-welcome-email.js';
 import lyricVideoRoutes from './api/generate-video.js';
-import doodleArtRoutes from './api/doodle-art.js';
+// Note: Check if doodle-art.js exists, if not we'll handle it gracefully
+let doodleArtRoutes;
+try {
+  doodleArtRoutes = (await import('./api/doodle-art.js')).default;
+  console.log('✅ Doodle Art routes loaded');
+} catch (error) {
+  console.log('⚠️ Doodle Art routes not found, skipping');
+  doodleArtRoutes = express.Router(); // Create empty router
+}
 import createCheckoutRouter from './api/create-checkout.js';
 import lemonWebhookRouter from './api/lemon-webhook.js';
 
@@ -17,23 +26,35 @@ dotenv.config();
 
 // ==================== FIREBASE ADMIN INITIALIZATION ====================
 // Initialize Firebase Admin SDK if not already initialized
+let db;
 if (!admin.apps.length) {
   try {
-    admin.initializeApp({
-      credential: admin.credential.cert({
-        projectId: process.env.FIREBASE_PROJECT_ID,
-        clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-        privateKey: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n'),
-      }),
-      databaseURL: process.env.FIREBASE_DATABASE_URL
-    });
-    console.log('🔥 Firebase Admin initialized');
+    const firebaseConfig = {
+      projectId: process.env.FIREBASE_PROJECT_ID,
+      clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+      privateKey: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n'),
+    };
+    
+    // Only initialize if we have the required config
+    if (firebaseConfig.projectId && firebaseConfig.clientEmail && firebaseConfig.privateKey) {
+      admin.initializeApp({
+        credential: admin.credential.cert(firebaseConfig),
+        databaseURL: process.env.FIREBASE_DATABASE_URL
+      });
+      console.log('🔥 Firebase Admin initialized');
+      db = admin.firestore();
+    } else {
+      console.warn('⚠️ Firebase config incomplete, Firebase Admin not initialized');
+      db = null;
+    }
   } catch (error) {
-    console.error('❌ Firebase Admin initialization error:', error);
+    console.error('❌ Firebase Admin initialization error:', error.message);
+    db = null;
   }
+} else {
+  db = admin.firestore();
+  console.log('🔥 Firebase Admin already initialized');
 }
-
-const db = admin.firestore();
 
 const app = express();
 
@@ -61,46 +82,21 @@ const getCurrentDayInAppTimezone = () => {
 // Trust proxy
 app.set('trust proxy', 1);
 
-// Security headers
+// Security headers with CSP disabled for API server
 app.use(helmet({
-  contentSecurityPolicy: {
-    directives: {
-      defaultSrc: ["'self'"],
-      styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
-      fontSrc: ["'self'", "https://fonts.gstatic.com"],
-      scriptSrc: ["'self'", "'unsafe-inline'"],
-      imgSrc: ["'self'", "data:", "https:"],
-      connectSrc: ["'self'", "https://soundswap-backend.vercel.app", "wss:"]
-    },
-  },
+  contentSecurityPolicy: false,
   crossOriginEmbedderPolicy: false
 }));
 
 // CORS configuration
 app.use(cors({
-  origin: [
-    'http://localhost:3000',
-    'https://localhost:3000', 
-    'http://localhost:5173',
-    'https://localhost:5173',
-    'http://localhost:3001',
-    'https://localhost:3001',
-    'https://soundswap-backend.vercel.app',
-    'https://soundswap.onrender.com',
-    'https://www.soundswap.onrender.com',
-    'https://soundswap.live',
-    'https://www.soundswap.live',
-    'https://sound-swap-frontend.onrender.com',
-    'https://soundswap-hub.vercel.app',
-    'https://soundswap-hub-git-main-thamindas-projects.vercel.app',
-    /\.vercel\.app$/ // Allow all Vercel subdomains
-  ],
+  origin: '*', // Allow all origins for API
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'webhook-id', 'webhook-timestamp', 'webhook-signature']
 }));
 
-// Body parsing middleware - IMPORTANT: For lemon-webhook we need raw body
+// Body parsing middleware
 app.use(bodyParser.json({
   limit: '20mb',
   verify: (req, res, buf) => {
@@ -124,9 +120,11 @@ app.use('/api/create-checkout', createCheckoutRouter);
 app.use('/api/lyric-video', lyricVideoRoutes);
 app.use('/api/generate-video', lyricVideoRoutes); // Alias for compatibility
 
-// Doodle-to-Art API
-app.use('/api/doodle-art', doodleArtRoutes);
-app.use('/api/ai-art', doodleArtRoutes); // Alias for convenience
+// Doodle-to-Art API (only if it exists)
+if (doodleArtRoutes) {
+  app.use('/api/doodle-art', doodleArtRoutes);
+  app.use('/api/ai-art', doodleArtRoutes); // Alias for convenience
+}
 
 // ==================== CREDIT MANAGEMENT ENDPOINTS ====================
 
@@ -136,14 +134,28 @@ app.post('/api/check-credits', async (req, res) => {
     const { userId, type } = req.body;
     
     if (!userId || !type) {
-      return res.status(400).json({ error: 'Missing required fields' });
+      return res.status(400).json({ 
+        error: 'Missing required fields',
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+    if (!db) {
+      return res.status(500).json({
+        success: false,
+        error: 'Firebase not initialized',
+        timestamp: new Date().toISOString()
+      });
     }
     
     // Get user from Firestore
     const userDoc = await db.collection('users').doc(userId).get();
     
     if (!userDoc.exists) {
-      return res.status(404).json({ error: 'User not found' });
+      return res.status(404).json({ 
+        error: 'User not found',
+        timestamp: new Date().toISOString()
+      });
     }
     
     const userData = userDoc.data();
@@ -178,14 +190,28 @@ app.post('/api/deduct-credits', async (req, res) => {
     const { userId, type, amount, reason } = req.body;
     
     if (!userId || !type || !amount) {
-      return res.status(400).json({ error: 'Missing required fields' });
+      return res.status(400).json({ 
+        error: 'Missing required fields',
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+    if (!db) {
+      return res.status(500).json({
+        success: false,
+        error: 'Firebase not initialized',
+        timestamp: new Date().toISOString()
+      });
     }
     
     const userRef = db.collection('users').doc(userId);
     const userDoc = await userRef.get();
     
     if (!userDoc.exists) {
-      return res.status(404).json({ error: 'User not found' });
+      return res.status(404).json({ 
+        error: 'User not found',
+        timestamp: new Date().toISOString()
+      });
     }
     
     const userData = userDoc.data();
@@ -199,7 +225,10 @@ app.post('/api/deduct-credits', async (req, res) => {
       fieldToUpdate = 'lyricVideoCredits';
       currentCredits = userData.lyricVideoCredits || 0;
     } else {
-      return res.status(400).json({ error: 'Invalid credit type' });
+      return res.status(400).json({ 
+        error: 'Invalid credit type',
+        timestamp: new Date().toISOString()
+      });
     }
     
     // Check if user has enough credits
@@ -258,6 +287,14 @@ app.get('/api/transactions/:userId', async (req, res) => {
     const { userId } = req.params;
     const { limit = 50, type } = req.query;
     
+    if (!db) {
+      return res.status(500).json({
+        success: false,
+        error: 'Firebase not initialized',
+        timestamp: new Date().toISOString()
+      });
+    }
+    
     let query = db.collection('credit_transactions')
       .where('userId', '==', userId)
       .orderBy('date', 'desc')
@@ -302,10 +339,21 @@ app.get('/api/credits/:userId', async (req, res) => {
   try {
     const { userId } = req.params;
     
+    if (!db) {
+      return res.status(500).json({
+        success: false,
+        error: 'Firebase not initialized',
+        timestamp: new Date().toISOString()
+      });
+    }
+    
     const userDoc = await db.collection('users').doc(userId).get();
     
     if (!userDoc.exists) {
-      return res.status(404).json({ error: 'User not found' });
+      return res.status(404).json({ 
+        error: 'User not found',
+        timestamp: new Date().toISOString()
+      });
     }
     
     const userData = userDoc.data();
@@ -345,6 +393,14 @@ app.get('/api/purchases/:userId', async (req, res) => {
   try {
     const { userId } = req.params;
     const { limit = 20 } = req.query;
+    
+    if (!db) {
+      return res.status(500).json({
+        success: false,
+        error: 'Firebase not initialized',
+        timestamp: new Date().toISOString()
+      });
+    }
     
     const query = db.collection('purchases')
       .where('userId', '==', userId)
@@ -391,7 +447,7 @@ app.get('/api/payments/status', (req, res) => {
     configuration: {
       dodoApiKey: process.env.DODO_PAYMENTS_API_KEY ? 'configured' : 'missing',
       dodoWebhookKey: process.env.DODO_PAYMENTS_WEBHOOK_KEY ? 'configured' : 'missing',
-      firebase: 'connected',
+      firebase: db ? 'connected' : 'disconnected',
       environment: process.env.NODE_ENV || 'development'
     },
     endpoints: {
@@ -414,7 +470,8 @@ app.get('/api/payments/test', async (req, res) => {
     if (!DODO_API_KEY) {
       return res.status(500).json({
         success: false,
-        error: 'Dodo API key not configured'
+        error: 'Dodo API key not configured',
+        timestamp: new Date().toISOString()
       });
     }
     
@@ -488,7 +545,7 @@ app.get('/api/health', (req, res) => {
       premium_feature_focus: 'active',
       lead_generation: 'active',
       rate_limit_management: 'active',
-      credit_management: process.env.FIREBASE_PROJECT_ID ? 'configured' : 'not_configured',
+      credit_management: db ? 'configured' : 'not_configured',
       dodo_payments: process.env.DODO_PAYMENTS_API_KEY ? 'configured' : 'not_configured',
       webhook: process.env.DODO_PAYMENTS_WEBHOOK_KEY ? 'configured' : 'not_configured'
     },
@@ -512,19 +569,12 @@ app.get('/api/health', (req, res) => {
       webhook_endpoint: 'POST /api/lemon-webhook'
     },
     credit_system: {
-      status: 'active',
+      status: db ? 'active' : 'disabled',
       cover_art_credits: 'points field',
       lyric_video_credits: 'lyricVideoCredits field',
       transaction_history: 'credit_transactions collection',
       purchase_history: 'purchases collection',
       subscription_history: 'subscription_transactions collection'
-    },
-    ai_features: {
-      lyric_video_generation: process.env.HF_TOKEN ? 'active' : 'disabled',
-      doodle_to_art: process.env.REPLICATE_API_TOKEN ? 'active' : 'disabled',
-      comment_generation: process.env.GOOGLE_GEMINI_API_KEY ? 'active' : 'disabled',
-      audio_analysis: process.env.HF_TOKEN ? 'active' : 'disabled',
-      premium_content_focus: 'active'
     }
   });
 });
@@ -569,50 +619,6 @@ app.get('/api/status', (req, res) => {
         get_balance: 'GET /api/credits/:userId',
         get_purchases: 'GET /api/purchases/:userId'
       }
-    },
-    payment_endpoints: {
-      create_checkout: 'POST /api/create-checkout',
-      get_products: 'GET /api/create-checkout/products',
-      get_product: 'GET /api/create-checkout/products/:productId',
-      test_dodo: 'GET /api/create-checkout/test-dodo',
-      get_session: 'GET /api/create-checkout/session/:sessionId',
-      webhook: 'POST /api/lemon-webhook',
-      webhook_test: 'GET /api/lemon-webhook/test',
-      webhook_simulate: 'POST /api/lemon-webhook/simulate',
-      webhook_status: 'GET /api/lemon-webhook/status'
-    },
-    video_generation_endpoints: {
-      generate_video: 'POST /api/generate-video',
-      generate_video_optimized: 'POST /api/generate-video/optimized',
-      regular_job_status: 'GET /api/generate-video?action=status&jobId={jobId}',
-      optimized_job_status: 'GET /api/generate-video/optimized/status?jobId={jobId}',
-      storage_usage: 'GET /api/generate-video/storage-usage',
-      manual_cleanup: 'POST /api/generate-video/manual-cleanup',
-      cleanup_expired_videos: 'GET /api/generate-video/cleanup-expired-videos',
-      physics_animations: 'GET /api/generate-video/physics-animations',
-      webhook_callback: 'POST /api/generate-video?action=webhook'
-    },
-    doodle_art_endpoints: {
-      test_connection: 'GET /api/doodle-art/test',
-      generate_art: 'POST /api/doodle-art/generate'
-    },
-    reddit_premium_endpoints: {
-      premium_analytics: 'GET /api/reddit-admin/premium-analytics',
-      generate_premium_content: 'POST /api/reddit-admin/generate-premium-content',
-      optimized_schedule: 'GET /api/reddit-admin/optimized-schedule',
-      post_premium_feature: 'POST /api/reddit-admin/post-premium-feature',
-      reset_daily: 'POST /api/reddit-admin/reset-daily',
-      cron_status: 'GET /api/reddit-admin/cron-status',
-      schedule_today: 'GET /api/reddit-admin/schedule/today',
-      manual_post: 'POST /api/reddit-admin/manual-post',
-      create_educational_post: 'POST /api/reddit-admin/create-educational-post',
-      create_top50_post: 'POST /api/reddit-admin/create-top50-post',
-      reset_counts: 'POST /api/reddit-admin/reset-counts',
-      generate_comment: 'POST /api/reddit-admin/generate-comment',
-      generate_reply: 'POST /api/reddit-admin/generate-reply',
-      analyze_post: 'POST /api/reddit-admin/analyze-post',
-      test_gemini: 'GET /api/reddit-admin/test-gemini',
-      cron: 'POST /api/reddit-admin/cron'
     }
   });
 });
@@ -638,8 +644,6 @@ app.get('/', (req, res) => {
       reddit_admin: '/api/reddit-admin/admin',
       lyric_video: '/api/lyric-video',
       generate_video: '/api/generate-video',
-      doodle_art: '/api/doodle-art/generate',
-      ai_art: '/api/ai-art/generate',
       create_checkout: '/api/create-checkout',
       lemon_webhook: '/api/lemon-webhook',
       payments: '/api/payments/status',
@@ -680,13 +684,15 @@ app.use('*', (req, res) => {
       '/api/transactions/:userId',
       '/api/credits/:userId',
       '/api/purchases/:userId'
-    ]
+    ],
+    timestamp: new Date().toISOString()
   });
 });
 
 // Error handling middleware
 app.use((error, req, res, next) => {
-  console.error('❌ Unhandled error:', error);
+  console.error('❌ Unhandled error:', error.message);
+  console.error(error.stack);
   res.status(500).json({
     success: false,
     error: 'Internal server error',
@@ -724,10 +730,6 @@ if (process.env.NODE_ENV !== 'production' || process.env.VERCEL !== '1') {
     console.log(`   GET  /api/credits/:userId - Get complete credit balance`);
     console.log(`   GET  /api/purchases/:userId - Get purchase history`);
     
-    console.log(`\n🎨 DOODLE-TO-ART ENDPOINTS:`);
-    console.log(`   GET  /api/doodle-art/test - Test Replicate connection`);
-    console.log(`   POST /api/doodle-art/generate - Generate art from sketch`);
-    
     console.log(`\n🎬 VIDEO GENERATION ENDPOINTS:`);
     console.log(`   POST /api/generate-video - Regular video generation`);
     console.log(`   POST /api/generate-video/optimized - Optimized video generation`);
@@ -749,10 +751,9 @@ if (process.env.NODE_ENV !== 'production' || process.env.VERCEL !== '1') {
     console.log(`   🎨 Hugging Face AI: ${process.env.HF_TOKEN ? 'CONFIGURED' : 'NOT CONFIGURED'}`);
     console.log(`   🖌️  Replicate AI: ${process.env.REPLICATE_API_TOKEN ? 'CONFIGURED' : 'NOT CONFIGURED'}`);
     console.log(`   🔗 Reddit API: ${process.env.REDDIT_CLIENT_ID ? 'LIVE INTEGRATION' : 'SIMULATION MODE'}`);
-    console.log(`   🎨 Doodle-to-Art: ${process.env.REPLICATE_API_TOKEN ? 'READY' : 'NEEDS REPLICATE API TOKEN'}`);
-    console.log(`   💎 Premium Feature Focus: ACTIVE`);
-    console.log(`   🔐 Firebase Admin: ${process.env.FIREBASE_PROJECT_ID ? 'INITIALIZED' : 'NOT CONFIGURED'}`);
-    console.log(`   💰 Credit System: ${process.env.FIREBASE_PROJECT_ID ? 'READY' : 'NEEDS FIREBASE CONFIG'}`);
+    console.log(`   🎨 Doodle-to-Art: ${process.env.REPLICATE_API_TOKEN ? 'AVAILABLE' : 'NOT CONFIGURED'}`);
+    console.log(`   🔐 Firebase Admin: ${db ? 'INITIALIZED' : 'NOT CONFIGURED'}`);
+    console.log(`   💰 Credit System: ${db ? 'READY' : 'NEEDS FIREBASE CONFIG'}`);
     console.log(`   💳 Payment System: ${process.env.DODO_PAYMENTS_API_KEY ? 'READY' : 'NEEDS DODO CONFIG'}`);
   });
-}g
+}
