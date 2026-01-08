@@ -1,4 +1,4 @@
-import { db } from '../../../backend/firebaseAdmin.js';
+import { db } from '../backend/firebaseAdmin.js';
 import { 
   doc, updateDoc, increment, collection, 
   query, where, getDocs, serverTimestamp, setDoc 
