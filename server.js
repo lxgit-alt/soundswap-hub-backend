@@ -1,4 +1,4 @@
-// server.js - Main Express server (FIXED with lazy loading)
+// server.js - Main Express server (FIXED)
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
@@ -6,7 +6,32 @@ import dotenv from 'dotenv';
 import admin from 'firebase-admin';
 import bodyParser from 'body-parser';
 
+// Import route modules
+import redditAdminRoutes from './api/reddit-admin.js';
+import emailRoutes from './api/send-welcome-email.js';
+import lyricVideoRoutes from './api/generate-video.js';
+// Note: Check if doodle-art.js exists, if not we'll handle it gracefully
+let doodleArtRoutes;
+try {
+  doodleArtRoutes = (await import('./api/doodle-art.js')).default;
+  if (!process.env.VERCEL_DEPLOYMENT) {
+    console.log('✅ Doodle Art routes loaded');
+  }
+} catch (error) {
+  if (!process.env.VERCEL_DEPLOYMENT) {
+    console.log('⚠️ Doodle Art routes not found, skipping');
+  }
+  doodleArtRoutes = express.Router(); // Create empty router
+}
+import createCheckoutRouter from './api/create-checkout.js';
+import lemonWebhookRouter from './api/lemon-webhook.js';
+
 dotenv.config();
+
+// Check if we're in Vercel deployment mode
+const IS_VERCEL_DEPLOYMENT = process.env.VERCEL_DEPLOYMENT === 'true' || 
+                            process.env.VERCEL === '1' || 
+                            process.env.NODE_ENV === 'production';
 
 // ==================== FIREBASE ADMIN INITIALIZATION ====================
 // Initialize Firebase Admin SDK if not already initialized
@@ -25,10 +50,14 @@ if (!admin.apps.length) {
         credential: admin.credential.cert(firebaseConfig),
         databaseURL: process.env.FIREBASE_DATABASE_URL
       });
-      console.log('🔥 Firebase Admin initialized');
+      if (!IS_VERCEL_DEPLOYMENT) {
+        console.log('🔥 Firebase Admin initialized');
+      }
       db = admin.firestore();
     } else {
-      console.warn('⚠️ Firebase config incomplete, Firebase Admin not initialized');
+      if (!IS_VERCEL_DEPLOYMENT) {
+        console.warn('⚠️ Firebase config incomplete, Firebase Admin not initialized');
+      }
       db = null;
     }
   } catch (error) {
@@ -37,7 +66,9 @@ if (!admin.apps.length) {
   }
 } else {
   db = admin.firestore();
-  console.log('🔥 Firebase Admin already initialized');
+  if (!IS_VERCEL_DEPLOYMENT) {
+    console.log('🔥 Firebase Admin already initialized');
+  }
 }
 
 const app = express();
@@ -90,148 +121,27 @@ app.use(bodyParser.json({
 }));
 app.use(bodyParser.urlencoded({ extended: true, limit: '20mb' }));
 
-// ==================== LAZY LOADING ROUTE HANDLER ====================
-// This helps prevent timeout by loading heavy routes only when needed
+// ==================== MOUNT ROUTERS ====================
 
-// Function to lazy load a route module
-const lazyLoadRoute = async (modulePath, defaultExport = true) => {
-  try {
-    console.log(`📦 Lazy loading route: ${modulePath}`);
-    const module = await import(modulePath);
-    return defaultExport ? module.default : module;
-  } catch (error) {
-    console.error(`❌ Failed to lazy load ${modulePath}:`, error.message);
-    // Return an empty router if module fails to load
-    const router = express.Router();
-    router.get('/', (req, res) => {
-      res.status(503).json({
-        success: false,
-        error: 'Route temporarily unavailable',
-        message: `Module ${modulePath} failed to load`,
-        timestamp: new Date().toISOString()
-      });
-    });
-    return router;
-  }
-};
+// Mount webhook first (needs raw body access)
+app.use('/api/lemon-webhook', lemonWebhookRouter);
 
-// ==================== ROUTE MOUNTING WITH LAZY LOADING ====================
+// Mount other routers
+app.use('/api/reddit-admin', redditAdminRoutes);
+app.use('/api/email', emailRoutes);
+app.use('/api/create-checkout', createCheckoutRouter);
 
-// Mount lightweight health routes first
-app.get('/api/health', (req, res) => {
-  const currentTime = getCurrentTimeInAppTimezone();
-  const currentDay = getCurrentDayInAppTimezone();
+// Lyric Video API
+app.use('/api/lyric-video', lyricVideoRoutes);
+app.use('/api/generate-video', lyricVideoRoutes); // Alias for compatibility
 
-  res.status(200).json({
-    success: true,
-    status: 'OK',
-    timestamp: new Date().toISOString(),
-    environment: process.env.NODE_ENV || 'development',
-    timezone: APP_TIMEZONE,
-    currentTime: currentTime,
-    currentDay: currentDay,
-    version: '2.2.0',
-    services: {
-      email: process.env.GMAIL_USER ? 'configured' : 'not_configured',
-      reddit_admin: 'operational',
-      lyric_video: process.env.HF_TOKEN ? 'configured' : 'not_configured',
-      doodle_art: process.env.REPLICATE_API_TOKEN ? 'configured' : 'not_configured',
-      gemini_ai: process.env.GOOGLE_GEMINI_API_KEY ? 'configured' : 'not_configured',
-      reddit_automation: 'active',
-      cron_scheduler: 'running',
-      vercel_cron: process.env.CRON_SECRET ? 'configured' : 'not_configured',
-      educational_posts: 'active',
-      chart_notifications: 'active',
-      reddit_api: process.env.REDDIT_CLIENT_ID ? 'configured' : 'not_configured',
-      premium_feature_focus: 'active',
-      lead_generation: 'active',
-      rate_limit_management: 'active',
-      credit_management: db ? 'configured' : 'not_configured',
-      dodo_payments: process.env.DODO_PAYMENTS_API_KEY ? 'configured' : 'not_configured',
-      webhook: process.env.DODO_PAYMENTS_WEBHOOK_KEY ? 'configured' : 'not_configured'
-    }
-  });
-});
-
-// Mount webhook routes (needs raw body access)
-app.use('/api/lemon-webhook', async (req, res, next) => {
-  const lemonWebhookRouter = await lazyLoadRoute('./api/lemon-webhook.js');
-  lemonWebhookRouter(req, res, next);
-});
-
-// Mount email routes
-app.use('/api/email', async (req, res, next) => {
-  const emailRoutes = await lazyLoadRoute('./api/send-welcome-email.js');
-  emailRoutes(req, res, next);
-});
-
-// Mount checkout routes
-app.use('/api/create-checkout', async (req, res, next) => {
-  const createCheckoutRouter = await lazyLoadRoute('./api/create-checkout.js');
-  createCheckoutRouter(req, res, next);
-});
-
-// Mount Reddit admin routes with chunked processing
-app.use('/api/reddit-admin', async (req, res, next) => {
-  // For cron endpoints, we use chunked processing
-  if (req.path === '/cron' && req.method === 'POST') {
-    // Use the chunked cron handler
-    const redditAdminRoutes = await lazyLoadRoute('./api/reddit-admin-chunked.js');
-    redditAdminRoutes(req, res, next);
-  } else {
-    // Use regular routes for other endpoints
-    const redditAdminRoutes = await lazyLoadRoute('./api/reddit-admin.js');
-    redditAdminRoutes(req, res, next);
-  }
-});
-
-// Lyric Video API - lazy load
-app.use('/api/lyric-video', async (req, res, next) => {
-  const lyricVideoRoutes = await lazyLoadRoute('./api/generate-video.js');
-  lyricVideoRoutes(req, res, next);
-});
-app.use('/api/generate-video', async (req, res, next) => {
-  const lyricVideoRoutes = await lazyLoadRoute('./api/generate-video.js');
-  lyricVideoRoutes(req, res, next);
-});
-
-// Doodle-to-Art API - lazy load with fallback
-app.use('/api/doodle-art', async (req, res, next) => {
-  try {
-    const doodleArtRoutes = await lazyLoadRoute('./api/doodle-art.js');
-    doodleArtRoutes(req, res, next);
-  } catch (error) {
-    // Create a placeholder router if module fails
-    const router = express.Router();
-    router.get('*', (req, res) => {
-      res.status(404).json({
-        success: false,
-        error: 'Doodle Art module not available',
-        timestamp: new Date().toISOString()
-      });
-    });
-    router(req, res, next);
-  }
-});
-app.use('/api/ai-art', async (req, res, next) => {
-  try {
-    const doodleArtRoutes = await lazyLoadRoute('./api/doodle-art.js');
-    doodleArtRoutes(req, res, next);
-  } catch (error) {
-    const router = express.Router();
-    router.get('*', (req, res) => {
-      res.status(404).json({
-        success: false,
-        error: 'AI Art module not available',
-        timestamp: new Date().toISOString()
-      });
-    });
-    router(req, res, next);
-  }
-});
+// Doodle-to-Art API (only if it exists)
+if (doodleArtRoutes) {
+  app.use('/api/doodle-art', doodleArtRoutes);
+  app.use('/api/ai-art', doodleArtRoutes); // Alias for convenience
+}
 
 // ==================== CREDIT MANAGEMENT ENDPOINTS ====================
-// These are lightweight and can stay loaded
 
 // Check user credits
 app.post('/api/check-credits', async (req, res) => {
@@ -386,48 +296,153 @@ app.post('/api/deduct-credits', async (req, res) => {
   }
 });
 
-// ==================== CHUNKED PROCESSING ENDPOINTS ====================
-
-// Chunked Reddit processing endpoint - processes only one subreddit per call
-app.post('/api/reddit-chunk', async (req, res) => {
+// Get transaction history
+app.get('/api/transactions/:userId', async (req, res) => {
   try {
-    // Quick auth check
-    const authHeader = req.headers.authorization;
-    if (!authHeader || authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
-      return res.status(401).json({ 
-        success: false, 
-        error: 'Unauthorized',
-        timestamp: new Date().toISOString()
-      });
-    }
-
-    console.log('✅ Starting chunked Reddit processing');
+    const { userId } = req.params;
+    const { limit = 50, type } = req.query;
     
-    const { subreddit, processType = 'goldenHour' } = req.body;
-    
-    if (!subreddit) {
-      return res.status(400).json({
+    if (!db) {
+      return res.status(500).json({
         success: false,
-        error: 'Subreddit parameter required',
+        error: 'Firebase not initialized',
         timestamp: new Date().toISOString()
       });
     }
     
-    // Import the chunked processor
-    const chunkedProcessor = await lazyLoadRoute('./api/reddit-chunked-processor.js', false);
+    let query = db.collection('credit_transactions')
+      .where('userId', '==', userId)
+      .orderBy('date', 'desc')
+      .limit(parseInt(limit));
     
-    // Process single subreddit
-    const result = await chunkedProcessor.processSingleSubreddit(subreddit, processType);
+    if (type) {
+      query = query.where('creditType', '==', type);
+    }
+    
+    const snapshot = await query.get();
+    const transactions = [];
+    
+    snapshot.forEach(doc => {
+      const data = doc.data();
+      transactions.push({
+        id: doc.id,
+        ...data,
+        // Convert Firestore timestamp to ISO string
+        date: data.date?.toDate?.()?.toISOString() || data.date
+      });
+    });
+    
+    res.json({ 
+      success: true,
+      transactions,
+      count: transactions.length,
+      userId,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('❌ Error fetching transactions:', error);
+    res.status(500).json({ 
+      success: false,
+      error: error.message,
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+// Get credit balance (combined endpoint)
+app.get('/api/credits/:userId', async (req, res) => {
+  try {
+    const { userId } = req.params;
+    
+    if (!db) {
+      return res.status(500).json({
+        success: false,
+        error: 'Firebase not initialized',
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+    const userDoc = await db.collection('users').doc(userId).get();
+    
+    if (!userDoc.exists) {
+      return res.status(404).json({ 
+        error: 'User not found',
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+    const userData = userDoc.data();
     
     res.json({
       success: true,
-      message: `Chunked processing completed for r/${subreddit}`,
-      result,
+      userId,
+      credits: {
+        coverArt: userData.points || 0,
+        lyricVideo: userData.lyricVideoCredits || 0,
+        subscription: userData.subscription || 'free',
+        founderPoints: userData.founderPoints || 0
+      },
+      subscription: {
+        status: userData.subscriptionStatus || 'none',
+        plan: userData.subscriptionVariant || 'none',
+        id: userData.subscriptionId || 'none',
+        monthlyCredits: {
+          coverArt: userData.monthlyCoverArtCredits || 0,
+          lyricVideo: userData.monthlyLyricVideoCredits || 0
+        }
+      },
       timestamp: new Date().toISOString()
     });
-    
   } catch (error) {
-    console.error('❌ Error in chunked processing:', error);
+    console.error('❌ Error getting credit balance:', error);
+    res.status(500).json({ 
+      success: false,
+      error: error.message,
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+// Get user's purchases
+app.get('/api/purchases/:userId', async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { limit = 20 } = req.query;
+    
+    if (!db) {
+      return res.status(500).json({
+        success: false,
+        error: 'Firebase not initialized',
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+    const query = db.collection('purchases')
+      .where('userId', '==', userId)
+      .orderBy('date', 'desc')
+      .limit(parseInt(limit));
+    
+    const snapshot = await query.get();
+    const purchases = [];
+    
+    snapshot.forEach(doc => {
+      const data = doc.data();
+      purchases.push({
+        id: doc.id,
+        ...data,
+        date: data.date?.toDate?.()?.toISOString() || data.date
+      });
+    });
+    
+    res.json({
+      success: true,
+      purchases,
+      count: purchases.length,
+      userId,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('❌ Error fetching purchases:', error);
     res.status(500).json({
       success: false,
       error: error.message,
@@ -436,54 +451,76 @@ app.post('/api/reddit-chunk', async (req, res) => {
   }
 });
 
-// Batch processing endpoint - triggers multiple chunks
-app.post('/api/reddit-batch', async (req, res) => {
-  try {
-    // Quick auth check
-    const authHeader = req.headers.authorization;
-    if (!authHeader || authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
-      return res.status(401).json({ 
-        success: false, 
-        error: 'Unauthorized',
-        timestamp: new Date().toISOString()
-      });
-    }
+// ==================== DODO PAYMENTS STATUS ENDPOINTS ====================
 
-    console.log('✅ Starting batch Reddit processing');
+// Get Dodo Payments configuration status
+app.get('/api/payments/status', (req, res) => {
+  res.json({
+    success: true,
+    service: 'dodo-payments',
+    status: 'active',
+    configuration: {
+      dodoApiKey: process.env.DODO_PAYMENTS_API_KEY ? 'configured' : 'missing',
+      dodoWebhookKey: process.env.DODO_PAYMENTS_WEBHOOK_KEY ? 'configured' : 'missing',
+      firebase: db ? 'connected' : 'disconnected',
+      environment: process.env.NODE_ENV || 'development'
+    },
+    endpoints: {
+      createCheckout: 'POST /api/create-checkout',
+      webhook: 'POST /api/lemon-webhook',
+      testWebhook: 'POST /api/lemon-webhook/simulate',
+      webhookStatus: 'GET /api/lemon-webhook/status',
+      products: 'GET /api/create-checkout/products',
+      testDodo: 'GET /api/create-checkout/test-dodo'
+    },
+    timestamp: new Date().toISOString()
+  });
+});
+
+// Test Dodo API connection
+app.get('/api/payments/test', async (req, res) => {
+  try {
+    const DODO_API_KEY = process.env.DODO_PAYMENTS_API_KEY;
     
-    // Get the list of subreddits to process
-    const { subreddits = [], maxChunks = 3 } = req.body;
-    
-    if (!subreddits || subreddits.length === 0) {
-      return res.status(400).json({
+    if (!DODO_API_KEY) {
+      return res.status(500).json({
         success: false,
-        error: 'Subreddits array required',
+        error: 'Dodo API key not configured',
         timestamp: new Date().toISOString()
       });
     }
     
-    // Return immediately and let the batch run in background
-    res.json({
-      success: true,
-      message: 'Batch processing initiated',
-      subredditsCount: subreddits.length,
-      maxChunks,
-      timestamp: new Date().toISOString(),
-      note: 'Processing runs asynchronously'
-    });
-    
-    // Process chunks asynchronously
-    setTimeout(async () => {
-      try {
-        const chunkedProcessor = await lazyLoadRoute('./api/reddit-chunked-processor.js', false);
-        await chunkedProcessor.processBatch(subreddits, maxChunks);
-      } catch (error) {
-        console.error('❌ Error in async batch processing:', error);
+    const response = await fetch('https://api.dodopayments.com/v1/account', {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${DODO_API_KEY}`
       }
-    }, 100);
+    });
     
+    if (response.ok) {
+      const result = await response.json();
+      res.json({
+        success: true,
+        message: 'Dodo API connection successful',
+        account: {
+          id: result.id,
+          name: result.name,
+          email: result.email,
+          mode: result.mode || 'test'
+        },
+        timestamp: new Date().toISOString()
+      });
+    } else {
+      const error = await response.json();
+      res.status(response.status).json({
+        success: false,
+        error: error.message || 'Dodo API connection failed',
+        details: error,
+        timestamp: new Date().toISOString()
+      });
+    }
   } catch (error) {
-    console.error('❌ Error in batch processing:', error);
+    console.error('❌ Dodo API test error:', error);
     res.status(500).json({
       success: false,
       error: error.message,
@@ -492,9 +529,116 @@ app.post('/api/reddit-batch', async (req, res) => {
   }
 });
 
-// ==================== SIMPLE ENDPOINTS ====================
+// ==================== ENDPOINTS ====================
 
-// Root endpoint
+// Health check endpoint
+app.get('/api/health', (req, res) => {
+  const currentTime = getCurrentTimeInAppTimezone();
+  const currentDay = getCurrentDayInAppTimezone();
+
+  res.status(200).json({
+    success: true,
+    status: 'OK',
+    timestamp: new Date().toISOString(),
+    environment: process.env.NODE_ENV || 'development',
+    timezone: APP_TIMEZONE,
+    currentTime: currentTime,
+    currentDay: currentDay,
+    version: '2.1.0',
+    services: {
+      email: process.env.GMAIL_USER ? 'configured' : 'not_configured',
+      reddit_admin: 'operational',
+      lyric_video: process.env.HF_TOKEN ? 'configured' : 'not_configured',
+      doodle_art: process.env.REPLICATE_API_TOKEN ? 'configured' : 'not_configured',
+      gemini_ai: process.env.GOOGLE_GEMINI_API_KEY ? 'configured' : 'not_configured',
+      reddit_automation: 'active',
+      cron_scheduler: 'running',
+      vercel_cron: process.env.CRON_SECRET ? 'configured' : 'not_configured',
+      educational_posts: 'active',
+      chart_notifications: 'active',
+      reddit_api: process.env.REDDIT_CLIENT_ID ? 'configured' : 'not_configured',
+      premium_feature_focus: 'active',
+      lead_generation: 'active',
+      rate_limit_management: 'active',
+      credit_management: db ? 'configured' : 'not_configured',
+      dodo_payments: process.env.DODO_PAYMENTS_API_KEY ? 'configured' : 'not_configured',
+      webhook: process.env.DODO_PAYMENTS_WEBHOOK_KEY ? 'configured' : 'not_configured'
+    },
+    premium_features: {
+      lyric_video_generator: {
+        status: process.env.HF_TOKEN ? 'active' : 'disabled',
+        focus: 'Premium feature promotion',
+        target_audience: 'Musicians, video editors, motion designers'
+      },
+      doodle_art_generator: {
+        status: process.env.REPLICATE_API_TOKEN ? 'active' : 'disabled',
+        focus: 'Premium feature promotion',
+        target_audience: 'Digital artists, AI art enthusiasts, Spotify creators'
+      }
+    },
+    payment_system: {
+      status: process.env.DODO_PAYMENTS_API_KEY ? 'active' : 'disabled',
+      provider: 'Dodo Payments',
+      webhook: process.env.DODO_PAYMENTS_WEBHOOK_KEY ? 'configured' : 'not_configured',
+      checkout: 'POST /api/create-checkout',
+      webhook_endpoint: 'POST /api/lemon-webhook'
+    },
+    credit_system: {
+      status: db ? 'active' : 'disabled',
+      cover_art_credits: 'points field',
+      lyric_video_credits: 'lyricVideoCredits field',
+      transaction_history: 'credit_transactions collection',
+      purchase_history: 'purchases collection',
+      subscription_history: 'subscription_transactions collection'
+    }
+  });
+});
+
+// Simple health endpoint (alias)
+app.get('/health', (req, res) => {
+  res.redirect('/api/health');
+});
+
+// Enhanced API status endpoint
+app.get('/api/status', (req, res) => {
+  const currentTime = getCurrentTimeInAppTimezone();
+  const currentDay = getCurrentDayInAppTimezone();
+
+  res.json({
+    success: true,
+    service: 'soundswap-backend',
+    status: 'operational',
+    version: '2.1.0',
+    environment: process.env.NODE_ENV || 'development',
+    timezone: APP_TIMEZONE,
+    currentTime: currentTime,
+    currentDay: currentDay,
+    timestamp: new Date().toISOString(),
+    endpoints: {
+      health: '/api/health',
+      status: '/api/status',
+      email: '/api/email/*',
+      reddit_admin: '/api/reddit-admin/*',
+      lyric_video: '/api/lyric-video/*',
+      generate_video: '/api/generate-video/*',
+      doodle_art: '/api/doodle-art/*',
+      ai_art: '/api/ai-art/*',
+      create_checkout: '/api/create-checkout',
+      lemon_webhook: '/api/lemon-webhook',
+      payments_status: '/api/payments/status',
+      payments_test: '/api/payments/test',
+      credit_management: {
+        check_credits: 'POST /api/check-credits',
+        deduct_credits: 'POST /api/deduct-credits',
+        get_transactions: 'GET /api/transactions/:userId',
+        get_balance: 'GET /api/credits/:userId',
+        get_purchases: 'GET /api/purchases/:userId'
+      }
+    }
+  });
+});
+
+// Root endpoint - UPDATED TO RETURN DETAILED RESPONSE
 app.get('/', (req, res) => {
   const currentTime = getCurrentTimeInAppTimezone();
   const currentDay = getCurrentDayInAppTimezone();
@@ -502,23 +646,96 @@ app.get('/', (req, res) => {
   res.json({
     success: true,
     message: 'SoundSwap API - Backend service is running',
-    version: '2.2.0',
+    version: '2.1.0',
     environment: process.env.NODE_ENV || 'development',
     timezone: APP_TIMEZONE,
     currentTime: currentTime,
     currentDay: currentDay,
     timestamp: new Date().toISOString(),
-    features: {
-      lazy_loading: 'enabled',
-      chunked_processing: 'available',
-      timeout_protection: 'active',
-      vercel_optimized: 'yes'
-    },
     endpoints: {
       health: '/api/health',
-      reddit_chunk: 'POST /api/reddit-chunk (process single subreddit)',
-      reddit_batch: 'POST /api/reddit-batch (batch processing)',
-      credit_management: '/api/check-credits, /api/deduct-credits'
+      status: '/api/status',
+      email: '/api/email/send-welcome-email',
+      reddit_admin: '/api/reddit-admin/admin',
+      lyric_video: '/api/lyric-video',
+      generate_video: '/api/generate-video',
+      doodle_art: '/api/doodle-art/generate',
+      ai_art: '/api/ai-art/generate',
+      gemini_ai: '/api/reddit-admin/generate-comment',
+      automation: '/api/reddit-admin/cron-status',
+      reddit_api_test: '/api/reddit-admin/test-reddit',
+      cron: '/api/reddit-admin/cron (POST)',
+      premium_analytics: '/api/reddit-admin/premium-analytics',
+      generate_premium_content: '/api/reddit-admin/generate-premium-content',
+      optimized_schedule: '/api/reddit-admin/optimized-schedule',
+      post_premium_feature: '/api/reddit-admin/post-premium-feature',
+      reset_daily: '/api/reddit-admin/reset-daily',
+      check_credits: 'POST /api/check-credits',
+      deduct_credits: 'POST /api/deduct-credits',
+      get_transactions: 'GET /api/transactions/:userId',
+      get_balance: 'GET /api/credits/:userId'
+    },
+    video_generation_api: {
+      generate_video: 'POST /api/generate-video',
+      generate_video_optimized: 'POST /api/generate-video/optimized',
+      regular_job_status: 'GET /api/generate-video?action=status&jobId={jobId}',
+      optimized_job_status: 'GET /api/generate-video/optimized/status?jobId={jobId}',
+      storage_usage: 'GET /api/generate-video/storage-usage',
+      manual_cleanup: 'POST /api/generate-video/manual-cleanup',
+      cleanup_expired_videos: 'GET /api/generate-video/cleanup-expired-videos',
+      physics_animations: 'GET /api/generate-video/physics-animations',
+      webhook_callback: 'POST /api/generate-video?action=webhook'
+    },
+    doodle_to_art_api: {
+      generate: 'POST /api/doodle-art/generate',
+      test: 'GET /api/doodle-art/test',
+      features: {
+        model: 'ControlNet Scribble',
+        creativity_slider: '0.1 (creative) to 1.0 (strict)',
+        nsfw_filter: 'enabled',
+        cost: '$0.30 - $0.50 per credit',
+        speed: '5-8 seconds',
+        text_warning: 'AI may not render text accurately'
+      }
+    },
+    credit_management_api: {
+      check_credits: 'POST /api/check-credits - Check user credit balance',
+      deduct_credits: 'POST /api/deduct-credits - Deduct credits for generation',
+      get_transactions: 'GET /api/transactions/:userId - Get transaction history',
+      get_balance: 'GET /api/credits/:userId - Get complete credit balance'
+    },
+    reddit_premium_endpoints: {
+      premium_analytics: 'GET /api/reddit-admin/premium-analytics - Track premium lead generation',
+      generate_premium_content: 'POST /api/reddit-admin/generate-premium-content - Generate premium-focused content',
+      optimized_schedule: 'GET /api/reddit-admin/optimized-schedule - View optimized posting schedule',
+      post_premium_feature: 'POST /api/reddit-admin/post-premium-feature - Manual premium feature post',
+      reset_daily: 'POST /api/reddit-admin/reset-daily - Manual daily reset'
+    },
+    ai_features: {
+      comment_generation: 'active',
+      dm_replies: 'active',
+      post_analysis: 'active',
+      audio_analysis: 'active',
+      lyric_enhancement: 'active',
+      doodle_to_art: 'active',
+      automation_system: 'active',
+      cron_scheduler: 'running',
+      vercel_cron: 'active',
+      educational_posts: 'active',
+      top50_promotion: 'active',
+      chart_notifications: 'active',
+      reddit_api: 'live',
+      premium_feature_focus: 'active',
+      credit_system: 'active'
+    },
+    reddit_automation_updates: {
+      total_subreddits: 12,
+      new_premium_subreddits: 8,
+      total_audience: '5M+',
+      daily_comments: '15 posts/day (rate limit safe)',
+      premium_focus: '80% of content focuses on premium features',
+      features: 'Rate limit aware, lead tracking, daily reset',
+      api_mode: 'LIVE REDDIT API'
     }
   });
 });
@@ -535,6 +752,21 @@ app.use('*', (req, res) => {
     timezone: APP_TIMEZONE,
     currentTime: currentTime,
     currentDay: currentDay,
+    availableEndpoints: [
+      '/api/health',
+      '/health',
+      '/api/status',
+      '/api/email/send-welcome-email',
+      '/api/reddit-admin/admin',
+      '/api/create-checkout',
+      '/api/lemon-webhook',
+      '/api/payments/status',
+      '/api/check-credits (POST)',
+      '/api/deduct-credits (POST)',
+      '/api/transactions/:userId',
+      '/api/credits/:userId',
+      '/api/purchases/:userId'
+    ],
     timestamp: new Date().toISOString()
   });
 });
@@ -567,14 +799,48 @@ if (process.env.NODE_ENV !== 'production' || process.env.VERCEL !== '1') {
     console.log(`📅 Current time: ${currentTime} on ${currentDay}`);
     console.log(`❤️  Health check: http://localhost:${PORT}/api/health`);
     
-    console.log(`\n🔧 CHUNKED PROCESSING ENDPOINTS:`);
-    console.log(`   POST /api/reddit-chunk - Process single subreddit`);
-    console.log(`   POST /api/reddit-batch - Batch process multiple subreddits`);
+    console.log(`\n💰 PAYMENT ENDPOINTS:`);
+    console.log(`   POST /api/create-checkout - Create checkout session`);
+    console.log(`   POST /api/lemon-webhook - Dodo webhook handler`);
+    console.log(`   GET  /api/create-checkout/products - Get product catalog`);
+    console.log(`   GET  /api/payments/status - Payment system status`);
     
-    console.log(`\n⚡ PERFORMANCE OPTIMIZATIONS:`);
-    console.log(`   ✅ Lazy loading enabled`);
-    console.log(`   ✅ Chunked processing`);
-    console.log(`   ✅ Timeout protection`);
-    console.log(`   ✅ Vercel-optimized`);
+    console.log(`\n💰 CREDIT MANAGEMENT ENDPOINTS:`);
+    console.log(`   POST /api/check-credits - Check user credit balance`);
+    console.log(`   POST /api/deduct-credits - Deduct credits for generation`);
+    console.log(`   GET  /api/transactions/:userId - Get transaction history`);
+    console.log(`   GET  /api/credits/:userId - Get complete credit balance`);
+    console.log(`   GET  /api/purchases/:userId - Get purchase history`);
+    
+    console.log(`\n🎬 VIDEO GENERATION ENDPOINTS:`);
+    console.log(`   POST /api/generate-video - Regular video generation`);
+    console.log(`   POST /api/generate-video/optimized - Optimized video generation`);
+    
+    console.log(`\n💎 REDDIT PREMIUM FEATURE ENDPOINTS:`);
+    console.log(`   GET  /api/reddit-admin/premium-analytics - Premium lead tracking`);
+    console.log(`   POST /api/reddit-admin/generate-premium-content - Generate premium content`);
+    console.log(`   GET  /api/reddit-admin/optimized-schedule - Optimized posting schedule`);
+    
+    console.log(`\n📧 Email endpoints: http://localhost:${PORT}/api/email/*`);
+    console.log(`🤖 Reddit Admin: http://localhost:${PORT}/api/reddit-admin/admin`);
+    console.log(`📊 API Status: http://localhost:${PORT}/api/status`);
+    
+    console.log(`\n🔧 Configuration Status:`);
+    console.log(`   🔐 DODO PAYMENTS: ${process.env.DODO_PAYMENTS_API_KEY ? 'Configured' : 'Not configured'}`);
+    console.log(`   🔐 DODO WEBHOOK: ${process.env.DODO_PAYMENTS_WEBHOOK_KEY ? 'Configured' : 'Not configured'}`);
+    console.log(`   🔐 CRON_SECRET: ${process.env.CRON_SECRET ? 'Configured' : 'Not configured'}`);
+    console.log(`   🤖 Gemini AI: ${process.env.GOOGLE_GEMINI_API_KEY ? 'Configured' : 'Not configured'}`);
+    console.log(`   🎨 Hugging Face AI: ${process.env.HF_TOKEN ? 'CONFIGURED' : 'NOT CONFIGURED'}`);
+    console.log(`   🖌️  Replicate AI: ${process.env.REPLICATE_API_TOKEN ? 'CONFIGURED' : 'NOT CONFIGURED'}`);
+    console.log(`   🔗 Reddit API: ${process.env.REDDIT_CLIENT_ID ? 'LIVE INTEGRATION' : 'SIMULATION MODE'}`);
+    console.log(`   🎨 Doodle-to-Art: ${process.env.REPLICATE_API_TOKEN ? 'AVAILABLE' : 'NOT CONFIGURED'}`);
+    console.log(`   🔐 Firebase Admin: ${db ? 'INITIALIZED' : 'NOT CONFIGURED'}`);
+    console.log(`   💰 Credit System: ${db ? 'READY' : 'NEEDS FIREBASE CONFIG'}`);
+    console.log(`   💳 Payment System: ${process.env.DODO_PAYMENTS_API_KEY ? 'READY' : 'NEEDS DODO CONFIG'}`);
+  });
+} else if (!IS_VERCEL_DEPLOYMENT) {
+  // Only show minimal logs in Vercel production
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(`🚀 Server running on port ${PORT} (Vercel production mode)`);
   });
 }
