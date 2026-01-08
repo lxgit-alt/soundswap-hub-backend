@@ -1,246 +1,294 @@
 import express from 'express';
-import nodemailer from 'nodemailer';
-import { readFile } from 'fs/promises';
-import path from 'path';
-import Handlebars from 'handlebars';
 
 const router = express.Router();
 
-console.log('🔧 Email routes module loaded - checking endpoints...');
+console.log('[INFO] 🔧 Email routes module loaded - checking endpoints...');
 
-// Create email transporter - FIXED: use createTransport not createTransporter
-const createTransporter = () => {
-  return nodemailer.createTransport({
-    service: 'gmail',
-    auth: {
-      user: process.env.GMAIL_USER,
-      pass: process.env.GMAIL_PASS,
-    },
-  });
+// ==================== LAZY LOADING CONFIGURATION ====================
+
+let isEmailLoaded = false;
+let isTemplatesLoaded = false;
+
+// Lazy loaded dependencies
+let nodemailer = null;
+let Handlebars = null;
+
+// Utility functions that will be defined after lazy loading
+let createTransporter = null;
+let getClientURL = null;
+let renderTemplate = null;
+let sendWelcomeEmail = null;
+let sendPasswordResetEmail = null;
+let sendSongReviewedEmail = null;
+let sendTop10ChartEmail = null;
+
+// ==================== IMMEDIATE FUNCTIONS ====================
+// These don't need any imports
+
+const getCurrentWeekRange = () => {
+  const now = new Date();
+  const startOfWeek = new Date(now);
+  startOfWeek.setDate(now.getDate() - now.getDay());
+  const endOfWeek = new Date(startOfWeek);
+  endOfWeek.setDate(startOfWeek.getDate() + 6);
+  
+  const formatDate = (date) => {
+    return date.toLocaleDateString('en-US', { 
+      month: 'long', 
+      day: 'numeric', 
+      year: 'numeric' 
+    });
+  };
+  
+  return `${formatDate(startOfWeek)} - ${formatDate(endOfWeek)}`;
 };
 
-// Set client URL based on environment
-const getClientURL = () => {
-  if (process.env.NODE_ENV === 'production') {
-    return 'https://soundswap.live';
-  }
-  return process.env.CLIENT_URL || 'https://soundswap.live';
-};
+// ==================== LAZY LOAD HELPER ====================
 
-// Utility to load and compile a Handlebars template
-async function renderTemplate(templateName, data) {
-  try {
-    const templatePath = path.join(process.cwd(), 'templates', `${templateName}.hbs`);
-    console.log(`📄 Loading template from: ${templatePath}`);
+const loadEmailModules = async () => {
+  if (!isEmailLoaded) {
+    console.log('[INFO] 📧 Email: Lazy loading nodemailer and templates');
     
-    const source = await readFile(templatePath, 'utf8');
-    const template = Handlebars.compile(source);
+    // Dynamically import dependencies
+    const nodemailerModule = await import('nodemailer');
+    const fsModule = await import('fs/promises');
+    const pathModule = await import('path');
+    const handlebarsModule = await import('handlebars');
     
-    // Default data for all templates
-    const templateData = {
-      dashboardUrl: `${getClientURL()}/dashboard`,
-      supportUrl: `${getClientURL()}/support`,
-      settingsUrl: `${getClientURL()}/settings`,
-      unsubscribeUrl: `${getClientURL()}/unsubscribe`,
-      loginUrl: `${getClientURL()}/login`,
-      chartsUrl: `${getClientURL()}/charts`,
-      twitterUrl: 'https://twitter.com/soundswap',
-      facebookUrl: 'https://facebook.com/soundswap',
-      instagramUrl: 'https://instagram.com/soundswap_official',
-      youtubeUrl: 'https://youtube.com/soundswap',
-      ...data
-    };
+    nodemailer = nodemailerModule.default;
+    Handlebars = handlebarsModule.default;
     
-    return template(templateData);
-  } catch (error) {
-    console.error(`❌ Failed to render template '${templateName}':`, error);
-    throw new Error(`Template '${templateName}' not found or invalid`);
-  }
-}
-
-// Send welcome email function
-const sendWelcomeEmail = async (email, name, subscription, isFounder = false) => {
-  try {
-    console.log('📧 Preparing to send welcome email:', { email, name, subscription, isFounder });
-
-    if (!process.env.GMAIL_USER || !process.env.GMAIL_PASS) {
-      throw new Error('Email credentials not configured');
-    }
-
-    const transporter = createTransporter();
-
-    const html = await renderTemplate('welcome', {
-      name,
-      subscription,
-      isFounder
-    });
-
-    const subject = isFounder 
-      ? `🎉 Welcome to SoundSwap, ${name}! You're a Founder Member!`
-      : `🎉 Welcome to SoundSwap, ${name}! Your ${subscription} Plan is Active`;
-
-    const mailOptions = {
-      from: { name: 'SoundSwap', address: process.env.GMAIL_USER },
-      to: email,
-      subject: subject,
-      html: html
+    // Now define functions that use these modules
+    createTransporter = () => {
+      return nodemailer.createTransport({
+        service: 'gmail',
+        auth: {
+          user: process.env.GMAIL_USER,
+          pass: process.env.GMAIL_PASS,
+        },
+      });
     };
 
-    console.log('📤 Sending email to:', email);
-    const result = await transporter.sendMail(mailOptions);
-    console.log('✅ Email sent successfully:', result.messageId);
-    return result;
-  } catch (error) {
-    console.error('❌ Error sending welcome email:', error);
-    throw error;
-  }
-};
-
-// Send password reset email function
-const sendPasswordResetEmail = async (email, resetToken, name) => {
-  try {
-    console.log('📧 Preparing to send password reset email:', { email, resetToken, name });
-
-    if (!process.env.GMAIL_USER || !process.env.GMAIL_PASS) {
-      throw new Error('Email credentials not configured');
-    }
-
-    const transporter = createTransporter();
-    const resetUrl = `${getClientURL()}/reset-password?token=${resetToken}&email=${encodeURIComponent(email)}`;
-
-    const html = await renderTemplate('password-reset', {
-      name,
-      resetUrl
-    });
-
-    const mailOptions = {
-      from: { name: 'SoundSwap', address: process.env.GMAIL_USER },
-      to: email,
-      subject: '🔐 Reset Your SoundSwap Password',
-      html: html
+    getClientURL = () => {
+      if (process.env.NODE_ENV === 'production') {
+        return 'https://soundswap.live';
+      }
+      return process.env.CLIENT_URL || 'https://soundswap.live';
     };
 
-    console.log('📤 Sending password reset email to:', email);
-    const result = await transporter.sendMail(mailOptions);
-    console.log('✅ Password reset email sent successfully');
-    return result;
-  } catch (error) {
-    console.error('❌ Error sending password reset email:', error);
-    throw error;
-  }
-};
-
-// Send song reviewed notification email function
-const sendSongReviewedEmail = async (email, name, songTitle, reviewerName, reviewComments, rating, songUrl) => {
-  try {
-    console.log('📧 Preparing to send song reviewed email:', { email, name, songTitle });
-
-    if (!process.env.GMAIL_USER || !process.env.GMAIL_PASS) {
-      throw new Error('Email credentials not configured');
-    }
-
-    const transporter = createTransporter();
-
-    // Register star rating helper for Handlebars
-    Handlebars.registerHelper('stars', function(rating) {
-      const fullStars = Math.round(rating);
-      const stars = '★'.repeat(fullStars) + '☆'.repeat(5 - fullStars);
-      return new Handlebars.SafeString(stars);
-    });
-
-    const html = await renderTemplate('song-reviewed', {
-      name,
-      songTitle,
-      reviewerName,
-      reviewComments,
-      rating,
-      songUrl
-    });
-
-    const mailOptions = {
-      from: { name: 'SoundSwap', address: process.env.GMAIL_USER },
-      to: email,
-      subject: `🎵 Your Song "${songTitle}" Has Been Reviewed!`,
-      html: html
+    renderTemplate = async (templateName, data) => {
+      try {
+        const templatePath = pathModule.join(process.cwd(), 'templates', `${templateName}.hbs`);
+        
+        const source = await fsModule.readFile(templatePath, 'utf8');
+        const template = Handlebars.compile(source);
+        
+        // Default data for all templates
+        const templateData = {
+          dashboardUrl: `${getClientURL()}/dashboard`,
+          supportUrl: `${getClientURL()}/support`,
+          settingsUrl: `${getClientURL()}/settings`,
+          unsubscribeUrl: `${getClientURL()}/unsubscribe`,
+          loginUrl: `${getClientURL()}/login`,
+          chartsUrl: `${getClientURL()}/charts`,
+          twitterUrl: 'https://twitter.com/soundswap',
+          facebookUrl: 'https://facebook.com/soundswap',
+          instagramUrl: 'https://instagram.com/soundswap_official',
+          youtubeUrl: 'https://youtube.com/soundswap',
+          ...data
+        };
+        
+        return template(templateData);
+      } catch (error) {
+        console.error(`[ERROR] ❌ Failed to render template '${templateName}':`, error);
+        throw new Error(`Template '${templateName}' not found or invalid`);
+      }
     };
 
-    console.log('📤 Sending song reviewed email to:', email);
-    const result = await transporter.sendMail(mailOptions);
-    console.log('✅ Song reviewed email sent successfully');
-    return result;
-  } catch (error) {
-    console.error('❌ Error sending song reviewed email:', error);
-    throw error;
-  }
-};
+    sendWelcomeEmail = async (email, name, subscription, isFounder = false) => {
+      try {
+        console.log('[INFO] 📧 Preparing to send welcome email:', { email, name, subscription, isFounder });
 
-// Send top 10 chart notification email function
-const sendTop10ChartEmail = async (
-  email, 
-  name, 
-  position, 
-  trackTitle, 
-  trackGenre, 
-  trackScore, 
-  averageRating, 
-  ratingCount, 
-  pairingEngagement, 
-  uniqueReviewers, 
-  pointsAwarded, 
-  chartWeek,
-  chartData = []
-) => {
-  try {
-    console.log('📧 Preparing to send top 10 chart email:', { email, name, position, trackTitle });
+        if (!process.env.GMAIL_USER || !process.env.GMAIL_PASS) {
+          throw new Error('Email credentials not configured');
+        }
 
-    if (!process.env.GMAIL_USER || !process.env.GMAIL_PASS) {
-      throw new Error('Email credentials not configured');
-    }
+        const transporter = createTransporter();
 
-    const transporter = createTransporter();
+        const html = await renderTemplate('welcome', {
+          name,
+          subscription,
+          isFounder
+        });
 
-    const html = await renderTemplate('top10-chart', {
-      name,
-      position,
-      trackTitle,
-      trackGenre,
-      trackScore: trackScore.toFixed(1),
-      averageRating: averageRating.toFixed(1),
-      ratingCount,
-      pairingEngagement,
-      uniqueReviewers,
-      pointsAwarded,
+        const subject = isFounder 
+          ? `🎉 Welcome to SoundSwap, ${name}! You're a Founder Member!`
+          : `🎉 Welcome to SoundSwap, ${name}! Your ${subscription} Plan is Active`;
+
+        const mailOptions = {
+          from: { name: 'SoundSwap', address: process.env.GMAIL_USER },
+          to: email,
+          subject: subject,
+          html: html
+        };
+
+        console.log('[INFO] 📤 Sending email to:', email);
+        const result = await transporter.sendMail(mailOptions);
+        console.log('[INFO] ✅ Email sent successfully:', result.messageId);
+        return result;
+      } catch (error) {
+        console.error('[ERROR] ❌ Error sending welcome email:', error);
+        throw error;
+      }
+    };
+
+    sendPasswordResetEmail = async (email, resetToken, name) => {
+      try {
+        console.log('[INFO] 📧 Preparing to send password reset email:', { email, resetToken, name });
+
+        if (!process.env.GMAIL_USER || !process.env.GMAIL_PASS) {
+          throw new Error('Email credentials not configured');
+        }
+
+        const transporter = createTransporter();
+        const resetUrl = `${getClientURL()}/reset-password?token=${resetToken}&email=${encodeURIComponent(email)}`;
+
+        const html = await renderTemplate('password-reset', {
+          name,
+          resetUrl
+        });
+
+        const mailOptions = {
+          from: { name: 'SoundSwap', address: process.env.GMAIL_USER },
+          to: email,
+          subject: '🔐 Reset Your SoundSwap Password',
+          html: html
+        };
+
+        console.log('[INFO] 📤 Sending password reset email to:', email);
+        const result = await transporter.sendMail(mailOptions);
+        console.log('[INFO] ✅ Password reset email sent successfully');
+        return result;
+      } catch (error) {
+        console.error('[ERROR] ❌ Error sending password reset email:', error);
+        throw error;
+      }
+    };
+
+    sendSongReviewedEmail = async (email, name, songTitle, reviewerName, reviewComments, rating, songUrl) => {
+      try {
+        console.log('[INFO] 📧 Preparing to send song reviewed email:', { email, name, songTitle });
+
+        if (!process.env.GMAIL_USER || !process.env.GMAIL_PASS) {
+          throw new Error('Email credentials not configured');
+        }
+
+        const transporter = createTransporter();
+
+        // Register star rating helper for Handlebars
+        Handlebars.registerHelper('stars', function(rating) {
+          const fullStars = Math.round(rating);
+          const stars = '★'.repeat(fullStars) + '☆'.repeat(5 - fullStars);
+          return new Handlebars.SafeString(stars);
+        });
+
+        const html = await renderTemplate('song-reviewed', {
+          name,
+          songTitle,
+          reviewerName,
+          reviewComments,
+          rating,
+          songUrl
+        });
+
+        const mailOptions = {
+          from: { name: 'SoundSwap', address: process.env.GMAIL_USER },
+          to: email,
+          subject: `🎵 Your Song "${songTitle}" Has Been Reviewed!`,
+          html: html
+        };
+
+        console.log('[INFO] 📤 Sending song reviewed email to:', email);
+        const result = await transporter.sendMail(mailOptions);
+        console.log('[INFO] ✅ Song reviewed email sent successfully');
+        return result;
+      } catch (error) {
+        console.error('[ERROR] ❌ Error sending song reviewed email:', error);
+        throw error;
+      }
+    };
+
+    sendTop10ChartEmail = async (
+      email, 
+      name, 
+      position, 
+      trackTitle, 
+      trackGenre, 
+      trackScore, 
+      averageRating, 
+      ratingCount, 
+      pairingEngagement, 
+      uniqueReviewers, 
+      pointsAwarded, 
       chartWeek,
-      chartData,
-      chartUrl: `${getClientURL()}/charts`
-    });
+      chartData = []
+    ) => {
+      try {
+        console.log('[INFO] 📧 Preparing to send top 10 chart email:', { email, name, position, trackTitle });
 
-    const positionEmoji = position === 1 ? '🥇' : position === 2 ? '🥈' : position === 3 ? '🥉' : '🎵';
-    const subject = `${positionEmoji} Congratulations! You're #${position} in SoundSwap Charts!`;
+        if (!process.env.GMAIL_USER || !process.env.GMAIL_PASS) {
+          throw new Error('Email credentials not configured');
+        }
 
-    const mailOptions = {
-      from: { name: 'SoundSwap', address: process.env.GMAIL_USER },
-      to: email,
-      subject,
-      html
+        const transporter = createTransporter();
+
+        const html = await renderTemplate('top10-chart', {
+          name,
+          position,
+          trackTitle,
+          trackGenre,
+          trackScore: trackScore.toFixed(1),
+          averageRating: averageRating.toFixed(1),
+          ratingCount,
+          pairingEngagement,
+          uniqueReviewers,
+          pointsAwarded,
+          chartWeek,
+          chartData,
+          chartUrl: `${getClientURL()}/charts`
+        });
+
+        const positionEmoji = position === 1 ? '🥇' : position === 2 ? '🥈' : position === 3 ? '🥉' : '🎵';
+        const subject = `${positionEmoji} Congratulations! You're #${position} in SoundSwap Charts!`;
+
+        const mailOptions = {
+          from: { name: 'SoundSwap', address: process.env.GMAIL_USER },
+          to: email,
+          subject,
+          html
+        };
+
+        console.log('[INFO] 📤 Sending top 10 chart email to:', email);
+        const result = await transporter.sendMail(mailOptions);
+        console.log('[INFO] ✅ Top 10 chart email sent successfully');
+        return result;
+      } catch (error) {
+        console.error('[ERROR] ❌ Error sending top 10 chart email:', error);
+        throw error;
+      }
     };
 
-    console.log('📤 Sending top 10 chart email to:', email);
-    const result = await transporter.sendMail(mailOptions);
-    console.log('✅ Top 10 chart email sent successfully');
-    return result;
-  } catch (error) {
-    console.error('❌ Error sending top 10 chart email:', error);
-    throw error;
+    isEmailLoaded = true;
+    isTemplatesLoaded = true;
+    console.log('[INFO] 📧 Email: All modules loaded successfully');
   }
 };
 
 // ==================== ROUTE HANDLERS ====================
 
 // Send welcome email route
-export const sendWelcomeEmailHandler = async (req, res) => {
-  console.log('📍 Hit /send-welcome-email endpoint');
-  console.log('📨 Request body:', req.body);
+const sendWelcomeEmailHandler = async (req, res) => {
+  console.log('[INFO] 📍 Hit /send-welcome-email endpoint');
   
   try {
     const { email, name, subscription, isFounder } = req.body;
@@ -254,12 +302,17 @@ export const sendWelcomeEmailHandler = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Invalid email format' });
     }
 
+    // Lazy load email modules if not already loaded
+    if (!isEmailLoaded) {
+      await loadEmailModules();
+    }
+
     await sendWelcomeEmail(email, name || 'Artist', subscription || 'Free', isFounder || false);
     
-    console.log('✅ Welcome email route completed successfully');
+    console.log('[INFO] ✅ Welcome email route completed successfully');
     res.json({ success: true, message: 'Welcome email sent successfully' });
   } catch (error) {
-    console.error('❌ Welcome email route error:', error);
+    console.error('[ERROR] ❌ Welcome email route error:', error);
     res.status(500).json({ 
       success: false, 
       message: 'Failed to send welcome email',
@@ -269,9 +322,8 @@ export const sendWelcomeEmailHandler = async (req, res) => {
 };
 
 // Send password reset email route
-export const sendPasswordResetHandler = async (req, res) => {
-  console.log('📍 Hit /send-password-reset endpoint');
-  console.log('📨 Request body:', req.body);
+const sendPasswordResetHandler = async (req, res) => {
+  console.log('[INFO] 📍 Hit /send-password-reset endpoint');
   
   try {
     const { email, resetToken, name } = req.body;
@@ -285,12 +337,17 @@ export const sendPasswordResetHandler = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Invalid email format' });
     }
 
+    // Lazy load email modules if not already loaded
+    if (!isEmailLoaded) {
+      await loadEmailModules();
+    }
+
     await sendPasswordResetEmail(email, resetToken, name || '');
     
-    console.log('✅ Password reset email route completed successfully');
+    console.log('[INFO] ✅ Password reset email route completed successfully');
     res.json({ success: true, message: 'Password reset email sent successfully' });
   } catch (error) {
-    console.error('❌ Password reset email route error:', error);
+    console.error('[ERROR] ❌ Password reset email route error:', error);
     res.status(500).json({ 
       success: false, 
       message: 'Failed to send password reset email',
@@ -300,9 +357,8 @@ export const sendPasswordResetHandler = async (req, res) => {
 };
 
 // Send song reviewed notification route
-export const sendSongReviewedHandler = async (req, res) => {
-  console.log('📍 Hit /send-song-reviewed endpoint');
-  console.log('📨 Request body:', req.body);
+const sendSongReviewedHandler = async (req, res) => {
+  console.log('[INFO] 📍 Hit /send-song-reviewed endpoint');
   
   try {
     const { email, name, songTitle, reviewerName, reviewComments, rating, songUrl } = req.body;
@@ -316,12 +372,17 @@ export const sendSongReviewedHandler = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Invalid email format' });
     }
 
+    // Lazy load email modules if not already loaded
+    if (!isEmailLoaded) {
+      await loadEmailModules();
+    }
+
     await sendSongReviewedEmail(email, name || 'Artist', songTitle, reviewerName, reviewComments, rating, songUrl);
     
-    console.log('✅ Song reviewed email route completed successfully');
+    console.log('[INFO] ✅ Song reviewed email route completed successfully');
     res.json({ success: true, message: 'Song reviewed notification sent successfully' });
   } catch (error) {
-    console.error('❌ Song reviewed email route error:', error);
+    console.error('[ERROR] ❌ Song reviewed email route error:', error);
     res.status(500).json({ 
       success: false, 
       message: 'Failed to send song reviewed notification',
@@ -331,9 +392,8 @@ export const sendSongReviewedHandler = async (req, res) => {
 };
 
 // Send top 10 chart notification route
-export const sendTop10ChartHandler = async (req, res) => {
-  console.log('📍 Hit /send-top10-chart endpoint');
-  console.log('📨 Request body:', req.body);
+const sendTop10ChartHandler = async (req, res) => {
+  console.log('[INFO] 📍 Hit /send-top10-chart endpoint');
   
   try {
     const { 
@@ -373,6 +433,11 @@ export const sendTop10ChartHandler = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Invalid email format' });
     }
 
+    // Lazy load email modules if not already loaded
+    if (!isEmailLoaded) {
+      await loadEmailModules();
+    }
+
     await sendTop10ChartEmail(
       email,
       name || 'Artist',
@@ -389,10 +454,10 @@ export const sendTop10ChartHandler = async (req, res) => {
       chartData || []
     );
     
-    console.log('✅ Top 10 chart email route completed successfully');
+    console.log('[INFO] ✅ Top 10 chart email route completed successfully');
     res.json({ success: true, message: 'Top 10 chart notification sent successfully' });
   } catch (error) {
-    console.error('❌ Top 10 chart email route error:', error);
+    console.error('[ERROR] ❌ Top 10 chart email route error:', error);
     res.status(500).json({ 
       success: false, 
       message: 'Failed to send top 10 chart notification',
@@ -401,28 +466,9 @@ export const sendTop10ChartHandler = async (req, res) => {
   }
 };
 
-// Helper function to get current week range
-const getCurrentWeekRange = () => {
-  const now = new Date();
-  const startOfWeek = new Date(now);
-  startOfWeek.setDate(now.getDate() - now.getDay());
-  const endOfWeek = new Date(startOfWeek);
-  endOfWeek.setDate(startOfWeek.getDate() + 6);
-  
-  const formatDate = (date) => {
-    return date.toLocaleDateString('en-US', { 
-      month: 'long', 
-      day: 'numeric', 
-      year: 'numeric' 
-    });
-  };
-  
-  return `${formatDate(startOfWeek)} - ${formatDate(endOfWeek)}`;
-};
-
 // Test endpoint for email configuration
-export const testEmailHandler = async (req, res) => {
-  console.log('📍 Hit /test endpoint');
+const testEmailHandler = async (req, res) => {
+  console.log('[INFO] 📍 Hit /test endpoint');
   
   try {
     const hasEmailConfig = !!(process.env.GMAIL_USER && process.env.GMAIL_PASS);
@@ -432,6 +478,10 @@ export const testEmailHandler = async (req, res) => {
       email_configured: hasEmailConfig,
       email_user: process.env.GMAIL_USER ? 'Configured' : 'Not set',
       node_env: process.env.NODE_ENV,
+      lazy_loading_status: {
+        email_modules: isEmailLoaded ? 'LOADED' : 'NOT LOADED',
+        templates: isTemplatesLoaded ? 'LOADED' : 'NOT LOADED'
+      },
       timestamp: new Date().toISOString(),
       message: 'Email API endpoint is operational',
       available_endpoints: [
@@ -444,7 +494,7 @@ export const testEmailHandler = async (req, res) => {
       templates_used: ['welcome.hbs', 'password-reset.hbs', 'song-reviewed.hbs', 'top10-chart.hbs']
     });
   } catch (error) {
-    console.error('Test endpoint error:', error);
+    console.error('[ERROR] ❌ Test endpoint error:', error);
     res.status(500).json({ success: false, error: error.message });
   }
 };
@@ -453,7 +503,7 @@ export const testEmailHandler = async (req, res) => {
 
 // Add route logging middleware
 router.use((req, res, next) => {
-  console.log(`🛣️  Email route accessed: ${req.method} ${req.path}`);
+  console.log(`[INFO] 🛣️  Email route accessed: ${req.method} ${req.path}`);
   next();
 });
 
@@ -473,7 +523,7 @@ router.get('/debug-routes', (req, res) => {
       methods: Object.keys(layer.route.methods)
     }));
   
-  console.log('📋 Registered email routes:', routes);
+  console.log('[INFO] 📋 Registered email routes:', routes);
   
   res.json({
     success: true,
@@ -482,17 +532,23 @@ router.get('/debug-routes', (req, res) => {
     fullPaths: routes.map(route => 
       route.methods.map(method => `${method.toUpperCase()} /api/email${route.path}`)
     ).flat(),
-    templates_used: ['welcome.hbs', 'password-reset.hbs', 'song-reviewed.hbs', 'top10-chart.hbs']
+    templates_used: ['welcome.hbs', 'password-reset.hbs', 'song-reviewed.hbs', 'top10-chart.hbs'],
+    lazy_loading: {
+      enabled: true,
+      email_modules: isEmailLoaded ? 'loaded' : 'not loaded',
+      status: 'Modules will load when first email route is called'
+    }
   });
 });
 
-console.log('✅ Email routes registered:');
-console.log('   POST /api/email/send-welcome-email');
-console.log('   POST /api/email/send-password-reset'); 
-console.log('   POST /api/email/send-song-reviewed');
-console.log('   POST /api/email/send-top10-chart');
-console.log('   GET /api/email/test');
-console.log('   GET /api/email/debug-routes');
-console.log('📧 Using Handlebars templates: welcome.hbs, password-reset.hbs, song-reviewed.hbs, top10-chart.hbs');
+console.log('[INFO] ✅ Email routes registered:');
+console.log('[INFO]    POST /api/email/send-welcome-email');
+console.log('[INFO]    POST /api/email/send-password-reset'); 
+console.log('[INFO]    POST /api/email/send-song-reviewed');
+console.log('[INFO]    POST /api/email/send-top10-chart');
+console.log('[INFO]    GET /api/email/test');
+console.log('[INFO]    GET /api/email/debug-routes');
+console.log('[INFO] 📧 Using Handlebars templates: welcome.hbs, password-reset.hbs, song-reviewed.hbs, top10-chart.hbs');
+console.log('[INFO] 🔄 Email modules will lazy load on first use to improve startup time');
 
 export default router;
