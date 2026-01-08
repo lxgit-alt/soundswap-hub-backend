@@ -89,6 +89,21 @@ const loadReddit = async () => {
   return redditClient;
 };
 
+// ==================== SAFE TIMEOUT FUNCTION ====================
+
+const safeSetTimeout = (callback, delay) => {
+  // Ensure delay is a positive finite number
+  const safeDelay = Math.max(1, Math.min(Number.MAX_SAFE_INTEGER, Number(delay) || 1000));
+  
+  // Validate that delay is a finite number
+  if (!Number.isFinite(safeDelay) || safeDelay <= 0) {
+    console.warn(`[WARN] ⚠️ Invalid timeout delay: ${delay}, using default 1000ms`);
+    return setTimeout(callback, 1000);
+  }
+  
+  return setTimeout(callback, safeDelay);
+};
+
 // ==================== OPTIMIZED CONFIGURATION ====================
 
 // Collections (only strings - no imports needed yet)
@@ -1181,7 +1196,8 @@ const loadCoreFunctions = async () => {
 
   enforceRateLimit = async () => {
     const delay = 2000 + Math.random() * 3000;
-    await new Promise(resolve => setTimeout(resolve, delay));
+    // Use safeSetTimeout to avoid negative/infinite values
+    await new Promise(resolve => safeSetTimeout(resolve, delay));
   };
 
   fetchFreshPostsFromSubreddit = async (subreddit, timeWindowMinutes = 60) => {
@@ -1220,8 +1236,9 @@ const loadCoreFunctions = async () => {
   };
 
   generatePremiumFeatureComment = async (postTitle, postContent, subreddit, painPoints = []) => {
+    // Use safeSetTimeout to avoid negative/infinite values
     const aiTimeout = new Promise((_, reject) => 
-      setTimeout(() => reject(new Error(`AI generation timeout after ${AI_TIMEOUT_MS}ms`)), AI_TIMEOUT_MS)
+      safeSetTimeout(() => reject(new Error(`AI generation timeout after ${AI_TIMEOUT_MS}ms`)), AI_TIMEOUT_MS)
     );
 
     try {
@@ -1732,10 +1749,10 @@ router.post('/cron', async (req, res) => {
       await loadCoreFunctions();
     }
     
-    // Start processing with timeout protection
+    // Start processing with timeout protection using safeSetTimeout
     const resultPromise = runScheduledPosts();
     const timeoutPromise = new Promise((_, reject) => 
-      setTimeout(() => reject(new Error('Processing timeout')), VERCELL_TIMEOUT_MS)
+      safeSetTimeout(() => reject(new Error('Processing timeout')), VERCELL_TIMEOUT_MS)
     );
     
     const result = await Promise.race([resultPromise, timeoutPromise]);
@@ -1761,6 +1778,51 @@ router.post('/cron', async (req, res) => {
       timestamp: new Date().toISOString()
     });
   }
+});
+
+// Add GET endpoint for /cron to show available endpoints
+router.get('/cron', (req, res) => {
+  const currentTime = getCurrentTimeInAppTimezone();
+  const currentDay = getCurrentDayInAppTimezone();
+  const currentDate = getCurrentDateInAppTimezone();
+  const timeWindow = getCurrentTimeWindow();
+  const currentHour = getCurrentHourInAppTimezone();
+  const optimizedSubreddits = getOptimizedSubredditForCurrentRun();
+  
+  res.json({
+    success: true,
+    message: 'Enhanced Lead Generation Reddit Automation Cron Endpoint',
+    timezone: APP_TIMEZONE,
+    currentTime: currentTime,
+    currentDay: currentDay,
+    currentDate: currentDate,
+    timeWindow: {
+      minutes: POSTING_WINDOW_MINUTES,
+      currentWindow: timeWindow
+    },
+    goldenHour: {
+      minutes: GOLDEN_HOUR_WINDOW_MINUTES,
+      description: 'Checks last 60 minutes for pain point posts'
+    },
+    optimization: {
+      singleSubredditMethod: 'ACTIVE',
+      currentHour: currentHour,
+      processingSubreddits: 1,
+      totalSubreddits: Object.keys(redditTargets).filter(k => redditTargets[k].active).length,
+      selectedSubreddit: optimizedSubreddits[0]
+    },
+    premiumFocus: 'ACTIVE_WITH_GOLDEN_HOUR',
+    availableMethods: {
+      POST: 'Trigger cron execution (requires CRON_SECRET)',
+      GET: 'Show cron information'
+    },
+    leadGenerationStrategies: [
+      'Strategy 1: Expanded Search Intent (Pain Points)',
+      'Strategy 2: Bridge Technique for Natural Comments',
+      'Strategy 3: Golden Hour (Last 60 minutes)'
+    ],
+    timestamp: new Date().toISOString()
+  });
 });
 
 // Generate AI-powered comment for Reddit posts
@@ -1952,7 +2014,8 @@ router.get('/admin', (req, res) => {
       educational_posts: 'active',
       single_subreddit_method: 'active',
       performance_optimized: 'yes',
-      lazy_loading: 'ENABLED'
+      lazy_loading: 'ENABLED',
+      safe_timeouts: 'ENABLED'
     },
     stats: {
       total_targets: Object.keys(redditTargets).length,
@@ -1990,10 +2053,24 @@ router.get('/admin', (req, res) => {
   });
 });
 
+// ==================== TEST REDDIT CONNECTION ====================
+
+router.get('/test-reddit', async (req, res) => {
+  try {
+    // Lazy load Reddit
+    await loadReddit();
+    
+    const connection = await testRedditConnection();
+    res.json(connection);
+  } catch (error) {
+    console.error('[ERROR] ❌ Error testing Reddit connection:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
 // ==================== EXPORT ====================
 
 export default router;
-
-// Note: This file uses lazy loading for all heavy dependencies.
-// No imports are loaded until they're actually needed by a route.
-// This significantly reduces startup time and memory usage.
