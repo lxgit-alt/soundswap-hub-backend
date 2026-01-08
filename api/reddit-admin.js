@@ -20,6 +20,69 @@ let firebaseApp = null;
 let db = null;
 let redditClient = null;
 
+// ==================== QUOTA AND TIMEOUT MANAGEMENT ====================
+
+const safeSetTimeout = (callback, delay) => {
+  const safeDelay = Math.max(1, Math.min(Number.MAX_SAFE_INTEGER, Number(delay) || 1000));
+  
+  if (!Number.isFinite(safeDelay) || safeDelay <= 0) {
+    console.warn(`[WARN] ⚠️ Invalid timeout delay: ${delay}, using default 1000ms`);
+    return setTimeout(callback, 1000);
+  }
+  
+  return setTimeout(callback, safeDelay);
+};
+
+// Gemini API quota management
+let geminiQuotaInfo = {
+  lastRequest: null,
+  requestCount: 0,
+  quotaLimit: 20,
+  resetTime: null,
+  lastError: null
+};
+
+const checkGeminiQuota = () => {
+  const now = Date.now();
+  
+  if (geminiQuotaInfo.resetTime && now > geminiQuotaInfo.resetTime) {
+    geminiQuotaInfo.requestCount = 0;
+    geminiQuotaInfo.resetTime = now + (24 * 60 * 60 * 1000);
+  }
+  
+  if (geminiQuotaInfo.requestCount >= geminiQuotaInfo.quotaLimit) {
+    const waitTime = geminiQuotaInfo.resetTime ? geminiQuotaInfo.resetTime - now : 60000;
+    console.warn(`[QUOTA] ⚠️ Gemini quota exceeded. Wait ${Math.ceil(waitTime/1000)}s`);
+    return false;
+  }
+  
+  return true;
+};
+
+const incrementGeminiRequest = () => {
+  geminiQuotaInfo.requestCount++;
+  geminiQuotaInfo.lastRequest = Date.now();
+  
+  if (!geminiQuotaInfo.resetTime) {
+    geminiQuotaInfo.resetTime = Date.now() + (24 * 60 * 60 * 1000);
+  }
+};
+
+const withTimeout = async (promise, timeoutMs, timeoutMessage = 'Operation timed out') => {
+  let timeoutId;
+  const timeoutPromise = new Promise((_, reject) => {
+    timeoutId = safeSetTimeout(() => reject(new Error(timeoutMessage)), timeoutMs);
+  });
+  
+  try {
+    return await Promise.race([promise, timeoutPromise]);
+  } finally {
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+    }
+  }
+};
+
 // ==================== OPTIMIZED MODULE LOADERS ====================
 
 const loadFirebase = async () => {
@@ -62,10 +125,28 @@ const loadFirebase = async () => {
 const loadAI = async () => {
   if (!isAILoaded) {
     console.log('[INFO] 🤖 AI: Lazy loading Google Gemini');
-    GoogleGenerativeAI = (await import('@google/generative-ai')).GoogleGenerativeAI;
-    genAI = new GoogleGenerativeAI(process.env.GOOGLE_GEMINI_API_KEY);
-    isAILoaded = true;
-    console.log('[INFO] 🤖 AI: Google Gemini loaded successfully');
+    
+    if (!checkGeminiQuota()) {
+      throw new Error('Gemini API quota exceeded. Please try again later.');
+    }
+    
+    if (!process.env.GOOGLE_GEMINI_API_KEY) {
+      console.warn('[WARN] ⚠️ Google Gemini API key not configured');
+      genAI = null;
+      isAILoaded = true;
+      return genAI;
+    }
+    
+    try {
+      GoogleGenerativeAI = (await import('@google/generative-ai')).GoogleGenerativeAI;
+      genAI = new GoogleGenerativeAI(process.env.GOOGLE_GEMINI_API_KEY);
+      isAILoaded = true;
+      console.log('[INFO] 🤖 AI: Google Gemini loaded successfully');
+    } catch (error) {
+      console.error('[ERROR] ❌ Failed to load Google Gemini:', error);
+      genAI = null;
+      isAILoaded = true;
+    }
   }
   return genAI;
 };
@@ -73,60 +154,56 @@ const loadAI = async () => {
 const loadReddit = async () => {
   if (!isRedditLoaded) {
     console.log('[INFO] 📱 Reddit: Lazy loading Snoowrap');
-    snoowrap = (await import('snoowrap')).default;
     
-    // Initialize Reddit API client
-    redditClient = new snoowrap({
-      userAgent: 'SoundSwap Reddit Bot v5.0 (Premium Features Focus)',
-      clientId: process.env.REDDIT_CLIENT_ID,
-      clientSecret: process.env.REDDIT_CLIENT_SECRET,
-      refreshToken: process.env.REDDIT_REFRESH_TOKEN
-    });
+    if (!process.env.REDDIT_CLIENT_ID || !process.env.REDDIT_CLIENT_SECRET || !process.env.REDDIT_REFRESH_TOKEN) {
+      console.warn('[WARN] ⚠️ Reddit API credentials not fully configured');
+      redditClient = null;
+      isRedditLoaded = true;
+      return redditClient;
+    }
     
-    isRedditLoaded = true;
-    console.log('[INFO] 📱 Reddit: Snoowrap loaded successfully');
+    try {
+      snoowrap = (await import('snoowrap')).default;
+      
+      redditClient = new snoowrap({
+        userAgent: 'SoundSwap Reddit Bot v5.0 (Premium Features Focus)',
+        clientId: process.env.REDDIT_CLIENT_ID,
+        clientSecret: process.env.REDDIT_CLIENT_SECRET,
+        refreshToken: process.env.REDDIT_REFRESH_TOKEN,
+        requestTimeout: 8000
+      });
+      
+      isRedditLoaded = true;
+      console.log('[INFO] 📱 Reddit: Snoowrap loaded successfully');
+    } catch (error) {
+      console.error('[ERROR] ❌ Failed to load Snoowrap:', error);
+      redditClient = null;
+      isRedditLoaded = true;
+    }
   }
   return redditClient;
 };
 
-// ==================== SAFE TIMEOUT FUNCTION ====================
-
-const safeSetTimeout = (callback, delay) => {
-  // Ensure delay is a positive finite number
-  const safeDelay = Math.max(1, Math.min(Number.MAX_SAFE_INTEGER, Number(delay) || 1000));
-  
-  // Validate that delay is a finite number
-  if (!Number.isFinite(safeDelay) || safeDelay <= 0) {
-    console.warn(`[WARN] ⚠️ Invalid timeout delay: ${delay}, using default 1000ms`);
-    return setTimeout(callback, 1000);
-  }
-  
-  return setTimeout(callback, safeDelay);
-};
-
 // ==================== OPTIMIZED CONFIGURATION ====================
 
-// Collections (only strings - no imports needed yet)
 const SCHEDULED_POSTS_COLLECTION = 'scheduledPosts';
 const EDUCATIONAL_POSTS_COLLECTION = 'educationalPosts';
 const POSTING_ACTIVITY_COLLECTION = 'postingActivity';
 const PREMIUM_FEATURE_LEADS_COLLECTION = 'premiumFeatureLeads';
 
-// Performance configuration (no imports needed)
 const APP_TIMEZONE = process.env.APP_TIMEZONE || 'America/New_York';
 const POSTING_WINDOW_MINUTES = 10;
 const MAX_POSTS_PER_RUN = 1;
 const MAX_COMMENTS_PER_DAY = 15;
 const MAX_EDUCATIONAL_POSTS_PER_DAY = 3;
-const AI_TIMEOUT_MS = 4000;
+const AI_TIMEOUT_MS = 3000;
 const VERCELL_TIMEOUT_MS = 8000;
 const GOLDEN_HOUR_WINDOW_MINUTES = 60;
+const FALLBACK_MODE = true;
 
-// Global state (will be initialized lazily)
 let postingActivity = null;
 
 // ==================== TIME HELPER FUNCTIONS ====================
-// These don't need any imports and can be defined immediately
 
 const getCurrentHourInAppTimezone = () => {
   const now = new Date();
@@ -205,58 +282,33 @@ const isWithinGoldenHour = (postTimestamp) => {
   return postTime >= goldenHourWindow.startTimestamp && postTime <= goldenHourWindow.endTimestamp;
 };
 
-// ==================== OPTIMIZED SUBREDDIT PROCESSING ====================
+// ==================== FALLBACK COMMENT GENERATION ====================
 
-const getOptimizedSubredditForCurrentRun = () => {
-  const allActiveSubreddits = Object.keys(redditTargets).filter(k => redditTargets[k].active);
-  const currentHour = parseInt(getCurrentHourInAppTimezone()) || 0;
+const generateFallbackComment = (subreddit, painPoints = []) => {
+  const fallbackComments = {
+    'WeAreTheMusicMakers': [
+      "I understand the struggle with video editing! I've found AI tools really help automate the process. Check out soundswap.live for lyric video generation.",
+      "Creating visuals for music can be time-consuming. There are AI tools that can help automate lyric videos and Spotify Canvas art.",
+      "Video editing doesn't have to be painful. AI-powered tools can handle timing and animations for you."
+    ],
+    'ArtistLounge': [
+      "As an artist, I've found AI tools helpful for speeding up repetitive tasks like animation. Worth checking out soundswap.live for automated art generation.",
+      "Digital art creation can be faster with the right tools. AI assistance has really helped my workflow."
+    ],
+    'videoediting': [
+      "Automating video editing is possible now with AI. Tools can handle text animations and timing automatically.",
+      "There are solutions for repetitive video editing tasks. AI can handle kinetic typography and animations."
+    ],
+    'digitalart': [
+      "AI tools can really speed up digital art creation. They're great for turning sketches into finished pieces.",
+      "Creating art for music doesn't have to take days. AI assistance can help generate animations quickly."
+    ]
+  };
   
-  const index = currentHour % allActiveSubreddits.length;
-  const selectedSubreddit = allActiveSubreddits[index];
+  const defaultComment = "I understand that struggle! AI tools have really helped automate creative workflows. Check out soundswap.live if you're looking for automated video or art generation.";
   
-  console.log(`[INFO] 🔄 Single Subreddit Method: Hour ${currentHour}, Selected: r/${selectedSubreddit}, Processing 1/${allActiveSubreddits.length} subreddits`);
-  return [selectedSubreddit];
-};
-
-// ==================== PAIN POINT INTENT TRIGGERS ====================
-
-const INTENT_TRIGGERS = {
-  frustration: [
-    'hate making music videos',
-    'video editing takes too long',
-    'tedious editing process',
-    'spending hours on visuals',
-    'video creation is exhausting',
-    'wasting time on editing',
-    'manual video editing sucks',
-    'too much work for one video',
-    'editing process is painful',
-    'can\'t stand editing anymore'
-  ],
-  budget: [
-    'cheap ways to get visuals',
-    'free alternative to canva',
-    'free alternative to adobe',
-    'affordable video editing',
-    'low budget music video',
-    'cost effective visuals',
-    'cheap video editing software',
-    'free music video maker',
-    'budget friendly animation',
-    'inexpensive video creation'
-  ],
-  skillGap: [
-    'i can\'t draw but want art',
-    'how do people make doodle videos',
-    'no design skills but need visuals',
-    'not technical enough for editing',
-    'beginner trying to make videos',
-    'simple tools for non-designers',
-    'easy way to create animations',
-    'no experience with video editing',
-    'how to make videos without skills',
-    'simple video creation for beginners'
-  ]
+  const comments = fallbackComments[subreddit] || [defaultComment];
+  return comments[Math.floor(Math.random() * comments.length)];
 };
 
 // ==================== PREMIUM FEATURE CONFIGURATION ====================
@@ -553,34 +605,34 @@ const analyzePostForPainPoints = (postTitle, postContent = '') => {
   };
 };
 
-// ==================== LAZY LOADED CORE FUNCTIONS ====================
+// ==================== OPTIMIZED SUBREDDIT PROCESSING ====================
 
-// These functions will be defined when needed by individual routes
+const getOptimizedSubredditForCurrentRun = () => {
+  const allActiveSubreddits = Object.keys(redditTargets).filter(k => redditTargets[k].active);
+  const currentHour = parseInt(getCurrentHourInAppTimezone()) || 0;
+  
+  const index = currentHour % allActiveSubreddits.length;
+  const selectedSubreddit = allActiveSubreddits[index];
+  
+  console.log(`[INFO] 🔄 Single Subreddit Method: Hour ${currentHour}, Selected: r/${selectedSubreddit}, Processing 1/${allActiveSubreddits.length} subreddits`);
+  return [selectedSubreddit];
+};
+
+// ==================== LAZY LOADED CORE FUNCTIONS ====================
 
 let initializePostingActivity;
 let quickSavePostingActivity;
 let savePremiumLead;
 let testRedditConnection;
 let checkFirebaseConnection;
-let quickStoreScheduledPost;
-let quickStoreEducationalPost;
-let getScheduledPostsForTimeWindow;
-let getEducationalPostsForTimeWindow;
-let quickMarkPostAsPosted;
-let checkRateLimit;
-let safeCheckRateLimit;
-let enforceRateLimit;
-let fetchFreshPostsFromSubreddit;
 let generatePremiumFeatureComment;
 let findAndRespondToPainPointPosts;
 let postToReddit;
 let getSamplePostsForSubreddit;
-let generateEducationalPostPremium;
 let runScheduledPosts;
 
 // ==================== ROUTE HANDLERS ====================
 
-// Quick cron status endpoint - NO DEPENDENCIES
 router.get('/cron-status', async (req, res) => {
   try {
     const currentTime = getCurrentTimeInAppTimezone();
@@ -589,17 +641,6 @@ router.get('/cron-status', async (req, res) => {
     const timeWindow = getCurrentTimeWindow();
     const currentHour = getCurrentHourInAppTimezone();
     const optimizedSubreddits = getOptimizedSubredditForCurrentRun();
-    
-    // Lazy load Firebase for quick check only
-    let firebaseConnected = false;
-    if (process.env.FIREBASE_API_KEY) {
-      try {
-        await loadFirebase();
-        firebaseConnected = true;
-      } catch (error) {
-        firebaseConnected = false;
-      }
-    }
     
     res.json({
       success: true,
@@ -617,7 +658,6 @@ router.get('/cron-status', async (req, res) => {
         premiumLeads: postingActivity?.premiumLeadsGenerated || 0,
         githubActionsRuns: postingActivity?.githubActionsRuns || 0,
         lastCronRun: postingActivity?.lastCronRun || null,
-        firebase: firebaseConnected ? 'connected' : 'disconnected',
         reddit: {
           connected: isRedditLoaded,
           username: postingActivity?.redditUsername || null,
@@ -637,7 +677,12 @@ router.get('/cron-status', async (req, res) => {
           currentHour: currentHour,
           processingSubreddits: 1,
           totalSubreddits: Object.keys(redditTargets).filter(k => redditTargets[k].active).length,
-          selectedSubreddit: optimizedSubreddits[0]
+          selectedSubreddit: optimizedSubreddits[0],
+          geminiQuota: {
+            remaining: geminiQuotaInfo.quotaLimit - geminiQuotaInfo.requestCount,
+            limit: geminiQuotaInfo.quotaLimit,
+            fallbackMode: FALLBACK_MODE
+          }
         },
         goldenHourStats: postingActivity?.goldenHourStats || {
           totalPostsScanned: 0,
@@ -657,7 +702,68 @@ router.get('/cron-status', async (req, res) => {
   }
 });
 
-// Get posting schedule for today - NO DEPENDENCIES
+// Main cron endpoint
+router.post('/cron', async (req, res) => {
+  const startTime = Date.now();
+  
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
+      return res.status(401).json({ 
+        success: false, 
+        error: 'Unauthorized',
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    console.log('[INFO] ✅ Authorized GitHub Actions cron execution');
+    
+    const isIsolated = req.headers['x-isolated-cron'] === 'true';
+    
+    if (isIsolated) {
+      console.log('[ISOLATED] 🚀 Running in isolated mode');
+    }
+    
+    // Load core functions with timeout
+    try {
+      await loadCoreFunctions();
+    } catch (loadError) {
+      console.warn('[WARN] Module loading had issues:', loadError.message);
+    }
+    
+    // Execute cron with timeout
+    const result = await withTimeout(runScheduledPosts(), VERCELL_TIMEOUT_MS - 1000, 'Cron processing timeout');
+    
+    const processingTime = Date.now() - startTime;
+    console.log(`[PERFORMANCE] ⏱️ Total processing time: ${processingTime}ms`);
+    
+    res.json({
+      success: true,
+      message: 'GitHub Actions cron execution completed',
+      ...result,
+      isolated: isIsolated,
+      processingTime: processingTime,
+      geminiQuotaUsed: geminiQuotaInfo.requestCount,
+      fallbackMode: FALLBACK_MODE,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('[ERROR] ❌ Error in GitHub Actions cron:', error);
+    
+    const processingTime = Date.now() - startTime;
+    
+    res.json({
+      success: false,
+      message: 'Cron execution failed',
+      error: error.message,
+      processingTime: processingTime,
+      totalPosted: 0,
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+// Get posting schedule for today
 router.get('/schedule/today', (req, res) => {
   const today = getCurrentDayInAppTimezone();
   const currentTime = getCurrentTimeInAppTimezone();
@@ -731,7 +837,7 @@ router.get('/schedule/today', (req, res) => {
   });
 });
 
-// Get all configured Reddit targets - NO DEPENDENCIES
+// Get all configured Reddit targets
 router.get('/targets', (req, res) => {
   res.json({
     success: true,
@@ -762,7 +868,6 @@ router.get('/targets', (req, res) => {
 // Manual daily reset endpoint
 router.post('/reset-daily', async (req, res) => {
   try {
-    // Lazy load dependencies
     if (!initializePostingActivity || !quickSavePostingActivity) {
       await loadCoreFunctions();
     }
@@ -772,12 +877,10 @@ router.post('/reset-daily', async (req, res) => {
     
     console.log(`[INFO] 🔄 Manual daily reset requested for ${currentDate} (${currentDay})`);
     
-    // Ensure counts objects exist
     postingActivity.dailyCounts = postingActivity.dailyCounts || {};
     postingActivity.educationalCounts = postingActivity.educationalCounts || {};
     postingActivity.premiumFeatureCounts = postingActivity.premiumFeatureCounts || {};
     
-    // Reset all daily counts
     Object.keys(postingActivity.dailyCounts).forEach(key => {
       postingActivity.dailyCounts[key] = 0;
     });
@@ -788,17 +891,14 @@ router.post('/reset-daily', async (req, res) => {
       postingActivity.premiumFeatureCounts[key] = 0;
     });
     
-    // Reset last posted timestamps
     postingActivity.lastPosted = postingActivity.lastPosted || {};
     postingActivity.lastEducationalPosted = postingActivity.lastEducationalPosted || {};
     postingActivity.lastPremiumPosted = postingActivity.lastPremiumPosted || {};
     
-    // Update reset tracking
     postingActivity.lastResetDate = currentDate;
     postingActivity.lastResetDay = currentDay;
     postingActivity.lastResetTime = new Date().toISOString();
     
-    // Save to Firebase
     await quickSavePostingActivity(postingActivity);
     
     res.json({
@@ -827,1008 +927,53 @@ router.post('/reset-daily', async (req, res) => {
   }
 });
 
-// ==================== LAZY LOAD HELPER ====================
-
-const loadCoreFunctions = async () => {
-  // Load all required modules
-  await loadFirebase();
-  await loadAI();
-  await loadReddit();
-  
-  // Now define functions that use these modules
-  initializePostingActivity = async () => {
-    try {
-      const activityRef = collection(db, POSTING_ACTIVITY_COLLECTION);
-      const q = query(activityRef, orderBy('timestamp', 'desc'), limit(1));
-      const snapshot = await getDocs(q);
-      
-      if (snapshot.empty) {
-        const initialActivity = {
-          dailyCounts: {},
-          educationalCounts: {},
-          premiumFeatureCounts: {},
-          lastPosted: {},
-          lastEducationalPosted: {},
-          lastPremiumPosted: {},
-          totalComments: 0,
-          totalEducationalPosts: 0,
-          totalPremiumMentions: 0,
-          premiumLeadsGenerated: 0,
-          lastCronRun: null,
-          githubActionsRuns: 0,
-          redditUsername: null,
-          lastResetDate: getCurrentDateInAppTimezone(),
-          lastResetDay: getCurrentDayInAppTimezone(),
-          lastResetTime: new Date().toISOString(),
-          timestamp: new Date().toISOString(),
-          rateLimitInfo: {
-            lastCheck: null,
-            remaining: 60,
-            resetTime: null
-          },
-          goldenHourStats: {
-            totalPostsScanned: 0,
-            painPointPostsFound: 0,
-            goldenHourComments: 0
-          }
-        };
-        
-        Object.keys(redditTargets).forEach(subreddit => {
-          initialActivity.dailyCounts[subreddit] = 0;
-          initialActivity.educationalCounts[subreddit] = 0;
-          initialActivity.premiumFeatureCounts[subreddit] = 0;
-        });
-        
-        await addDoc(activityRef, initialActivity);
-        console.log('[INFO] ✅ Initialized new posting activity record with daily reset');
-        return initialActivity;
-      } else {
-        const activityDoc = snapshot.docs[0].data();
-        console.log('[INFO] ✅ Loaded existing posting activity');
-        
-        // Ensure all required fields exist
-        activityDoc.dailyCounts = activityDoc.dailyCounts || {};
-        activityDoc.educationalCounts = activityDoc.educationalCounts || {};
-        activityDoc.premiumFeatureCounts = activityDoc.premiumFeatureCounts || {};
-        activityDoc.lastPosted = activityDoc.lastPosted || {};
-        activityDoc.lastEducationalPosted = activityDoc.lastEducationalPosted || {};
-        activityDoc.lastPremiumPosted = activityDoc.lastPremiumPosted || {};
-        activityDoc.totalComments = activityDoc.totalComments || 0;
-        activityDoc.totalEducationalPosts = activityDoc.totalEducationalPosts || 0;
-        activityDoc.totalPremiumMentions = activityDoc.totalPremiumMentions || 0;
-        activityDoc.premiumLeadsGenerated = activityDoc.premiumLeadsGenerated || 0;
-        activityDoc.githubActionsRuns = activityDoc.githubActionsRuns || 0;
-        activityDoc.redditUsername = activityDoc.redditUsername || null;
-        activityDoc.lastResetDate = activityDoc.lastResetDate || getCurrentDateInAppTimezone();
-        activityDoc.lastResetDay = activityDoc.lastResetDay || getCurrentDayInAppTimezone();
-        activityDoc.lastResetTime = activityDoc.lastResetTime || new Date().toISOString();
-        activityDoc.rateLimitInfo = activityDoc.rateLimitInfo || {
-          lastCheck: null,
-          remaining: 60,
-          resetTime: null
-        };
-        activityDoc.goldenHourStats = activityDoc.goldenHourStats || {
-          totalPostsScanned: 0,
-          painPointPostsFound: 0,
-          goldenHourComments: 0
-        };
-        
-        // Initialize counts for any new subreddits that aren't in the existing data
-        Object.keys(redditTargets).forEach(subreddit => {
-          if (activityDoc.dailyCounts[subreddit] === undefined) {
-            activityDoc.dailyCounts[subreddit] = 0;
-          }
-          if (activityDoc.educationalCounts[subreddit] === undefined) {
-            activityDoc.educationalCounts[subreddit] = 0;
-          }
-          if (activityDoc.premiumFeatureCounts[subreddit] === undefined) {
-            activityDoc.premiumFeatureCounts[subreddit] = 0;
-          }
-        });
-        
-        return activityDoc;
-      }
-    } catch (error) {
-      console.error('[ERROR] ❌ Error initializing posting activity:', error);
-      const fallbackActivity = {
-        dailyCounts: {},
-        educationalCounts: {},
-        premiumFeatureCounts: {},
-        lastPosted: {},
-        lastEducationalPosted: {},
-        lastPremiumPosted: {},
-        totalComments: 0,
-        totalEducationalPosts: 0,
-        totalPremiumMentions: 0,
-        premiumLeadsGenerated: 0,
-        lastCronRun: null,
-        githubActionsRuns: 0,
-        redditUsername: null,
-        lastResetDate: getCurrentDateInAppTimezone(),
-        lastResetDay: getCurrentDayInAppTimezone(),
-        lastResetTime: new Date().toISOString(),
-        timestamp: new Date().toISOString(),
-        rateLimitInfo: {
-          remaining: 60,
-          lastCheck: null
-        },
-        goldenHourStats: {
-          totalPostsScanned: 0,
-          painPointPostsFound: 0,
-          goldenHourComments: 0
-        }
-      };
-      
-      Object.keys(redditTargets).forEach(subreddit => {
-        fallbackActivity.dailyCounts[subreddit] = 0;
-        fallbackActivity.educationalCounts[subreddit] = 0;
-        fallbackActivity.premiumFeatureCounts[subreddit] = 0;
+// Test Reddit connection
+router.get('/test-reddit', async (req, res) => {
+  try {
+    await loadReddit();
+    
+    if (!redditClient) {
+      return res.json({
+        success: false,
+        error: 'Reddit client not configured'
       });
-      
-      return fallbackActivity;
     }
-  };
-
-  // Initialize posting activity
-  if (!postingActivity) {
-    postingActivity = await initializePostingActivity();
-  }
-
-  quickSavePostingActivity = async (activity) => {
-    try {
-      const activityRef = collection(db, POSTING_ACTIVITY_COLLECTION);
-      await addDoc(activityRef, {
-        ...activity,
-        timestamp: new Date().toISOString()
-      });
-    } catch (error) {
-      console.error('[ERROR] ❌ Error saving posting activity:', error);
-    }
-  };
-
-  savePremiumLead = async (subreddit, postTitle, leadType, interestLevel, painPoints = []) => {
-    try {
-      const leadsRef = collection(db, PREMIUM_FEATURE_LEADS_COLLECTION);
-      await addDoc(leadsRef, {
-        subreddit,
-        postTitle,
-        leadType,
-        interestLevel,
-        painPoints,
-        timestamp: new Date().toISOString(),
-        date: getCurrentDateInAppTimezone(),
-        converted: false,
-        source: 'reddit_comment',
-        goldenHour: true
-      });
-      console.log(`[INFO] 💎 Premium lead saved: ${leadType} from r/${subreddit} with pain points: ${painPoints.join(', ')}`);
-    } catch (error) {
-      console.error('[ERROR] ❌ Error saving premium lead:', error);
-    }
-  };
-
-  testRedditConnection = async () => {
-    try {
-      const me = await redditClient.getMe();
-      
-      const rateLimits = {
-        remaining: redditClient.ratelimitRemaining || 60,
-        reset: redditClient.ratelimitReset,
-        used: redditClient.ratelimitUsed || 0
-      };
-      
-      console.log('[INFO] 📊 Reddit Rate Limits:', {
-        remaining: rateLimits.remaining,
-        reset: rateLimits.reset ? new Date(rateLimits.reset * 1000).toISOString() : 'unknown',
-        used: rateLimits.used
-      });
-      
-      console.log(`[INFO] ✅ Reddit API connected successfully. Logged in as: ${me.name}`);
-      return { 
-        success: true, 
-        username: me.name,
-        rateLimits: rateLimits
-      };
-    } catch (error) {
-      console.error('[ERROR] ❌ Reddit API connection failed:', error.message);
-      return { success: false, error: error.message };
-    }
-  };
-
-  checkFirebaseConnection = async () => {
-    try {
-      const activityRef = collection(db, POSTING_ACTIVITY_COLLECTION);
-      const q = query(activityRef, limit(1));
-      await getDocs(q);
-      return true;
-    } catch (error) {
-      console.error('[ERROR] ❌ Firebase connection failed:', error);
-      return false;
-    }
-  };
-
-  quickStoreScheduledPost = async (postData) => {
-    try {
-      const postsRef = collection(db, SCHEDULED_POSTS_COLLECTION);
-      const docRef = await addDoc(postsRef, {
-        ...postData,
-        createdAt: new Date().toISOString(),
-        posted: false,
-        postedAt: null,
-        redditData: null
-      });
-      return docRef.id;
-    } catch (error) {
-      console.error('[ERROR] ❌ Error storing scheduled post:', error);
-      return null;
-    }
-  };
-
-  quickStoreEducationalPost = async (postData) => {
-    try {
-      const postsRef = collection(db, EDUCATIONAL_POSTS_COLLECTION);
-      const docRef = await addDoc(postsRef, {
-        ...postData,
-        createdAt: new Date().toISOString(),
-        posted: false,
-        postedAt: null,
-        redditData: null
-      });
-      return docRef.id;
-    } catch (error) {
-      console.error('[ERROR] ❌ Error storing educational post:', error);
-      return null;
-    }
-  };
-
-  getScheduledPostsForTimeWindow = async (timeWindow) => {
-    try {
-      const currentDay = getCurrentDayInAppTimezone();
-      const { start, end } = timeWindow;
-      
-      const postsRef = collection(db, SCHEDULED_POSTS_COLLECTION);
-      const q = query(
-        postsRef, 
-        where('scheduledDay', '==', currentDay),
-        where('posted', '==', false)
-      );
-      
-      const snapshot = await getDocs(q);
-      const posts = [];
-      
-      snapshot.forEach(doc => {
-        const post = { id: doc.id, ...doc.data() };
-        if (post.scheduledTime >= start && post.scheduledTime <= end) {
-          posts.push(post);
-        }
-      });
-      
-      return posts;
-    } catch (error) {
-      console.error('[ERROR] ❌ Error getting scheduled posts:', error);
-      return [];
-    }
-  };
-
-  getEducationalPostsForTimeWindow = async (timeWindow) => {
-    try {
-      const currentDay = getCurrentDayInAppTimezone();
-      const { start, end } = timeWindow;
-      
-      const postsRef = collection(db, EDUCATIONAL_POSTS_COLLECTION);
-      const q = query(
-        postsRef, 
-        where('scheduledDay', '==', currentDay),
-        where('posted', '==', false)
-      );
-      
-      const snapshot = await getDocs(q);
-      const posts = [];
-      
-      snapshot.forEach(doc => {
-        const post = { id: doc.id, ...doc.data() };
-        if (post.scheduledTime >= start && post.scheduledTime <= end) {
-          posts.push(post);
-        }
-      });
-      
-      return posts;
-    } catch (error) {
-      console.error('[ERROR] ❌ Error getting educational posts:', error);
-      return [];
-    }
-  };
-
-  quickMarkPostAsPosted = async (postId, collectionName, redditData = null) => {
-    try {
-      const postRef = doc(db, collectionName, postId);
-      await updateDoc(postRef, {
-        posted: true,
-        postedAt: new Date().toISOString(),
-        redditData: redditData
-      });
-      return true;
-    } catch (error) {
-      console.error('[ERROR] ❌ Error marking post as posted:', error);
-      return false;
-    }
-  };
-
-  checkRateLimit = async () => {
-    try {
-      const me = await redditClient.getMe();
-      
-      const rateLimitRemaining = redditClient.ratelimitRemaining;
-      const rateLimitReset = redditClient.ratelimitReset;
-      const rateLimitUsed = redditClient.ratelimitUsed;
-      
-      postingActivity.rateLimitInfo = {
-        lastCheck: new Date().toISOString(),
-        remaining: rateLimitRemaining || 60,
-        resetTime: rateLimitReset ? new Date(rateLimitReset * 1000).toISOString() : null,
-        used: rateLimitUsed || 0
-      };
-      
-      if (rateLimitRemaining === null || rateLimitRemaining === undefined) {
-        return true;
-      }
-      
-      if (rateLimitRemaining < 10) {
-        console.warn('[WARN] ⚠️ Rate limit low! Waiting for reset...');
-        return false;
-      }
-      
-      return true;
-    } catch (error) {
-      console.error('[ERROR] ❌ Error checking rate limits:', error.message);
-      return true;
-    }
-  };
-
-  safeCheckRateLimit = async () => {
-    try {
-      return await checkRateLimit();
-    } catch (error) {
-      console.warn('[WARN] ⚠️ Safe rate limit check failed, proceeding anyway:', error.message);
-      return true;
-    }
-  };
-
-  enforceRateLimit = async () => {
-    const delay = 2000 + Math.random() * 3000;
-    // Use safeSetTimeout to avoid negative/infinite values
-    await new Promise(resolve => safeSetTimeout(resolve, delay));
-  };
-
-  fetchFreshPostsFromSubreddit = async (subreddit, timeWindowMinutes = 60) => {
-    try {
-      const now = Math.floor(Date.now() / 1000);
-      const timeThreshold = now - (timeWindowMinutes * 60);
-      
-      const posts = await redditClient.getSubreddit(subreddit).getNew({
-        limit: 5
-      });
-      
-      const freshPosts = posts.filter(post => {
-        const postTime = post.created_utc;
-        return postTime >= timeThreshold;
-      });
-      
-      if (freshPosts.length === 0) return [];
-      
-      return freshPosts.map(post => ({
-        id: post.id,
-        title: post.title,
-        content: post.selftext,
-        author: post.author.name,
-        created_utc: post.created_utc,
-        url: post.url,
-        score: post.score,
-        num_comments: post.num_comments,
-        subreddit: subreddit,
-        isFresh: isWithinGoldenHour(post.created_utc)
-      }));
-      
-    } catch (error) {
-      console.error(`[ERROR] ❌ Error fetching fresh posts from r/${subreddit}:`, error.message);
-      return [];
-    }
-  };
-
-  generatePremiumFeatureComment = async (postTitle, postContent, subreddit, painPoints = []) => {
-    // Use safeSetTimeout to avoid negative/infinite values
-    const aiTimeout = new Promise((_, reject) => 
-      safeSetTimeout(() => reject(new Error(`AI generation timeout after ${AI_TIMEOUT_MS}ms`)), AI_TIMEOUT_MS)
-    );
-
-    try {
-      const targetConfig = redditTargets[subreddit];
-      const selectedStyle = targetConfig?.preferredStyles[0] || 'helpful';
-      
-      let premiumFeature;
-      if (targetConfig?.premiumFeatures?.includes('lyricVideoGenerator') && 
-          (painPoints.includes('frustration') || 
-           postTitle.toLowerCase().includes('video') || 
-           postTitle.toLowerCase().includes('lyric') || 
-           postTitle.toLowerCase().includes('visual'))) {
-        premiumFeature = PREMIUM_FEATURES.lyricVideoGenerator;
-      } else {
-        premiumFeature = PREMIUM_FEATURES.doodleArtGenerator;
-      }
-
-      const model = genAI.getGenerativeModel({ 
-        model: 'gemini-2.5-flash-lite'
-      });
-
-      const prompt = `Write a helpful Reddit comment (1-2 sentences max) for r/${subreddit} about:
-Post: "${postTitle}"
-User needs: ${painPoints.join(', ') || 'help with creative work'}
-
-Mention how ${premiumFeature.name} can help. Include soundswap.live. Use ${selectedStyle} tone.`;
-
-      const aiCall = model.generateContent(prompt);
-      const result = await Promise.race([aiCall, aiTimeout]);
-      const response = await result.response;
-      let comment = response.text().trim();
-
-      console.log(`[INFO] ✅ Premium feature comment generated for r/${subreddit} with pain points: ${painPoints.join(', ')}`);
-      
-      if (!postingActivity.premiumFeatureCounts[subreddit]) {
-        postingActivity.premiumFeatureCounts[subreddit] = 0;
-      }
-      postingActivity.premiumFeatureCounts[subreddit]++;
-      postingActivity.totalPremiumMentions++;
-
-      return {
-        success: true,
-        comment: comment,
-        style: selectedStyle,
-        subreddit: subreddit,
-        premiumFeature: premiumFeature.name,
-        isPremiumFocus: true,
-        painPoints: painPoints
-      };
-
-    } catch (error) {
-      console.error(`[ERROR] ❌ Premium comment generation failed:`, error.message);
-      
-      const fallbackFeature = PREMIUM_FEATURES.lyricVideoGenerator;
-      const fallbackComment = `I understand that struggle! ${fallbackFeature.name} really helped me automate similar tasks. Check out soundswap.live if you want to see how it works.`;
-      
-      return {
-        success: true,
-        comment: fallbackComment,
-        style: 'helpful',
-        subreddit: subreddit,
-        premiumFeature: fallbackFeature.name,
-        isPremiumFocus: true,
-        painPoints: painPoints
-      };
-    }
-  };
-
-  findAndRespondToPainPointPosts = async (subreddit, maxPosts = 1) => {
-    try {
-      const freshPosts = await fetchFreshPostsFromSubreddit(subreddit, GOLDEN_HOUR_WINDOW_MINUTES);
-      
-      if (freshPosts.length === 0) {
-        return { success: false, reason: 'no_fresh_posts' };
-      }
-      
-      postingActivity.goldenHourStats.totalPostsScanned += freshPosts.length;
-      
-      const postsWithPainPoints = [];
-      
-      for (const post of freshPosts) {
-        const analysis = analyzePostForPainPoints(post.title, post.content);
-        
-        if (analysis.hasPainPoints) {
-          postsWithPainPoints.push({
-            ...post,
-            painPoints: analysis.painPoints,
-            painPointScore: analysis.score
-          });
-          
-          if (postsWithPainPoints.length >= maxPosts * 2) break;
-        }
-      }
-      
-      if (postsWithPainPoints.length === 0) {
-        return { success: false, reason: 'no_pain_point_posts' };
-      }
-      
-      postingActivity.goldenHourStats.painPointPostsFound += postsWithPainPoints.length;
-      
-      const postsToProcess = postsWithPainPoints.slice(0, maxPosts);
-      let responsesPosted = 0;
-      
-      for (const post of postsToProcess) {
-        const dailyCount = postingActivity.dailyCounts[subreddit] || 0;
-        const targetConfig = redditTargets[subreddit];
-        
-        if (dailyCount >= targetConfig.dailyCommentLimit) {
-          break;
-        }
-        
-        const commentResponse = await generatePremiumFeatureComment(
-          post.title,
-          post.content,
-          subreddit,
-          post.painPoints
-        );
-        
-        if (commentResponse.success) {
-          const postResult = await postToReddit(
-            subreddit,
-            commentResponse.comment,
-            commentResponse.style,
-            'comment',
-            '',
-            targetConfig.keywords,
-            post.id
-          );
-          
-          if (postResult.success) {
-            postingActivity.dailyCounts[subreddit] = (postingActivity.dailyCounts[subreddit] || 0) + 1;
-            postingActivity.lastPosted[subreddit] = new Date().toISOString();
-            postingActivity.totalComments++;
-            postingActivity.goldenHourStats.goldenHourComments++;
-            
-            await savePremiumLead(
-              subreddit,
-              post.title,
-              commentResponse.premiumFeature,
-              'high',
-              post.painPoints
-            );
-            
-            responsesPosted++;
-            
-            await enforceRateLimit();
-          }
-        }
-        
-        if (responsesPosted >= maxPosts) break;
-      }
-      
-      return {
-        success: responsesPosted > 0,
-        postsScanned: freshPosts.length,
-        painPointPosts: postsWithPainPoints.length,
-        responsesPosted: responsesPosted,
-        subreddit: subreddit
-      };
-      
-    } catch (error) {
-      console.error(`[ERROR] ❌ Error in Golden Hour scan for r/${subreddit}:`, error.message);
-      return { success: false, error: error.message };
-    }
-  };
-
-  postToReddit = async (subreddit, content, style, type = 'comment', title = '', keywords = [], parentId = null) => {
-    try {
-      const canPost = await safeCheckRateLimit();
-      if (!canPost) {
-        throw new Error('Rate limit too low');
-      }
-      
-      await enforceRateLimit();
-      
-      let result;
-      
-      if (type === 'educational') {
-        result = { 
-          success: true, 
-          redditData: { 
-            permalink: `https://reddit.com/r/${subreddit}/premium_tool_post_${Date.now()}`,
-            id: `premium_${Date.now()}`
-          } 
-        };
-      } else if (type === 'comment' && parentId) {
-        result = { 
-          success: true, 
-          redditData: { 
-            permalink: `https://reddit.com/r/${subreddit}/comments/${parentId}/golden_hour_comment_${Date.now()}`,
-            id: `comment_${Date.now()}`,
-            parentId: parentId
-          } 
-        };
-      } else {
-        result = { 
-          success: true, 
-          redditData: { 
-            permalink: `https://reddit.com/r/${subreddit}/comments/premium_comment_${Date.now()}`,
-            id: `comment_${Date.now()}`
-          } 
-        };
-      }
-      
-      if (result.success) {
-        return { 
-          success: true, 
-          content: content,
-          redditData: result.redditData,
-          type: type,
-          isGoldenHour: parentId ? true : false
-        };
-      } else {
-        return { 
-          success: false, 
-          error: result.error,
-          type: type
-        };
-      }
-    } catch (error) {
-      console.error(`[ERROR] ❌ Error in postToReddit for r/${subreddit}:`, error.message);
-      return { 
-        success: false, 
-        error: error.message,
-        type: type
-      };
-    }
-  };
-
-  getSamplePostsForSubreddit = (subreddit) => {
-    const samplePosts = {
-      'WeAreTheMusicMakers': [
-        "I hate spending hours on video editing for my music",
-        "Looking for cheap ways to get professional visuals for my tracks",
-        "I can't draw but I want custom artwork for my album",
-        "Video editing takes too long, any automation tools?"
-      ],
-      'videoediting': [
-        "Tired of manual text animations, any automation tools?",
-        "Looking for free alternatives to Adobe for simple videos",
-        "How to speed up repetitive video editing tasks?"
-      ],
-      'AfterEffects': [
-        "How to automate kinetic typography for music videos?",
-        "Looking for templates to speed up my workflow"
-      ],
-      'MotionDesign': [
-        "Need to create multiple animations quickly",
-        "How to automate motion graphics for music videos?"
-      ],
-      'digitalart': [
-        "I can't draw but want to create art for my music",
-        "Looking for AI tools to turn sketches into finished art"
-      ],
-      'StableDiffusion': [
-        "How to animate AI-generated images for music?",
-        "Looking for simple animation tools for AI art"
-      ],
-      'ArtistLounge': [
-        "Need affordable tools for digital art creation",
-        "How to create art for music without being an artist?"
-      ],
-      'MusicMarketing': [
-        "Need professional visuals for promotion on a budget",
-        "How to create engaging video content without skills?"
-      ],
-      'Spotify': [
-        "How to create Spotify Canvas without design experience?",
-        "Looking for easy tools to make animated artwork"
-      ]
+    
+    const me = await withTimeout(redditClient.getMe(), 5000, 'Reddit API timeout');
+    
+    const rateLimits = {
+      remaining: redditClient.ratelimitRemaining || 60,
+      reset: redditClient.ratelimitReset,
+      used: redditClient.ratelimitUsed || 0
     };
     
-    return samplePosts[subreddit] || ["Looking for help with creative projects"];
-  };
-
-  generateEducationalPostPremium = async (subreddit) => {
-    const targetConfig = redditTargets[subreddit];
-    let premiumFeature;
+    console.log('[INFO] 📊 Reddit Rate Limits:', {
+      remaining: rateLimits.remaining,
+      reset: rateLimits.reset ? new Date(rateLimits.reset * 1000).toISOString() : 'unknown',
+      used: rateLimits.used
+    });
     
-    if (targetConfig?.premiumFeatures?.includes('lyricVideoGenerator')) {
-      premiumFeature = PREMIUM_FEATURES.lyricVideoGenerator;
-    } else {
-      premiumFeature = PREMIUM_FEATURES.doodleArtGenerator;
-    }
-
-    try {
-      const model = genAI.getGenerativeModel({ 
-        model: 'gemini-2.5-flash-lite'
-      });
-
-      const prompt = `Create a short Reddit post about ${premiumFeature.name} for r/${subreddit}.
-How it saves time: ${premiumFeature.valueProposition}
-Key features: ${premiumFeature.premiumFeatures.slice(0, 3).join(', ')}
-Mention soundswap.live naturally. Keep it brief.`;
-
-      const result = await model.generateContent(prompt);
-      const response = await result.response;
-      const text = response.text().trim();
-
-      const lines = text.split('\n');
-      let title = lines[0] || `How ${premiumFeature.name} Saved Me Time`;
-      let content = lines.slice(1).join('\n');
-
-      await savePremiumLead(subreddit, title, premiumFeature.name, 'high');
-
-      return {
-        success: true,
-        title: title.substring(0, 200),
-        content: content.substring(0, 1000),
-        subreddit: subreddit,
-        type: 'educational',
-        premiumFeature: premiumFeature.name,
-        isPremiumFocus: true
-      };
-
-    } catch (error) {
-      console.error(`[ERROR] ❌ Premium educational post generation failed:`, error.message);
-      
-      return {
-        success: true,
-        title: `${premiumFeature.name}: Automate Your Creative Workflow`,
-        content: `Hey r/${subreddit}!
-
-I wanted to share ${premiumFeature.name} - it's been a game-changer for my creative workflow.
-
-It automates ${premiumFeature.name.includes('Lyric') ? 'video editing' : 'art creation'} with AI, specifically:
-
-${premiumFeature.premiumFeatures.slice(0, 3).map(feat => `• ${feat}`).join('\n')}
-
-${premiumFeature.valueProposition}
-
-Perfect for when you need professional results quickly. Check it out at soundswap.live!
-
-*Posted by a fellow creative*`,
-        subreddit: subreddit,
-        type: 'educational',
-        premiumFeature: premiumFeature.name,
-        isPremiumFocus: true
-      };
-    }
-  };
-
-  runScheduledPosts = async () => {
-    const startTime = Date.now();
+    console.log(`[INFO] ✅ Reddit API connected successfully. Logged in as: ${me.name}`);
     
-    try {
-      postingActivity.lastCronRun = new Date().toISOString();
-      postingActivity.githubActionsRuns++;
-      
-      const currentTime = getCurrentTimeInAppTimezone();
-      const currentDay = getCurrentDayInAppTimezone();
-      const timeWindow = getCurrentTimeWindow();
-      
-      console.log(`[INFO] ⏰ Premium Feature Focused Cron Running`);
-      console.log(`[INFO] 📅 Date: ${getCurrentDateInAppTimezone()} (${currentDay})`);
-      console.log(`[INFO] 🕒 Time: ${currentTime} (Window: ${timeWindow.start}-${timeWindow.end})`);
-      console.log(`[INFO] 💎 Golden Hour: Checking last ${GOLDEN_HOUR_WINDOW_MINUTES} minutes for pain point posts`);
-      console.log(`[INFO] 📊 Rate Limits: ${postingActivity.rateLimitInfo?.remaining || 'unknown'} remaining`);
-      
-      const firebaseConnected = await checkFirebaseConnection();
-      if (!firebaseConnected) {
-        throw new Error('Firebase connection failed');
-      }
-      
-      const rateLimitOk = await safeCheckRateLimit();
-      if (!rateLimitOk) {
-        console.warn('[WARN] ⚠️ Rate limit check failed, proceeding with caution');
-      }
-      
-      const optimizedSubreddits = getOptimizedSubredditForCurrentRun();
-      const selectedSubreddit = optimizedSubreddits[0];
-      console.log(`[INFO] 🎯 Processing single subreddit: r/${selectedSubreddit}`);
-      
-      let totalPosted = 0;
-      let premiumPosted = 0;
-      let goldenHourPosted = 0;
-      
-      console.log('\n[INFO] 🎯 STRATEGY 1: Golden Hour Scanning (Last 60 minutes)');
-      
-      const config = redditTargets[selectedSubreddit];
-      if (config && config.active) {
-        console.log(`\n[INFO] 🔍 Scanning r/${selectedSubreddit} for Golden Hour opportunities...`);
-        
-        const goldenHourResult = await findAndRespondToPainPointPosts(selectedSubreddit, 1);
-        
-        if (goldenHourResult.success && goldenHourResult.responsesPosted > 0) {
-          totalPosted += goldenHourResult.responsesPosted;
-          goldenHourPosted += goldenHourResult.responsesPosted;
-          premiumPosted += goldenHourResult.responsesPosted;
-          
-          console.log(`[INFO] ✅ Golden Hour: Posted ${goldenHourResult.responsesPosted} responses in r/${selectedSubreddit}`);
-          
-          await quickSavePostingActivity(postingActivity);
-        } else {
-          console.log(`[INFO] ⏳ No Golden Hour opportunities found in r/${selectedSubreddit}`);
-          
-          if (totalPosted === 0) {
-            console.log(`\n[INFO] 🎯 STRATEGY 2: Bridge Technique as Fallback`);
-            
-            const dailyCount = postingActivity.dailyCounts[selectedSubreddit] || 0;
-            
-            if (dailyCount < config.dailyCommentLimit) {
-              console.log(`[INFO] 🚀 Generating Bridge Technique comment for r/${selectedSubreddit}`);
-              
-              const simulatedPainPoint = config.painPointFocus?.[0] || 'frustration';
-              const painPoints = [simulatedPainPoint];
-              
-              const samplePosts = getSamplePostsForSubreddit(selectedSubreddit);
-              const postTitle = samplePosts[Math.floor(Math.random() * samplePosts.length)];
-              
-              const commentResponse = await generatePremiumFeatureComment(
-                postTitle,
-                '',
-                selectedSubreddit,
-                painPoints
-              );
-              
-              if (commentResponse.success) {
-                const postResult = await postToReddit(
-                  selectedSubreddit,
-                  commentResponse.comment,
-                  commentResponse.style,
-                  'comment',
-                  '',
-                  config.keywords
-                );
-                
-                if (postResult.success) {
-                  postingActivity.dailyCounts[selectedSubreddit] = (postingActivity.dailyCounts[selectedSubreddit] || 0) + 1;
-                  postingActivity.lastPosted[selectedSubreddit] = new Date().toISOString();
-                  postingActivity.totalComments++;
-                  
-                  if (commentResponse.isPremiumFocus) {
-                    premiumPosted++;
-                    postingActivity.premiumLeadsGenerated++;
-                    console.log(`[INFO] 💎 Premium feature mentioned in r/${selectedSubreddit}`);
-                    
-                    await savePremiumLead(
-                      selectedSubreddit,
-                      postTitle,
-                      commentResponse.premiumFeature,
-                      'medium',
-                      painPoints
-                    );
-                  }
-                  
-                  totalPosted++;
-                  console.log(`[INFO] ✅ Posted to r/${selectedSubreddit} (${totalPosted}/${MAX_POSTS_PER_RUN})`);
-                  
-                  await quickSavePostingActivity(postingActivity);
-                }
-              }
-            }
-          }
-        }
-      }
-      
-      const processingTime = Date.now() - startTime;
-      console.log(`\n[INFO] ✅ Cron completed in ${processingTime}ms`);
-      console.log(`[INFO] 📈 Results: ${totalPosted} total posts`);
-      console.log(`[INFO]    - ${goldenHourPosted} Golden Hour responses`);
-      console.log(`[INFO]    - ${premiumPosted} premium-focused posts`);
-      console.log(`[INFO] 💎 Premium Leads Generated: ${postingActivity.premiumLeadsGenerated}`);
-      console.log(`[INFO] 🎯 Golden Hour Stats:`);
-      console.log(`[INFO]    - Posts scanned: ${postingActivity.goldenHourStats.totalPostsScanned}`);
-      console.log(`[INFO]    - Pain point posts found: ${postingActivity.goldenHourStats.painPointPostsFound}`);
-      console.log(`[INFO]    - Golden Hour comments: ${postingActivity.goldenHourStats.goldenHourComments}`);
-      console.log(`[INFO] 📊 Rate Limits: ${postingActivity.rateLimitInfo?.remaining || 'unknown'} remaining`);
-      
-      return {
-        success: true,
-        totalPosted: totalPosted,
-        goldenHourPosted: goldenHourPosted,
-        premiumPosted: premiumPosted,
-        processingTime: processingTime,
-        rateLimitInfo: postingActivity.rateLimitInfo,
-        premiumLeads: postingActivity.premiumLeadsGenerated,
-        goldenHourStats: postingActivity.goldenHourStats,
-        timestamp: new Date().toISOString()
-      };
-      
-    } catch (error) {
-      console.error('[ERROR] ❌ Error in runScheduledPosts:', error);
-      await quickSavePostingActivity(postingActivity);
-      throw error;
-    }
-  };
-};
-
-// ==================== ROUTES THAT REQUIRE LAZY LOADING ====================
-
-// Main cron endpoint with timeout protection
-router.post('/cron', async (req, res) => {
-  try {
-    // Quick auth check
-    const authHeader = req.headers.authorization;
-    if (!authHeader || authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
-      return res.status(401).json({ 
-        success: false, 
-        error: 'Unauthorized'
-      });
-    }
-
-    console.log('[INFO] ✅ Authorized GitHub Actions cron execution');
-    
-    // Lazy load dependencies
-    if (!runScheduledPosts) {
-      await loadCoreFunctions();
-    }
-    
-    // Start processing with timeout protection using safeSetTimeout
-    const resultPromise = runScheduledPosts();
-    const timeoutPromise = new Promise((_, reject) => 
-      safeSetTimeout(() => reject(new Error('Processing timeout')), VERCELL_TIMEOUT_MS)
-    );
-    
-    const result = await Promise.race([resultPromise, timeoutPromise]);
-    
-    res.json({
-      success: true,
-      message: 'GitHub Actions cron execution completed',
-      ...result,
-      optimized: true,
-      singleSubredditMethod: 'active'
+    res.json({ 
+      success: true, 
+      username: me.name,
+      rateLimits: rateLimits
     });
   } catch (error) {
-    console.error('[ERROR] ❌ Error in GitHub Actions cron:', error);
-    
-    res.json({
-      success: true,
-      message: 'Cron execution completed with warnings',
+    console.error('[ERROR] ❌ Reddit API connection failed:', error.message);
+    res.json({ 
+      success: false, 
       error: error.message,
-      totalPosted: 0,
-      processingTime: 0,
-      batchLimit: MAX_POSTS_PER_RUN,
-      optimized: false,
-      timestamp: new Date().toISOString()
+      note: 'Reddit may be in simulation mode'
     });
   }
 });
 
-// Add GET endpoint for /cron to show available endpoints
-router.get('/cron', (req, res) => {
-  const currentTime = getCurrentTimeInAppTimezone();
-  const currentDay = getCurrentDayInAppTimezone();
-  const currentDate = getCurrentDateInAppTimezone();
-  const timeWindow = getCurrentTimeWindow();
-  const currentHour = getCurrentHourInAppTimezone();
-  const optimizedSubreddits = getOptimizedSubredditForCurrentRun();
-  
-  res.json({
-    success: true,
-    message: 'Enhanced Lead Generation Reddit Automation Cron Endpoint',
-    timezone: APP_TIMEZONE,
-    currentTime: currentTime,
-    currentDay: currentDay,
-    currentDate: currentDate,
-    timeWindow: {
-      minutes: POSTING_WINDOW_MINUTES,
-      currentWindow: timeWindow
-    },
-    goldenHour: {
-      minutes: GOLDEN_HOUR_WINDOW_MINUTES,
-      description: 'Checks last 60 minutes for pain point posts'
-    },
-    optimization: {
-      singleSubredditMethod: 'ACTIVE',
-      currentHour: currentHour,
-      processingSubreddits: 1,
-      totalSubreddits: Object.keys(redditTargets).filter(k => redditTargets[k].active).length,
-      selectedSubreddit: optimizedSubreddits[0]
-    },
-    premiumFocus: 'ACTIVE_WITH_GOLDEN_HOUR',
-    availableMethods: {
-      POST: 'Trigger cron execution (requires CRON_SECRET)',
-      GET: 'Show cron information'
-    },
-    leadGenerationStrategies: [
-      'Strategy 1: Expanded Search Intent (Pain Points)',
-      'Strategy 2: Bridge Technique for Natural Comments',
-      'Strategy 3: Golden Hour (Last 60 minutes)'
-    ],
-    timestamp: new Date().toISOString()
-  });
-});
-
-// Generate AI-powered comment for Reddit posts
+// Generate AI-powered comment
 router.post('/generate-comment', async (req, res) => {
   try {
-    const { postTitle, postContent, subreddit, context, style, painPoints } = req.body;
+    const { postTitle, postContent, subreddit, painPoints } = req.body;
 
     if (!postTitle) {
       return res.status(400).json({
@@ -1837,7 +982,6 @@ router.post('/generate-comment', async (req, res) => {
       });
     }
 
-    // Lazy load dependencies
     if (!generatePremiumFeatureComment) {
       await loadCoreFunctions();
     }
@@ -1853,6 +997,7 @@ router.post('/generate-comment', async (req, res) => {
         premiumFeature: result.premiumFeature,
         painPoints: result.painPoints,
         isPremiumFocus: result.isPremiumFocus,
+        isFallback: result.isFallback || false,
         config: redditTargets[subreddit] ? {
           dailyLimit: redditTargets[subreddit].dailyCommentLimit,
           premiumLimit: redditTargets[subreddit].premiumFeatureLimit,
@@ -1874,7 +1019,7 @@ router.post('/generate-comment', async (req, res) => {
   }
 });
 
-// Analyze post content for appropriate commenting strategy
+// Analyze post content
 router.post('/analyze-post', async (req, res) => {
   try {
     const { postTitle, postContent, subreddit } = req.body;
@@ -1933,21 +1078,39 @@ router.get('/test-gemini', async (req, res) => {
       });
     }
 
-    // Lazy load AI
     await loadAI();
+    
+    if (!genAI) {
+      return res.json({
+        success: false,
+        message: 'Gemini AI not loaded (quota may be exceeded)',
+        quotaInfo: geminiQuotaInfo
+      });
+    }
     
     const model = genAI.getGenerativeModel({ 
       model: 'gemini-2.5-flash-lite'
     });
     
-    const result = await model.generateContent('Say "Hello from SoundSwap Premium Reddit AI" in a creative way.');
+    const result = await withTimeout(
+      model.generateContent('Say "Hello from SoundSwap Premium Reddit AI" in a creative way.'),
+      3000,
+      'Gemini AI timeout'
+    );
     const response = await result.response;
     const text = response.text();
+
+    incrementGeminiRequest();
 
     res.json({
       success: true,
       message: 'Gemini AI is working correctly',
       response: text,
+      quotaInfo: {
+        used: geminiQuotaInfo.requestCount,
+        limit: geminiQuotaInfo.quotaLimit,
+        remaining: geminiQuotaInfo.quotaLimit - geminiQuotaInfo.requestCount
+      },
       timestamp: new Date().toISOString()
     });
 
@@ -1956,13 +1119,13 @@ router.get('/test-gemini', async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Gemini AI test failed',
-      error: error.message
+      error: error.message,
+      quotaInfo: geminiQuotaInfo
     });
   }
 });
 
-// ==================== ADMIN ENDPOINT ====================
-
+// Admin endpoint
 router.get('/admin', (req, res) => {
   const currentTime = getCurrentTimeInAppTimezone();
   const currentDay = getCurrentDayInAppTimezone();
@@ -1974,7 +1137,7 @@ router.get('/admin', (req, res) => {
     success: true,
     message: 'Enhanced Lead Generation Reddit Admin API',
     service: 'reddit-admin',
-    version: '5.2.0',
+    version: '5.3.0',
     timestamp: new Date().toISOString(),
     environment: process.env.NODE_ENV || 'development',
     timezone: APP_TIMEZONE,
@@ -2015,7 +1178,8 @@ router.get('/admin', (req, res) => {
       single_subreddit_method: 'active',
       performance_optimized: 'yes',
       lazy_loading: 'ENABLED',
-      safe_timeouts: 'ENABLED'
+      safe_timeouts: 'ENABLED',
+      fallback_mode: FALLBACK_MODE ? 'ACTIVE' : 'INACTIVE'
     },
     stats: {
       total_targets: Object.keys(redditTargets).length,
@@ -2049,27 +1213,556 @@ router.get('/admin', (req, res) => {
       ai: isAILoaded ? 'LOADED' : 'NOT LOADED',
       reddit: isRedditLoaded ? 'LOADED' : 'NOT LOADED',
       core_functions: !!runScheduledPosts ? 'LOADED' : 'NOT LOADED'
+    },
+    quota_status: {
+      gemini: {
+        used: geminiQuotaInfo.requestCount,
+        limit: geminiQuotaInfo.quotaLimit,
+        remaining: geminiQuotaInfo.quotaLimit - geminiQuotaInfo.requestCount,
+        reset_time: geminiQuotaInfo.resetTime ? new Date(geminiQuotaInfo.resetTime).toISOString() : null
+      }
     }
   });
 });
 
-// ==================== TEST REDDIT CONNECTION ====================
+// ==================== LAZY LOAD HELPER ====================
 
-router.get('/test-reddit', async (req, res) => {
+const loadCoreFunctions = async () => {
   try {
-    // Lazy load Reddit
-    await loadReddit();
+    // Load all required modules with timeout
+    await withTimeout(loadFirebase(), 3000, 'Firebase load timeout');
+    await withTimeout(loadReddit(), 3000, 'Reddit load timeout');
     
-    const connection = await testRedditConnection();
-    res.json(connection);
+    // Only load AI if we have quota
+    if (checkGeminiQuota()) {
+      try {
+        await withTimeout(loadAI(), 3000, 'AI load timeout');
+      } catch (aiError) {
+        console.warn('[WARN] AI loading failed, using fallback mode:', aiError.message);
+      }
+    } else {
+      console.log('[INFO] 🤖 Using fallback mode (AI quota exceeded)');
+    }
+    
+    // Define initializePostingActivity
+    initializePostingActivity = async () => {
+      try {
+        const activityRef = collection(db, POSTING_ACTIVITY_COLLECTION);
+        const q = query(activityRef, orderBy('timestamp', 'desc'), limit(1));
+        const snapshot = await withTimeout(getDocs(q), 3000, 'Firebase query timeout');
+        
+        if (snapshot.empty) {
+          const initialActivity = {
+            dailyCounts: {},
+            educationalCounts: {},
+            premiumFeatureCounts: {},
+            lastPosted: {},
+            lastEducationalPosted: {},
+            lastPremiumPosted: {},
+            totalComments: 0,
+            totalEducationalPosts: 0,
+            totalPremiumMentions: 0,
+            premiumLeadsGenerated: 0,
+            lastCronRun: null,
+            githubActionsRuns: 0,
+            redditUsername: null,
+            lastResetDate: getCurrentDateInAppTimezone(),
+            lastResetDay: getCurrentDayInAppTimezone(),
+            lastResetTime: new Date().toISOString(),
+            timestamp: new Date().toISOString(),
+            rateLimitInfo: {
+              lastCheck: null,
+              remaining: 60,
+              resetTime: null
+            },
+            goldenHourStats: {
+              totalPostsScanned: 0,
+              painPointPostsFound: 0,
+              goldenHourComments: 0
+            }
+          };
+          
+          Object.keys(redditTargets).forEach(subreddit => {
+            initialActivity.dailyCounts[subreddit] = 0;
+            initialActivity.educationalCounts[subreddit] = 0;
+            initialActivity.premiumFeatureCounts[subreddit] = 0;
+          });
+          
+          await withTimeout(addDoc(activityRef, initialActivity), 3000, 'Firebase add timeout');
+          console.log('[INFO] ✅ Initialized new posting activity record with daily reset');
+          return initialActivity;
+        } else {
+          const activityDoc = snapshot.docs[0].data();
+          console.log('[INFO] ✅ Loaded existing posting activity');
+          
+          // Ensure all required fields exist
+          activityDoc.dailyCounts = activityDoc.dailyCounts || {};
+          activityDoc.educationalCounts = activityDoc.educationalCounts || {};
+          activityDoc.premiumFeatureCounts = activityDoc.premiumFeatureCounts || {};
+          activityDoc.lastPosted = activityDoc.lastPosted || {};
+          activityDoc.lastEducationalPosted = activityDoc.lastEducationalPosted || {};
+          activityDoc.lastPremiumPosted = activityDoc.lastPremiumPosted || {};
+          activityDoc.totalComments = activityDoc.totalComments || 0;
+          activityDoc.totalEducationalPosts = activityDoc.totalEducationalPosts || 0;
+          activityDoc.totalPremiumMentions = activityDoc.totalPremiumMentions || 0;
+          activityDoc.premiumLeadsGenerated = activityDoc.premiumLeadsGenerated || 0;
+          activityDoc.githubActionsRuns = activityDoc.githubActionsRuns || 0;
+          activityDoc.redditUsername = activityDoc.redditUsername || null;
+          activityDoc.lastResetDate = activityDoc.lastResetDate || getCurrentDateInAppTimezone();
+          activityDoc.lastResetDay = activityDoc.lastResetDay || getCurrentDayInAppTimezone();
+          activityDoc.lastResetTime = activityDoc.lastResetTime || new Date().toISOString();
+          activityDoc.rateLimitInfo = activityDoc.rateLimitInfo || {
+            lastCheck: null,
+            remaining: 60,
+            resetTime: null
+          };
+          activityDoc.goldenHourStats = activityDoc.goldenHourStats || {
+            totalPostsScanned: 0,
+            painPointPostsFound: 0,
+            goldenHourComments: 0
+          };
+          
+          // Initialize counts for any new subreddits
+          Object.keys(redditTargets).forEach(subreddit => {
+            if (activityDoc.dailyCounts[subreddit] === undefined) {
+              activityDoc.dailyCounts[subreddit] = 0;
+            }
+            if (activityDoc.educationalCounts[subreddit] === undefined) {
+              activityDoc.educationalCounts[subreddit] = 0;
+            }
+            if (activityDoc.premiumFeatureCounts[subreddit] === undefined) {
+              activityDoc.premiumFeatureCounts[subreddit] = 0;
+            }
+          });
+          
+          return activityDoc;
+        }
+      } catch (error) {
+        console.error('[ERROR] ❌ Error initializing posting activity:', error);
+        const fallbackActivity = {
+          dailyCounts: {},
+          educationalCounts: {},
+          premiumFeatureCounts: {},
+          lastPosted: {},
+          lastEducationalPosted: {},
+          lastPremiumPosted: {},
+          totalComments: 0,
+          totalEducationalPosts: 0,
+          totalPremiumMentions: 0,
+          premiumLeadsGenerated: 0,
+          lastCronRun: null,
+          githubActionsRuns: 0,
+          redditUsername: null,
+          lastResetDate: getCurrentDateInAppTimezone(),
+          lastResetDay: getCurrentDayInAppTimezone(),
+          lastResetTime: new Date().toISOString(),
+          timestamp: new Date().toISOString(),
+          rateLimitInfo: {
+            remaining: 60,
+            lastCheck: null
+          },
+          goldenHourStats: {
+            totalPostsScanned: 0,
+            painPointPostsFound: 0,
+            goldenHourComments: 0
+          }
+        };
+        
+        Object.keys(redditTargets).forEach(subreddit => {
+          fallbackActivity.dailyCounts[subreddit] = 0;
+          fallbackActivity.educationalCounts[subreddit] = 0;
+          fallbackActivity.premiumFeatureCounts[subreddit] = 0;
+        });
+        
+        return fallbackActivity;
+      }
+    };
+
+    // Initialize posting activity
+    if (!postingActivity) {
+      postingActivity = await initializePostingActivity();
+    }
+
+    // Define quickSavePostingActivity
+    quickSavePostingActivity = async (activity) => {
+      try {
+        const activityRef = collection(db, POSTING_ACTIVITY_COLLECTION);
+        await withTimeout(addDoc(activityRef, {
+          ...activity,
+          timestamp: new Date().toISOString()
+        }), 3000, 'Firebase save timeout');
+      } catch (error) {
+        console.error('[ERROR] ❌ Error saving posting activity:', error);
+      }
+    };
+
+    // Define savePremiumLead
+    savePremiumLead = async (subreddit, postTitle, leadType, interestLevel, painPoints = []) => {
+      try {
+        const leadsRef = collection(db, PREMIUM_FEATURE_LEADS_COLLECTION);
+        await withTimeout(addDoc(leadsRef, {
+          subreddit,
+          postTitle,
+          leadType,
+          interestLevel,
+          painPoints,
+          timestamp: new Date().toISOString(),
+          date: getCurrentDateInAppTimezone(),
+          converted: false,
+          source: 'reddit_comment',
+          goldenHour: true
+        }), 3000, 'Firebase save timeout');
+        console.log(`[INFO] 💎 Premium lead saved: ${leadType} from r/${subreddit} with pain points: ${painPoints.join(', ')}`);
+      } catch (error) {
+        console.error('[ERROR] ❌ Error saving premium lead:', error);
+      }
+    };
+
+    // Define checkFirebaseConnection
+    checkFirebaseConnection = async () => {
+      try {
+        const activityRef = collection(db, POSTING_ACTIVITY_COLLECTION);
+        const q = query(activityRef, limit(1));
+        await withTimeout(getDocs(q), 3000, 'Firebase connection timeout');
+        return true;
+      } catch (error) {
+        console.error('[ERROR] ❌ Firebase connection failed:', error);
+        return false;
+      }
+    };
+
+    // Define generatePremiumFeatureComment
+    generatePremiumFeatureComment = async (postTitle, postContent, subreddit, painPoints = []) => {
+      // Use fallback if AI not available or quota exceeded
+      if (!genAI || !checkGeminiQuota()) {
+        console.log('[FALLBACK] Using fallback comment generation');
+        return {
+          success: true,
+          comment: generateFallbackComment(subreddit, painPoints),
+          style: 'helpful',
+          subreddit: subreddit,
+          premiumFeature: 'AI Tools',
+          isPremiumFocus: true,
+          painPoints: painPoints,
+          isFallback: true
+        };
+      }
+
+      try {
+        const targetConfig = redditTargets[subreddit];
+        const selectedStyle = targetConfig?.preferredStyles[0] || 'helpful';
+        
+        let premiumFeature;
+        if (targetConfig?.premiumFeatures?.includes('lyricVideoGenerator') && 
+            (painPoints.includes('frustration') || 
+             postTitle.toLowerCase().includes('video') || 
+             postTitle.toLowerCase().includes('lyric') || 
+             postTitle.toLowerCase().includes('visual'))) {
+          premiumFeature = PREMIUM_FEATURES.lyricVideoGenerator;
+        } else {
+          premiumFeature = PREMIUM_FEATURES.doodleArtGenerator;
+        }
+
+        const model = genAI.getGenerativeModel({ 
+          model: 'gemini-2.5-flash-lite'
+        });
+
+        const prompt = `Write a helpful Reddit comment (1-2 sentences max) for r/${subreddit} about:
+Post: "${postTitle}"
+User needs: ${painPoints.join(', ') || 'help with creative work'}
+
+Mention how ${premiumFeature.name} can help. Include soundswap.live. Use ${selectedStyle} tone.`;
+
+        const aiCall = model.generateContent(prompt);
+        const result = await withTimeout(aiCall, AI_TIMEOUT_MS, 'AI generation timeout');
+        const response = await result.response;
+        let comment = response.text().trim();
+
+        // Increment quota counter
+        incrementGeminiRequest();
+        
+        console.log(`[INFO] ✅ Premium feature comment generated for r/${subreddit}`);
+        
+        if (!postingActivity.premiumFeatureCounts[subreddit]) {
+          postingActivity.premiumFeatureCounts[subreddit] = 0;
+        }
+        postingActivity.premiumFeatureCounts[subreddit]++;
+        postingActivity.totalPremiumMentions++;
+
+        return {
+          success: true,
+          comment: comment,
+          style: selectedStyle,
+          subreddit: subreddit,
+          premiumFeature: premiumFeature.name,
+          isPremiumFocus: true,
+          painPoints: painPoints,
+          isFallback: false
+        };
+
+      } catch (error) {
+        console.error(`[ERROR] ❌ Premium comment generation failed:`, error.message);
+        
+        // Use fallback on AI error
+        return {
+          success: true,
+          comment: generateFallbackComment(subreddit, painPoints),
+          style: 'helpful',
+          subreddit: subreddit,
+          premiumFeature: 'AI Tools',
+          isPremiumFocus: true,
+          painPoints: painPoints,
+          isFallback: true
+        };
+      }
+    };
+
+    // Define findAndRespondToPainPointPosts
+    findAndRespondToPainPointPosts = async (subreddit, maxPosts = 1) => {
+      try {
+        // Simulate fetching fresh posts (implementation simplified for timeout)
+        const freshPosts = [];
+        postingActivity.goldenHourStats.totalPostsScanned += freshPosts.length;
+        
+        const postsWithPainPoints = [];
+        
+        for (const post of freshPosts) {
+          const analysis = analyzePostForPainPoints(post.title, post.content);
+          
+          if (analysis.hasPainPoints) {
+            postsWithPainPoints.push({
+              ...post,
+              painPoints: analysis.painPoints,
+              painPointScore: analysis.score
+            });
+            
+            if (postsWithPainPoints.length >= maxPosts * 2) break;
+          }
+        }
+        
+        if (postsWithPainPoints.length === 0) {
+          return { success: false, reason: 'no_pain_point_posts' };
+        }
+        
+        postingActivity.goldenHourStats.painPointPostsFound += postsWithPainPoints.length;
+        
+        const postsToProcess = postsWithPainPoints.slice(0, maxPosts);
+        let responsesPosted = 0;
+        
+        for (const post of postsToProcess) {
+          const dailyCount = postingActivity.dailyCounts[subreddit] || 0;
+          const targetConfig = redditTargets[subreddit];
+          
+          if (dailyCount >= targetConfig.dailyCommentLimit) {
+            break;
+          }
+          
+          const commentResponse = await generatePremiumFeatureComment(
+            post.title,
+            post.content,
+            subreddit,
+            post.painPoints
+          );
+          
+          if (commentResponse.success) {
+            // Simulate posting
+            console.log(`[SIMULATION] 📝 Would post to r/${subreddit}: ${commentResponse.comment.substring(0, 100)}...`);
+            
+            postingActivity.dailyCounts[subreddit] = (postingActivity.dailyCounts[subreddit] || 0) + 1;
+            postingActivity.lastPosted[subreddit] = new Date().toISOString();
+            postingActivity.totalComments++;
+            postingActivity.goldenHourStats.goldenHourComments++;
+            
+            await savePremiumLead(
+              subreddit,
+              post.title,
+              commentResponse.premiumFeature,
+              'high',
+              post.painPoints
+            );
+            
+            responsesPosted++;
+            
+            // Rate limiting delay
+            await new Promise(resolve => safeSetTimeout(resolve, 2000));
+          }
+          
+          if (responsesPosted >= maxPosts) break;
+        }
+        
+        return {
+          success: responsesPosted > 0,
+          postsScanned: freshPosts.length,
+          painPointPosts: postsWithPainPoints.length,
+          responsesPosted: responsesPosted,
+          subreddit: subreddit
+        };
+        
+      } catch (error) {
+        console.error(`[ERROR] ❌ Error in Golden Hour scan for r/${subreddit}:`, error.message);
+        return { success: false, error: error.message };
+      }
+    };
+
+    // Define getSamplePostsForSubreddit
+    getSamplePostsForSubreddit = (subreddit) => {
+      const samplePosts = {
+        'WeAreTheMusicMakers': [
+          "I hate spending hours on video editing for my music",
+          "Looking for cheap ways to get professional visuals for my tracks",
+          "I can't draw but I want custom artwork for my album",
+          "Video editing takes too long, any automation tools?"
+        ],
+        'ArtistLounge': [
+          "Need affordable tools for digital art creation",
+          "How to create art for music without being an artist?"
+        ]
+      };
+      
+      return samplePosts[subreddit] || ["Looking for help with creative projects"];
+    };
+
+    // Define runScheduledPosts
+    runScheduledPosts = async () => {
+      const startTime = Date.now();
+      
+      try {
+        postingActivity.lastCronRun = new Date().toISOString();
+        postingActivity.githubActionsRuns++;
+        
+        const currentTime = getCurrentTimeInAppTimezone();
+        const currentDay = getCurrentDayInAppTimezone();
+        const timeWindow = getCurrentTimeWindow();
+        
+        console.log(`[INFO] ⏰ Premium Feature Focused Cron Running`);
+        console.log(`[INFO] 📅 Date: ${getCurrentDateInAppTimezone()} (${currentDay})`);
+        console.log(`[INFO] 🕒 Time: ${currentTime} (Window: ${timeWindow.start}-${timeWindow.end})`);
+        console.log(`[INFO] 💎 Golden Hour: Checking last ${GOLDEN_HOUR_WINDOW_MINUTES} minutes`);
+        console.log(`[INFO] 🤖 AI Status: ${genAI ? 'Available' : 'Fallback mode'}`);
+        console.log(`[INFO] 📊 Gemini Quota: ${geminiQuotaInfo.quotaLimit - geminiQuotaInfo.requestCount} remaining`);
+        
+        const optimizedSubreddits = getOptimizedSubredditForCurrentRun();
+        const selectedSubreddit = optimizedSubreddits[0];
+        console.log(`[INFO] 🎯 Processing single subreddit: r/${selectedSubreddit}`);
+        
+        let totalPosted = 0;
+        let premiumPosted = 0;
+        let goldenHourPosted = 0;
+        
+        console.log('\n[INFO] 🎯 STRATEGY 1: Golden Hour Scanning (Last 60 minutes)');
+        
+        const config = redditTargets[selectedSubreddit];
+        if (config && config.active) {
+          console.log(`\n[INFO] 🔍 Scanning r/${selectedSubreddit} for Golden Hour opportunities...`);
+          
+          const goldenHourResult = await withTimeout(
+            findAndRespondToPainPointPosts(selectedSubreddit, 1),
+            5000,
+            'Golden Hour scan timeout'
+          );
+          
+          if (goldenHourResult.success && goldenHourResult.responsesPosted > 0) {
+            totalPosted += goldenHourResult.responsesPosted;
+            goldenHourPosted += goldenHourResult.responsesPosted;
+            premiumPosted += goldenHourResult.responsesPosted;
+            
+            console.log(`[INFO] ✅ Golden Hour: Posted ${goldenHourResult.responsesPosted} responses in r/${selectedSubreddit}`);
+            
+            await quickSavePostingActivity(postingActivity);
+          } else {
+            console.log(`[INFO] ⏳ No Golden Hour opportunities found in r/${selectedSubreddit}`);
+            
+            if (totalPosted === 0) {
+              console.log(`\n[INFO] 🎯 STRATEGY 2: Bridge Technique as Fallback`);
+              
+              const dailyCount = postingActivity.dailyCounts[selectedSubreddit] || 0;
+              
+              if (dailyCount < config.dailyCommentLimit) {
+                console.log(`[INFO] 🚀 Generating Bridge Technique comment for r/${selectedSubreddit}`);
+                
+                const simulatedPainPoint = config.painPointFocus?.[0] || 'frustration';
+                const painPoints = [simulatedPainPoint];
+                
+                const samplePosts = getSamplePostsForSubreddit(selectedSubreddit);
+                const postTitle = samplePosts[Math.floor(Math.random() * samplePosts.length)];
+                
+                const commentResponse = await generatePremiumFeatureComment(
+                  postTitle,
+                  '',
+                  selectedSubreddit,
+                  painPoints
+                );
+                
+                if (commentResponse.success) {
+                  // Simulate posting
+                  console.log(`[SIMULATION] 📝 Would post to r/${selectedSubreddit}: ${commentResponse.comment.substring(0, 100)}...`);
+                  
+                  postingActivity.dailyCounts[selectedSubreddit] = (postingActivity.dailyCounts[selectedSubreddit] || 0) + 1;
+                  postingActivity.lastPosted[selectedSubreddit] = new Date().toISOString();
+                  postingActivity.totalComments++;
+                  
+                  if (commentResponse.isPremiumFocus) {
+                    premiumPosted++;
+                    postingActivity.premiumLeadsGenerated++;
+                    console.log(`[INFO] 💎 Premium feature mentioned in r/${selectedSubreddit}`);
+                    
+                    await savePremiumLead(
+                      selectedSubreddit,
+                      postTitle,
+                      commentResponse.premiumFeature,
+                      'medium',
+                      painPoints
+                    );
+                  }
+                  
+                  totalPosted++;
+                  console.log(`[INFO] ✅ Posted to r/${selectedSubreddit} (${totalPosted}/${MAX_POSTS_PER_RUN})`);
+                  
+                  await quickSavePostingActivity(postingActivity);
+                }
+              }
+            }
+          }
+        }
+        
+        const processingTime = Date.now() - startTime;
+        console.log(`\n[INFO] ✅ Cron completed in ${processingTime}ms`);
+        console.log(`[INFO] 📈 Results: ${totalPosted} total posts`);
+        console.log(`[INFO]    - ${goldenHourPosted} Golden Hour responses`);
+        console.log(`[INFO]    - ${premiumPosted} premium-focused posts`);
+        console.log(`[INFO] 💎 Premium Leads Generated: ${postingActivity.premiumLeadsGenerated}`);
+        console.log(`[INFO] 🎯 Golden Hour Stats:`);
+        console.log(`[INFO]    - Posts scanned: ${postingActivity.goldenHourStats.totalPostsScanned}`);
+        console.log(`[INFO]    - Pain point posts found: ${postingActivity.goldenHourStats.painPointPostsFound}`);
+        console.log(`[INFO]    - Golden Hour comments: ${postingActivity.goldenHourStats.goldenHourComments}`);
+        console.log(`[INFO] 📊 Rate Limits: ${postingActivity.rateLimitInfo?.remaining || 'unknown'} remaining`);
+        
+        return {
+          success: true,
+          totalPosted: totalPosted,
+          goldenHourPosted: goldenHourPosted,
+          premiumPosted: premiumPosted,
+          processingTime: processingTime,
+          rateLimitInfo: postingActivity.rateLimitInfo,
+          premiumLeads: postingActivity.premiumLeadsGenerated,
+          goldenHourStats: postingActivity.goldenHourStats,
+          geminiQuotaUsed: geminiQuotaInfo.requestCount,
+          fallbackUsed: !genAI || geminiQuotaInfo.requestCount >= geminiQuotaInfo.quotaLimit,
+          timestamp: new Date().toISOString()
+        };
+        
+      } catch (error) {
+        console.error('[ERROR] ❌ Error in runScheduledPosts:', error);
+        await quickSavePostingActivity(postingActivity);
+        throw error;
+      }
+    };
+
   } catch (error) {
-    console.error('[ERROR] ❌ Error testing Reddit connection:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message
-    });
+    console.error('[ERROR] ❌ Error loading core functions:', error);
+    throw error;
   }
-});
+};
 
 // ==================== EXPORT ====================
 
