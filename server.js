@@ -14,15 +14,24 @@ import lyricVideoRoutes from './api/generate-video.js';
 let doodleArtRoutes;
 try {
   doodleArtRoutes = (await import('./api/doodle-art.js')).default;
-  console.log('✅ Doodle Art routes loaded');
+  if (!process.env.VERCEL_DEPLOYMENT) {
+    console.log('✅ Doodle Art routes loaded');
+  }
 } catch (error) {
-  console.log('⚠️ Doodle Art routes not found, skipping');
+  if (!process.env.VERCEL_DEPLOYMENT) {
+    console.log('⚠️ Doodle Art routes not found, skipping');
+  }
   doodleArtRoutes = express.Router(); // Create empty router
 }
 import createCheckoutRouter from './api/create-checkout.js';
 import lemonWebhookRouter from './api/lemon-webhook.js';
 
 dotenv.config();
+
+// Check if we're in Vercel deployment mode
+const IS_VERCEL_DEPLOYMENT = process.env.VERCEL_DEPLOYMENT === 'true' || 
+                            process.env.VERCEL === '1' || 
+                            process.env.NODE_ENV === 'production';
 
 // ==================== FIREBASE ADMIN INITIALIZATION ====================
 // Initialize Firebase Admin SDK if not already initialized
@@ -41,10 +50,14 @@ if (!admin.apps.length) {
         credential: admin.credential.cert(firebaseConfig),
         databaseURL: process.env.FIREBASE_DATABASE_URL
       });
-      console.log('🔥 Firebase Admin initialized');
+      if (!IS_VERCEL_DEPLOYMENT) {
+        console.log('🔥 Firebase Admin initialized');
+      }
       db = admin.firestore();
     } else {
-      console.warn('⚠️ Firebase config incomplete, Firebase Admin not initialized');
+      if (!IS_VERCEL_DEPLOYMENT) {
+        console.warn('⚠️ Firebase config incomplete, Firebase Admin not initialized');
+      }
       db = null;
     }
   } catch (error) {
@@ -53,7 +66,9 @@ if (!admin.apps.length) {
   }
 } else {
   db = admin.firestore();
-  console.log('🔥 Firebase Admin already initialized');
+  if (!IS_VERCEL_DEPLOYMENT) {
+    console.log('🔥 Firebase Admin already initialized');
+  }
 }
 
 const app = express();
@@ -822,5 +837,10 @@ if (process.env.NODE_ENV !== 'production' || process.env.VERCEL !== '1') {
     console.log(`   🔐 Firebase Admin: ${db ? 'INITIALIZED' : 'NOT CONFIGURED'}`);
     console.log(`   💰 Credit System: ${db ? 'READY' : 'NEEDS FIREBASE CONFIG'}`);
     console.log(`   💳 Payment System: ${process.env.DODO_PAYMENTS_API_KEY ? 'READY' : 'NEEDS DODO CONFIG'}`);
+  });
+} else if (!IS_VERCEL_DEPLOYMENT) {
+  // Only show minimal logs in Vercel production
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(`🚀 Server running on port ${PORT} (Vercel production mode)`);
   });
 }
