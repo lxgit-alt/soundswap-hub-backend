@@ -623,7 +623,7 @@ app.get('/api/status', (req, res) => {
   });
 });
 
-// Root endpoint
+// Root endpoint - UPDATED TO RETURN DETAILED RESPONSE
 app.get('/', (req, res) => {
   const currentTime = getCurrentTimeInAppTimezone();
   const currentDay = getCurrentDayInAppTimezone();
@@ -644,16 +644,83 @@ app.get('/', (req, res) => {
       reddit_admin: '/api/reddit-admin/admin',
       lyric_video: '/api/lyric-video',
       generate_video: '/api/generate-video',
-      create_checkout: '/api/create-checkout',
-      lemon_webhook: '/api/lemon-webhook',
-      payments: '/api/payments/status',
-      credit_management: {
-        check_credits: 'POST /api/check-credits',
-        deduct_credits: 'POST /api/deduct-credits',
-        get_transactions: 'GET /api/transactions/:userId',
-        get_balance: 'GET /api/credits/:userId',
-        get_purchases: 'GET /api/purchases/:userId'
+      doodle_art: '/api/doodle-art/generate',
+      ai_art: '/api/ai-art/generate',
+      gemini_ai: '/api/reddit-admin/generate-comment',
+      automation: '/api/reddit-admin/cron-status',
+      reddit_api_test: '/api/reddit-admin/test-reddit',
+      cron: '/api/reddit-admin/cron (POST)',
+      premium_analytics: '/api/reddit-admin/premium-analytics',
+      generate_premium_content: '/api/reddit-admin/generate-premium-content',
+      optimized_schedule: '/api/reddit-admin/optimized-schedule',
+      post_premium_feature: '/api/reddit-admin/post-premium-feature',
+      reset_daily: '/api/reddit-admin/reset-daily',
+      check_credits: 'POST /api/check-credits',
+      deduct_credits: 'POST /api/deduct-credits',
+      get_transactions: 'GET /api/transactions/:userId',
+      get_balance: 'GET /api/credits/:userId'
+    },
+    video_generation_api: {
+      generate_video: 'POST /api/generate-video',
+      generate_video_optimized: 'POST /api/generate-video/optimized',
+      regular_job_status: 'GET /api/generate-video?action=status&jobId={jobId}',
+      optimized_job_status: 'GET /api/generate-video/optimized/status?jobId={jobId}',
+      storage_usage: 'GET /api/generate-video/storage-usage',
+      manual_cleanup: 'POST /api/generate-video/manual-cleanup',
+      cleanup_expired_videos: 'GET /api/generate-video/cleanup-expired-videos',
+      physics_animations: 'GET /api/generate-video/physics-animations',
+      webhook_callback: 'POST /api/generate-video?action=webhook'
+    },
+    doodle_to_art_api: {
+      generate: 'POST /api/doodle-art/generate',
+      test: 'GET /api/doodle-art/test',
+      features: {
+        model: 'ControlNet Scribble',
+        creativity_slider: '0.1 (creative) to 1.0 (strict)',
+        nsfw_filter: 'enabled',
+        cost: '$0.30 - $0.50 per credit',
+        speed: '5-8 seconds',
+        text_warning: 'AI may not render text accurately'
       }
+    },
+    credit_management_api: {
+      check_credits: 'POST /api/check-credits - Check user credit balance',
+      deduct_credits: 'POST /api/deduct-credits - Deduct credits for generation',
+      get_transactions: 'GET /api/transactions/:userId - Get transaction history',
+      get_balance: 'GET /api/credits/:userId - Get complete credit balance'
+    },
+    reddit_premium_endpoints: {
+      premium_analytics: 'GET /api/reddit-admin/premium-analytics - Track premium lead generation',
+      generate_premium_content: 'POST /api/reddit-admin/generate-premium-content - Generate premium-focused content',
+      optimized_schedule: 'GET /api/reddit-admin/optimized-schedule - View optimized posting schedule',
+      post_premium_feature: 'POST /api/reddit-admin/post-premium-feature - Manual premium feature post',
+      reset_daily: 'POST /api/reddit-admin/reset-daily - Manual daily reset'
+    },
+    ai_features: {
+      comment_generation: 'active',
+      dm_replies: 'active',
+      post_analysis: 'active',
+      audio_analysis: 'active',
+      lyric_enhancement: 'active',
+      doodle_to_art: 'active',
+      automation_system: 'active',
+      cron_scheduler: 'running',
+      vercel_cron: 'active',
+      educational_posts: 'active',
+      top50_promotion: 'active',
+      chart_notifications: 'active',
+      reddit_api: 'live',
+      premium_feature_focus: 'active',
+      credit_system: 'active'
+    },
+    reddit_automation_updates: {
+      total_subreddits: 12,
+      new_premium_subreddits: 8,
+      total_audience: '5M+',
+      daily_comments: '15 posts/day (rate limit safe)',
+      premium_focus: '80% of content focuses on premium features',
+      features: 'Rate limit aware, lead tracking, daily reset',
+      api_mode: 'LIVE REDDIT API'
     }
   });
 });
