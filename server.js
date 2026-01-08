@@ -3,12 +3,15 @@ import cors from 'cors';
 import helmet from 'helmet';
 import dotenv from 'dotenv';
 import admin from 'firebase-admin';
+import bodyParser from 'body-parser';
 
-// Import route modules - ONLY THE ONES THAT EXIST
+// Import route modules
 import redditAdminRoutes from './api/reddit-admin.js';
 import emailRoutes from './api/send-welcome-email.js';
 import lyricVideoRoutes from './api/generate-video.js';
-import doodleArtRoutes from './api/doodle-art.js'; // Note: Check if this is at root or src/api
+import doodleArtRoutes from './api/doodle-art.js';
+import createCheckoutRouter from './api/create-checkout.js';
+import lemonWebhookRouter from './api/lemon-webhook.js';
 
 dotenv.config();
 
@@ -73,7 +76,7 @@ app.use(helmet({
   crossOriginEmbedderPolicy: false
 }));
 
-// CORS configuration - Combined from both files
+// CORS configuration
 app.use(cors({
   origin: [
     'http://localhost:3000',
@@ -94,12 +97,36 @@ app.use(cors({
   ],
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept']
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'webhook-id', 'webhook-timestamp', 'webhook-signature']
 }));
 
-// Body parsing middleware with increased limit for video and image generation
-app.use(express.json({ limit: '20mb' }));
-app.use(express.urlencoded({ extended: true, limit: '20mb' }));
+// Body parsing middleware - IMPORTANT: For lemon-webhook we need raw body
+app.use(bodyParser.json({
+  limit: '20mb',
+  verify: (req, res, buf) => {
+    // Store raw body for webhook signature verification
+    req.rawBody = buf.toString();
+  }
+}));
+app.use(bodyParser.urlencoded({ extended: true, limit: '20mb' }));
+
+// ==================== MOUNT ROUTERS ====================
+
+// Mount webhook first (needs raw body access)
+app.use('/api/lemon-webhook', lemonWebhookRouter);
+
+// Mount other routers
+app.use('/api/reddit-admin', redditAdminRoutes);
+app.use('/api/email', emailRoutes);
+app.use('/api/create-checkout', createCheckoutRouter);
+
+// Lyric Video API
+app.use('/api/lyric-video', lyricVideoRoutes);
+app.use('/api/generate-video', lyricVideoRoutes); // Alias for compatibility
+
+// Doodle-to-Art API
+app.use('/api/doodle-art', doodleArtRoutes);
+app.use('/api/ai-art', doodleArtRoutes); // Alias for convenience
 
 // ==================== CREDIT MANAGEMENT ENDPOINTS ====================
 
@@ -132,13 +159,15 @@ app.post('/api/check-credits', async (req, res) => {
       success: true,
       credits,
       type,
-      userId
+      userId,
+      timestamp: new Date().toISOString()
     });
   } catch (error) {
     console.error('❌ Error checking credits:', error);
     res.status(500).json({ 
       success: false,
-      error: error.message 
+      error: error.message,
+      timestamp: new Date().toISOString()
     });
   }
 });
@@ -179,7 +208,8 @@ app.post('/api/deduct-credits', async (req, res) => {
         success: false,
         error: 'Insufficient credits',
         required: amount,
-        available: currentCredits
+        available: currentCredits,
+        timestamp: new Date().toISOString()
       });
     }
     
@@ -200,7 +230,8 @@ app.post('/api/deduct-credits', async (req, res) => {
       amount: -amount,
       reason: reason || 'generation',
       remaining: newCredits,
-      date: admin.firestore.FieldValue.serverTimestamp()
+      date: admin.firestore.FieldValue.serverTimestamp(),
+      timestamp: Date.now()
     });
     
     res.json({
@@ -208,13 +239,15 @@ app.post('/api/deduct-credits', async (req, res) => {
       type,
       deducted: amount,
       remaining: newCredits,
-      transactionId: transactionRef.id
+      transactionId: transactionRef.id,
+      timestamp: new Date().toISOString()
     });
   } catch (error) {
     console.error('❌ Error deducting credits:', error);
     res.status(500).json({ 
       success: false,
-      error: error.message 
+      error: error.message,
+      timestamp: new Date().toISOString()
     });
   }
 });
@@ -251,13 +284,15 @@ app.get('/api/transactions/:userId', async (req, res) => {
       success: true,
       transactions,
       count: transactions.length,
-      userId
+      userId,
+      timestamp: new Date().toISOString()
     });
   } catch (error) {
     console.error('❌ Error fetching transactions:', error);
     res.status(500).json({ 
       success: false,
-      error: error.message 
+      error: error.message,
+      timestamp: new Date().toISOString()
     });
   }
 });
@@ -283,34 +318,148 @@ app.get('/api/credits/:userId', async (req, res) => {
         lyricVideo: userData.lyricVideoCredits || 0,
         subscription: userData.subscription || 'free',
         founderPoints: userData.founderPoints || 0
-      }
+      },
+      subscription: {
+        status: userData.subscriptionStatus || 'none',
+        plan: userData.subscriptionVariant || 'none',
+        id: userData.subscriptionId || 'none',
+        monthlyCredits: {
+          coverArt: userData.monthlyCoverArtCredits || 0,
+          lyricVideo: userData.monthlyLyricVideoCredits || 0
+        }
+      },
+      timestamp: new Date().toISOString()
     });
   } catch (error) {
     console.error('❌ Error getting credit balance:', error);
     res.status(500).json({ 
       success: false,
-      error: error.message 
+      error: error.message,
+      timestamp: new Date().toISOString()
     });
   }
 });
 
-// ==================== ROUTES MOUNTING ====================
+// Get user's purchases
+app.get('/api/purchases/:userId', async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { limit = 20 } = req.query;
+    
+    const query = db.collection('purchases')
+      .where('userId', '==', userId)
+      .orderBy('date', 'desc')
+      .limit(parseInt(limit));
+    
+    const snapshot = await query.get();
+    const purchases = [];
+    
+    snapshot.forEach(doc => {
+      const data = doc.data();
+      purchases.push({
+        id: doc.id,
+        ...data,
+        date: data.date?.toDate?.()?.toISOString() || data.date
+      });
+    });
+    
+    res.json({
+      success: true,
+      purchases,
+      count: purchases.length,
+      userId,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('❌ Error fetching purchases:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      timestamp: new Date().toISOString()
+    });
+  }
+});
 
-// Mount routes - using only routes that exist
-app.use('/api/reddit-admin', redditAdminRoutes);
-app.use('/api/email', emailRoutes);
+// ==================== DODO PAYMENTS STATUS ENDPOINTS ====================
 
-// Lyric Video API
-app.use('/api/lyric-video', lyricVideoRoutes);
-app.use('/api/generate-video', lyricVideoRoutes); // Alias for compatibility
+// Get Dodo Payments configuration status
+app.get('/api/payments/status', (req, res) => {
+  res.json({
+    success: true,
+    service: 'dodo-payments',
+    status: 'active',
+    configuration: {
+      dodoApiKey: process.env.DODO_PAYMENTS_API_KEY ? 'configured' : 'missing',
+      dodoWebhookKey: process.env.DODO_PAYMENTS_WEBHOOK_KEY ? 'configured' : 'missing',
+      firebase: 'connected',
+      environment: process.env.NODE_ENV || 'development'
+    },
+    endpoints: {
+      createCheckout: 'POST /api/create-checkout',
+      webhook: 'POST /api/lemon-webhook',
+      testWebhook: 'POST /api/lemon-webhook/simulate',
+      webhookStatus: 'GET /api/lemon-webhook/status',
+      products: 'GET /api/create-checkout/products',
+      testDodo: 'GET /api/create-checkout/test-dodo'
+    },
+    timestamp: new Date().toISOString()
+  });
+});
 
-// Doodle-to-Art API
-app.use('/api/doodle-art', doodleArtRoutes);
-app.use('/api/ai-art', doodleArtRoutes); // Alias for convenience
+// Test Dodo API connection
+app.get('/api/payments/test', async (req, res) => {
+  try {
+    const DODO_API_KEY = process.env.DODO_PAYMENTS_API_KEY;
+    
+    if (!DODO_API_KEY) {
+      return res.status(500).json({
+        success: false,
+        error: 'Dodo API key not configured'
+      });
+    }
+    
+    const response = await fetch('https://api.dodopayments.com/v1/account', {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${DODO_API_KEY}`
+      }
+    });
+    
+    if (response.ok) {
+      const result = await response.json();
+      res.json({
+        success: true,
+        message: 'Dodo API connection successful',
+        account: {
+          id: result.id,
+          name: result.name,
+          email: result.email,
+          mode: result.mode || 'test'
+        },
+        timestamp: new Date().toISOString()
+      });
+    } else {
+      const error = await response.json();
+      res.status(response.status).json({
+        success: false,
+        error: error.message || 'Dodo API connection failed',
+        details: error,
+        timestamp: new Date().toISOString()
+      });
+    }
+  } catch (error) {
+    console.error('❌ Dodo API test error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      timestamp: new Date().toISOString()
+    });
+  }
+});
 
 // ==================== ENDPOINTS ====================
 
-// Health check endpoint - Updated with premium features info
+// Health check endpoint
 app.get('/api/health', (req, res) => {
   const currentTime = getCurrentTimeInAppTimezone();
   const currentDay = getCurrentDayInAppTimezone();
@@ -323,7 +472,7 @@ app.get('/api/health', (req, res) => {
     timezone: APP_TIMEZONE,
     currentTime: currentTime,
     currentDay: currentDay,
-    version: '2.0.0', // Updated version with premium features focus
+    version: '2.1.0',
     services: {
       email: process.env.GMAIL_USER ? 'configured' : 'not_configured',
       reddit_admin: 'operational',
@@ -339,7 +488,9 @@ app.get('/api/health', (req, res) => {
       premium_feature_focus: 'active',
       lead_generation: 'active',
       rate_limit_management: 'active',
-      credit_management: process.env.FIREBASE_PROJECT_ID ? 'configured' : 'not_configured'
+      credit_management: process.env.FIREBASE_PROJECT_ID ? 'configured' : 'not_configured',
+      dodo_payments: process.env.DODO_PAYMENTS_API_KEY ? 'configured' : 'not_configured',
+      webhook: process.env.DODO_PAYMENTS_WEBHOOK_KEY ? 'configured' : 'not_configured'
     },
     premium_features: {
       lyric_video_generator: {
@@ -353,11 +504,20 @@ app.get('/api/health', (req, res) => {
         target_audience: 'Digital artists, AI art enthusiasts, Spotify creators'
       }
     },
+    payment_system: {
+      status: process.env.DODO_PAYMENTS_API_KEY ? 'active' : 'disabled',
+      provider: 'Dodo Payments',
+      webhook: process.env.DODO_PAYMENTS_WEBHOOK_KEY ? 'configured' : 'not_configured',
+      checkout: 'POST /api/create-checkout',
+      webhook_endpoint: 'POST /api/lemon-webhook'
+    },
     credit_system: {
       status: 'active',
       cover_art_credits: 'points field',
       lyric_video_credits: 'lyricVideoCredits field',
-      transaction_history: 'credit_transactions collection'
+      transaction_history: 'credit_transactions collection',
+      purchase_history: 'purchases collection',
+      subscription_history: 'subscription_transactions collection'
     },
     ai_features: {
       lyric_video_generation: process.env.HF_TOKEN ? 'active' : 'disabled',
@@ -365,23 +525,6 @@ app.get('/api/health', (req, res) => {
       comment_generation: process.env.GOOGLE_GEMINI_API_KEY ? 'active' : 'disabled',
       audio_analysis: process.env.HF_TOKEN ? 'active' : 'disabled',
       premium_content_focus: 'active'
-    },
-    doodle_art_features: {
-      api: 'Replicate ControlNet Scribble',
-      model: 'jagilley/controlnet-scribble',
-      conditioning_scale: '0.1 to 1.0 (Creativity slider)',
-      image_resolution: '512px',
-      cost_per_generation: '$0.01 - $0.02',
-      generation_time: '5-8 seconds',
-      nsfw_filter: 'enabled',
-      text_rendering_warning: 'AI may not render text accurately'
-    },
-    reddit_automation_updates: {
-      premium_focus: 'enabled',
-      target_subreddits: '12 total (8 new premium-focused)',
-      rate_limit_aware: 'active',
-      lead_tracking: 'active',
-      daily_reset: 'enabled'
     }
   });
 });
@@ -391,7 +534,7 @@ app.get('/health', (req, res) => {
   res.redirect('/api/health');
 });
 
-// Enhanced API status endpoint - Updated with premium features
+// Enhanced API status endpoint
 app.get('/api/status', (req, res) => {
   const currentTime = getCurrentTimeInAppTimezone();
   const currentDay = getCurrentDayInAppTimezone();
@@ -400,7 +543,7 @@ app.get('/api/status', (req, res) => {
     success: true,
     service: 'soundswap-backend',
     status: 'operational',
-    version: '2.0.0', // Updated version with premium focus
+    version: '2.1.0',
     environment: process.env.NODE_ENV || 'development',
     timezone: APP_TIMEZONE,
     currentTime: currentTime,
@@ -414,52 +557,51 @@ app.get('/api/status', (req, res) => {
       lyric_video: '/api/lyric-video/*',
       generate_video: '/api/generate-video/*',
       doodle_art: '/api/doodle-art/*',
-      ai_art: '/api/ai-art/*', // Alias
+      ai_art: '/api/ai-art/*',
+      create_checkout: '/api/create-checkout',
+      lemon_webhook: '/api/lemon-webhook',
+      payments_status: '/api/payments/status',
+      payments_test: '/api/payments/test',
       credit_management: {
         check_credits: 'POST /api/check-credits',
         deduct_credits: 'POST /api/deduct-credits',
         get_transactions: 'GET /api/transactions/:userId',
-        get_balance: 'GET /api/credits/:userId'
+        get_balance: 'GET /api/credits/:userId',
+        get_purchases: 'GET /api/purchases/:userId'
       }
+    },
+    payment_endpoints: {
+      create_checkout: 'POST /api/create-checkout',
+      get_products: 'GET /api/create-checkout/products',
+      get_product: 'GET /api/create-checkout/products/:productId',
+      test_dodo: 'GET /api/create-checkout/test-dodo',
+      get_session: 'GET /api/create-checkout/session/:sessionId',
+      webhook: 'POST /api/lemon-webhook',
+      webhook_test: 'GET /api/lemon-webhook/test',
+      webhook_simulate: 'POST /api/lemon-webhook/simulate',
+      webhook_status: 'GET /api/lemon-webhook/status'
     },
     video_generation_endpoints: {
-      // Video Generation Endpoints
-      generate_video: 'POST /api/generate-video - Regular video generation',
-      generate_video_optimized: 'POST /api/generate-video/optimized - Optimized video generation',
-      
-      // Status Endpoints
-      regular_job_status: 'GET /api/generate-video?action=status&jobId={jobId} - Regular job status',
-      optimized_job_status: 'GET /api/generate-video/optimized/status?jobId={jobId} - Optimized job status',
-      
-      // Storage Management Endpoints
-      storage_usage: 'GET /api/generate-video/storage-usage - Get storage statistics',
-      manual_cleanup: 'POST /api/generate-video/manual-cleanup - Manual cleanup',
-      cleanup_expired_videos: 'GET /api/generate-video/cleanup-expired-videos - Trigger scheduled cleanup',
-      
-      // Physics Animations Endpoint
-      physics_animations: 'GET /api/generate-video/physics-animations - List physics animations',
-      
-      // Webhook/Callback Endpoint
-      webhook_callback: 'POST /api/generate-video?action=webhook - Webhook callback'
+      generate_video: 'POST /api/generate-video',
+      generate_video_optimized: 'POST /api/generate-video/optimized',
+      regular_job_status: 'GET /api/generate-video?action=status&jobId={jobId}',
+      optimized_job_status: 'GET /api/generate-video/optimized/status?jobId={jobId}',
+      storage_usage: 'GET /api/generate-video/storage-usage',
+      manual_cleanup: 'POST /api/generate-video/manual-cleanup',
+      cleanup_expired_videos: 'GET /api/generate-video/cleanup-expired-videos',
+      physics_animations: 'GET /api/generate-video/physics-animations',
+      webhook_callback: 'POST /api/generate-video?action=webhook'
     },
     doodle_art_endpoints: {
-      test_connection: 'GET /api/doodle-art/test - Test Replicate API connection',
-      generate_art: 'POST /api/doodle-art/generate - Generate art from sketch',
-      parameters: {
-        sketch: 'Base64 image data URL',
-        prompt: 'Text description of desired art',
-        conditioningScale: 'Number from 0.1 to 1.0 (Creativity vs Strictness)'
-      }
+      test_connection: 'GET /api/doodle-art/test',
+      generate_art: 'POST /api/doodle-art/generate'
     },
     reddit_premium_endpoints: {
-      // NEW PREMIUM FEATURE ENDPOINTS
-      premium_analytics: 'GET /api/reddit-admin/premium-analytics - Track premium lead generation',
-      generate_premium_content: 'POST /api/reddit-admin/generate-premium-content - Generate premium-focused content',
-      optimized_schedule: 'GET /api/reddit-admin/optimized-schedule - View posting schedule with premium focus',
-      post_premium_feature: 'POST /api/reddit-admin/post-premium-feature - Manual premium feature posting',
-      reset_daily: 'POST /api/reddit-admin/reset-daily - Manual daily reset',
-      
-      // Existing endpoints
+      premium_analytics: 'GET /api/reddit-admin/premium-analytics',
+      generate_premium_content: 'POST /api/reddit-admin/generate-premium-content',
+      optimized_schedule: 'GET /api/reddit-admin/optimized-schedule',
+      post_premium_feature: 'POST /api/reddit-admin/post-premium-feature',
+      reset_daily: 'POST /api/reddit-admin/reset-daily',
       cron_status: 'GET /api/reddit-admin/cron-status',
       schedule_today: 'GET /api/reddit-admin/schedule/today',
       manual_post: 'POST /api/reddit-admin/manual-post',
@@ -470,48 +612,12 @@ app.get('/api/status', (req, res) => {
       generate_reply: 'POST /api/reddit-admin/generate-reply',
       analyze_post: 'POST /api/reddit-admin/analyze-post',
       test_gemini: 'GET /api/reddit-admin/test-gemini',
-      cron: '/api/reddit-admin/cron (POST)'
-    },
-    features: {
-      welcome_emails: process.env.GMAIL_USER ? 'active' : 'disabled',
-      password_reset: process.env.GMAIL_USER ? 'active' : 'disabled',
-      song_review_notifications: process.env.GMAIL_USER ? 'active' : 'disabled',
-      top10_chart_notifications: process.env.GMAIL_USER ? 'active' : 'disabled',
-      reddit_integration: 'active',
-      lyric_video_generation: process.env.HF_TOKEN ? 'active' : 'disabled',
-      doodle_to_art: process.env.REPLICATE_API_TOKEN ? 'active' : 'disabled',
-      gemini_ai: process.env.GOOGLE_GEMINI_API_KEY ? 'active' : 'disabled',
-      reddit_automation: 'active',
-      cron_scheduler: 'running',
-      vercel_cron: process.env.CRON_SECRET ? 'active' : 'disabled',
-      educational_posts: 'active',
-      top50_promotion: 'active',
-      reddit_api: process.env.REDDIT_CLIENT_ID ? 'live' : 'simulated',
-      premium_feature_focus: 'active',
-      lead_tracking: 'active',
-      rate_limit_management: 'active',
-      credit_management: process.env.FIREBASE_PROJECT_ID ? 'active' : 'disabled'
-    },
-    premium_feature_targets: {
-      total_subreddits: 12,
-      new_premium_subreddits: [
-        'videoediting',
-        'AfterEffects',
-        'MotionDesign',
-        'digitalart',
-        'StableDiffusion',
-        'ArtistLounge',
-        'MusicMarketing',
-        'Spotify'
-      ],
-      total_audience: '5M+',
-      daily_limit: '15 comments',
-      premium_focus_rate: '80% of content'
+      cron: 'POST /api/reddit-admin/cron'
     }
   });
 });
 
-// Root endpoint - Updated with premium features
+// Root endpoint
 app.get('/', (req, res) => {
   const currentTime = getCurrentTimeInAppTimezone();
   const currentDay = getCurrentDayInAppTimezone();
@@ -519,7 +625,7 @@ app.get('/', (req, res) => {
   res.json({
     success: true,
     message: 'SoundSwap API - Backend service is running',
-    version: '2.0.0', // Updated version with premium focus
+    version: '2.1.0',
     environment: process.env.NODE_ENV || 'development',
     timezone: APP_TIMEZONE,
     currentTime: currentTime,
@@ -534,97 +640,21 @@ app.get('/', (req, res) => {
       generate_video: '/api/generate-video',
       doodle_art: '/api/doodle-art/generate',
       ai_art: '/api/ai-art/generate',
-      gemini_ai: '/api/reddit-admin/generate-comment',
-      automation: '/api/reddit-admin/cron-status',
-      reddit_api_test: '/api/reddit-admin/test-reddit',
-      cron: '/api/reddit-admin/cron (POST)',
-      // NEW PREMIUM ENDPOINTS
-      premium_analytics: '/api/reddit-admin/premium-analytics',
-      generate_premium_content: '/api/reddit-admin/generate-premium-content',
-      optimized_schedule: '/api/reddit-admin/optimized-schedule',
-      post_premium_feature: '/api/reddit-admin/post-premium-feature',
-      reset_daily: '/api/reddit-admin/reset-daily',
-      // CREDIT MANAGEMENT ENDPOINTS
-      check_credits: 'POST /api/check-credits',
-      deduct_credits: 'POST /api/deduct-credits',
-      get_transactions: 'GET /api/transactions/:userId',
-      get_balance: 'GET /api/credits/:userId'
-    },
-    video_generation_api: {
-      // Video Generation Endpoints
-      generate_video: 'POST /api/generate-video',
-      generate_video_optimized: 'POST /api/generate-video/optimized',
-      
-      // Status Endpoints
-      regular_job_status: 'GET /api/generate-video?action=status&jobId={jobId}',
-      optimized_job_status: 'GET /api/generate-video/optimized/status?jobId={jobId}',
-      
-      // Storage Management Endpoints
-      storage_usage: 'GET /api/generate-video/storage-usage',
-      manual_cleanup: 'POST /api/generate-video/manual-cleanup',
-      cleanup_expired_videos: 'GET /api/generate-video/cleanup-expired-videos',
-      
-      // Physics Animations Endpoint
-      physics_animations: 'GET /api/generate-video/physics-animations',
-      
-      // Webhook/Callback Endpoint
-      webhook_callback: 'POST /api/generate-video?action=webhook'
-    },
-    doodle_to_art_api: {
-      generate: 'POST /api/doodle-art/generate',
-      test: 'GET /api/doodle-art/test',
-      features: {
-        model: 'ControlNet Scribble',
-        creativity_slider: '0.1 (creative) to 1.0 (strict)',
-        nsfw_filter: 'enabled',
-        cost: '$0.30 - $0.50 per credit',
-        speed: '5-8 seconds',
-        text_warning: 'AI may not render text accurately'
+      create_checkout: '/api/create-checkout',
+      lemon_webhook: '/api/lemon-webhook',
+      payments: '/api/payments/status',
+      credit_management: {
+        check_credits: 'POST /api/check-credits',
+        deduct_credits: 'POST /api/deduct-credits',
+        get_transactions: 'GET /api/transactions/:userId',
+        get_balance: 'GET /api/credits/:userId',
+        get_purchases: 'GET /api/purchases/:userId'
       }
-    },
-    credit_management_api: {
-      check_credits: 'POST /api/check-credits - Check user credit balance',
-      deduct_credits: 'POST /api/deduct-credits - Deduct credits for generation',
-      get_transactions: 'GET /api/transactions/:userId - Get transaction history',
-      get_balance: 'GET /api/credits/:userId - Get complete credit balance'
-    },
-    reddit_premium_endpoints: {
-      premium_analytics: 'GET /api/reddit-admin/premium-analytics - Track premium lead generation',
-      generate_premium_content: 'POST /api/reddit-admin/generate-premium-content - Generate premium-focused content',
-      optimized_schedule: 'GET /api/reddit-admin/optimized-schedule - View optimized posting schedule',
-      post_premium_feature: 'POST /api/reddit-admin/post-premium-feature - Manual premium feature post',
-      reset_daily: 'POST /api/reddit-admin/reset-daily - Manual daily reset'
-    },
-    ai_features: {
-      comment_generation: process.env.GOOGLE_GEMINI_API_KEY ? 'active' : 'disabled',
-      dm_replies: process.env.GOOGLE_GEMINI_API_KEY ? 'active' : 'disabled',
-      post_analysis: process.env.GOOGLE_GEMINI_API_KEY ? 'active' : 'disabled',
-      audio_analysis: process.env.HF_TOKEN ? 'active' : 'disabled',
-      lyric_enhancement: process.env.HF_TOKEN ? 'active' : 'disabled',
-      doodle_to_art: process.env.REPLICATE_API_TOKEN ? 'active' : 'disabled',
-      automation_system: 'active',
-      cron_scheduler: 'running',
-      vercel_cron: process.env.CRON_SECRET ? 'active' : 'disabled',
-      educational_posts: 'active',
-      top50_promotion: 'active',
-      chart_notifications: 'active',
-      reddit_api: process.env.REDDIT_CLIENT_ID ? 'live' : 'simulated',
-      premium_feature_focus: 'active',
-      credit_system: 'active'
-    },
-    reddit_automation_updates: {
-      total_subreddits: 12,
-      new_premium_subreddits: 8,
-      total_audience: '5M+',
-      daily_comments: '15 posts/day (rate limit safe)',
-      premium_focus: '80% of content focuses on premium features',
-      features: 'Rate limit aware, lead tracking, daily reset',
-      api_mode: process.env.REDDIT_CLIENT_ID ? 'LIVE REDDIT API' : 'SIMULATION MODE'
     }
   });
 });
 
-// Handle 404 - Updated with premium feature endpoints
+// Handle 404
 app.use('*', (req, res) => {
   const currentTime = getCurrentTimeInAppTimezone();
   const currentDay = getCurrentDayInAppTimezone();
@@ -636,87 +666,20 @@ app.use('*', (req, res) => {
     timezone: APP_TIMEZONE,
     currentTime: currentTime,
     currentDay: currentDay,
-    video_generation_endpoints: [
-      // Video Generation Endpoints
-      'POST /api/generate-video - Regular video generation',
-      'POST /api/generate-video/optimized - Optimized video generation',
-      
-      // Status Endpoints
-      'GET /api/generate-video?action=status&jobId=... - Regular job status',
-      'GET /api/generate-video/optimized/status?jobId=... - Optimized job status',
-      
-      // Storage Management Endpoints
-      'GET /api/generate-video/storage-usage - Get storage statistics',
-      'POST /api/generate-video/manual-cleanup - Manual cleanup',
-      'GET /api/generate-video/cleanup-expired-videos - Trigger scheduled cleanup',
-      
-      // Physics Animations Endpoint
-      'GET /api/generate-video/physics-animations - List physics animations',
-      
-      // Webhook/Callback Endpoint
-      'POST /api/generate-video?action=webhook - Webhook callback'
-    ],
-    doodle_art_endpoints: [
-      'GET /api/doodle-art/test - Test Replicate API connection',
-      'POST /api/doodle-art/generate - Generate art from sketch',
-      'GET /api/ai-art/test - Alias for connection test',
-      'POST /api/ai-art/generate - Alias for generation'
-    ],
-    credit_management_endpoints: [
-      'POST /api/check-credits - Check user credit balance',
-      'POST /api/deduct-credits - Deduct credits for generation',
-      'GET /api/transactions/:userId - Get transaction history',
-      'GET /api/credits/:userId - Get complete credit balance'
-    ],
-    reddit_premium_endpoints: [
-      // NEW PREMIUM FEATURE ENDPOINTS
-      'GET /api/reddit-admin/premium-analytics - Track premium lead generation',
-      'POST /api/reddit-admin/generate-premium-content - Generate premium-focused content',
-      'GET /api/reddit-admin/optimized-schedule - View optimized posting schedule',
-      'POST /api/reddit-admin/post-premium-feature - Manual premium feature post',
-      'POST /api/reddit-admin/reset-daily - Manual daily reset'
-    ],
     availableEndpoints: [
       '/api/health',
       '/health',
       '/api/status',
       '/api/email/send-welcome-email',
-      '/api/email/send-password-reset',
-      '/api/email/send-song-reviewed',
-      '/api/email/send-top10-chart',
-      '/api/email/test',
       '/api/reddit-admin/admin',
-      '/api/reddit-admin/generate-comment',
-      '/api/reddit-admin/generate-reply',
-      '/api/reddit-admin/analyze-post',
-      '/api/reddit-admin/test-gemini',
-      '/api/reddit-admin/test-reddit',
-      '/api/reddit-admin/cron-status',
-      '/api/reddit-admin/manual-post',
-      '/api/reddit-admin/create-educational-post',
-      '/api/reddit-admin/create-top50-post',
-      '/api/reddit-admin/reset-counts',
-      '/api/reddit-admin/reset-daily',
-      '/api/reddit-admin/targets',
-      '/api/reddit-admin/schedule/today',
-      '/api/reddit-admin/optimized-schedule',
-      '/api/reddit-admin/premium-analytics',
-      '/api/reddit-admin/generate-premium-content',
-      '/api/reddit-admin/post-premium-feature',
-      '/api/reddit-admin/auth',
-      '/api/reddit-admin/posts',
-      '/api/reddit-admin/analytics',
-      '/api/reddit-admin/cron (POST)',
-      '/api/lyric-video',
-      '/api/generate-video',
-      '/api/doodle-art/test',
-      '/api/doodle-art/generate',
-      '/api/ai-art/test',
-      '/api/ai-art/generate',
+      '/api/create-checkout',
+      '/api/lemon-webhook',
+      '/api/payments/status',
       '/api/check-credits (POST)',
       '/api/deduct-credits (POST)',
       '/api/transactions/:userId',
-      '/api/credits/:userId'
+      '/api/credits/:userId',
+      '/api/purchases/:userId'
     ]
   });
 });
@@ -748,46 +711,48 @@ if (process.env.NODE_ENV !== 'production' || process.env.VERCEL !== '1') {
     console.log(`📅 Current time: ${currentTime} on ${currentDay}`);
     console.log(`❤️  Health check: http://localhost:${PORT}/api/health`);
     
+    console.log(`\n💰 PAYMENT ENDPOINTS:`);
+    console.log(`   POST /api/create-checkout - Create checkout session`);
+    console.log(`   POST /api/lemon-webhook - Dodo webhook handler`);
+    console.log(`   GET  /api/create-checkout/products - Get product catalog`);
+    console.log(`   GET  /api/payments/status - Payment system status`);
+    
     console.log(`\n💰 CREDIT MANAGEMENT ENDPOINTS:`);
     console.log(`   POST /api/check-credits - Check user credit balance`);
     console.log(`   POST /api/deduct-credits - Deduct credits for generation`);
     console.log(`   GET  /api/transactions/:userId - Get transaction history`);
     console.log(`   GET  /api/credits/:userId - Get complete credit balance`);
+    console.log(`   GET  /api/purchases/:userId - Get purchase history`);
     
     console.log(`\n🎨 DOODLE-TO-ART ENDPOINTS:`);
     console.log(`   GET  /api/doodle-art/test - Test Replicate connection`);
     console.log(`   POST /api/doodle-art/generate - Generate art from sketch`);
-    console.log(`   GET  /api/ai-art/test - Alias for connection test`);
-    console.log(`   POST /api/ai-art/generate - Alias for generation`);
     
     console.log(`\n🎬 VIDEO GENERATION ENDPOINTS:`);
     console.log(`   POST /api/generate-video - Regular video generation`);
     console.log(`   POST /api/generate-video/optimized - Optimized video generation`);
-    console.log(`   GET  /api/generate-video?action=status&jobId=... - Regular job status`);
-    console.log(`   GET  /api/generate-video/optimized/status?jobId=... - Optimized job status`);
     
     console.log(`\n💎 REDDIT PREMIUM FEATURE ENDPOINTS:`);
     console.log(`   GET  /api/reddit-admin/premium-analytics - Premium lead tracking`);
     console.log(`   POST /api/reddit-admin/generate-premium-content - Generate premium content`);
     console.log(`   GET  /api/reddit-admin/optimized-schedule - Optimized posting schedule`);
-    console.log(`   POST /api/reddit-admin/post-premium-feature - Manual premium post`);
-    console.log(`   POST /api/reddit-admin/reset-daily - Manual daily reset`);
     
     console.log(`\n📧 Email endpoints: http://localhost:${PORT}/api/email/*`);
     console.log(`🤖 Reddit Admin: http://localhost:${PORT}/api/reddit-admin/admin`);
     console.log(`📊 API Status: http://localhost:${PORT}/api/status`);
     
     console.log(`\n🔧 Configuration Status:`);
+    console.log(`   🔐 DODO PAYMENTS: ${process.env.DODO_PAYMENTS_API_KEY ? 'Configured' : 'Not configured'}`);
+    console.log(`   🔐 DODO WEBHOOK: ${process.env.DODO_PAYMENTS_WEBHOOK_KEY ? 'Configured' : 'Not configured'}`);
     console.log(`   🔐 CRON_SECRET: ${process.env.CRON_SECRET ? 'Configured' : 'Not configured'}`);
     console.log(`   🤖 Gemini AI: ${process.env.GOOGLE_GEMINI_API_KEY ? 'Configured' : 'Not configured'}`);
     console.log(`   🎨 Hugging Face AI: ${process.env.HF_TOKEN ? 'CONFIGURED' : 'NOT CONFIGURED'}`);
     console.log(`   🖌️  Replicate AI: ${process.env.REPLICATE_API_TOKEN ? 'CONFIGURED' : 'NOT CONFIGURED'}`);
-    console.log(`   ⚡ Beam Integration: ${process.env.BEAM_API_KEY ? 'CONFIGURED' : 'NOT CONFIGURED'}`);
     console.log(`   🔗 Reddit API: ${process.env.REDDIT_CLIENT_ID ? 'LIVE INTEGRATION' : 'SIMULATION MODE'}`);
     console.log(`   🎨 Doodle-to-Art: ${process.env.REPLICATE_API_TOKEN ? 'READY' : 'NEEDS REPLICATE API TOKEN'}`);
     console.log(`   💎 Premium Feature Focus: ACTIVE`);
-    console.log(`   🎯 Target Subreddits: 12 total (8 new premium-focused)`);
     console.log(`   🔐 Firebase Admin: ${process.env.FIREBASE_PROJECT_ID ? 'INITIALIZED' : 'NOT CONFIGURED'}`);
     console.log(`   💰 Credit System: ${process.env.FIREBASE_PROJECT_ID ? 'READY' : 'NEEDS FIREBASE CONFIG'}`);
+    console.log(`   💳 Payment System: ${process.env.DODO_PAYMENTS_API_KEY ? 'READY' : 'NEEDS DODO CONFIG'}`);
   });
-}
+}g

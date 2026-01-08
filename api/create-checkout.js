@@ -1,29 +1,18 @@
+// create-checkout.js - Dodo Payments Checkout API
+import express from 'express';
 import { auth } from '../firebaseAdmin.js';
+
+const router = express.Router();
 
 // Check if Firebase Auth is available (for logging purposes only)
 const isFirebaseAuthAvailable = () => {
   return !!auth;
 };
 
-export default async function handler(req, res) {
-  // Set CORS headers
-  res.setHeader('Access-Control-Allow-Credentials', true);
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS,PATCH,DELETE,POST,PUT');
-  res.setHeader(
-    'Access-Control-Allow-Headers',
-    'X-CSRF-Token, X-Requested-With, Accept, Accept-Version, Content-Length, Content-MD5, Content-Type, Date, X-Api-Version, Authorization'
-  );
-  
-  if (req.method === 'OPTIONS') {
-    return res.status(200).end();
-  }
+// ==================== DODO PAYMENTS CHECKOUT ====================
 
-  if (req.method !== 'POST') {
-    console.log(`❌ Invalid method - ${req.method} for /api/create-checkout`);
-    return res.status(405).json({ error: 'Method not allowed' });
-  }
-
+// Create checkout session
+router.post('/', async (req, res) => {
   try {
     console.log('🔄 Creating checkout session');
     
@@ -151,90 +140,345 @@ export default async function handler(req, res) {
       success: true,
       checkoutUrl: result.checkout_url,
       sessionId: result.id,
-      expiresAt: result.expires_at
+      expiresAt: result.expires_at,
+      timestamp: new Date().toISOString()
     });
 
   } catch (error) {
     console.error('❌ Checkout creation error:', error.message);
+    console.error(error.stack);
     res.status(500).json({ 
       success: false,
-      error: error.message 
+      error: error.message,
+      details: 'Internal server error'
     });
   }
-}
+});
 
-// ==================== CREDIT MANAGEMENT ENDPOINTS ====================
-// These endpoints are for testing and manual operations
+// ==================== PRODUCT CATALOG FUNCTIONS ====================
 
-// Check if this is being run as a standalone server
-const isStandalone = process.argv[1] && process.argv[1].includes('create-checkout.js');
+const PRODUCT_CATALOG = {
+  // One-time purchases (credits)
+  'prod_starter': {
+    id: 'prod_starter',
+    name: 'Starter Pack',
+    description: '10 Cover Art Credits',
+    credits: 10,
+    price: 990, // $9.90 in cents
+    type: 'one_time',
+    creditType: 'coverArt'
+  },
+  'prod_creator': {
+    id: 'prod_creator',
+    name: 'Creator Pack',
+    description: '25 Cover Art Credits',
+    credits: 25,
+    price: 2490, // $24.90 in cents
+    type: 'one_time',
+    creditType: 'coverArt'
+  },
+  'prod_pro': {
+    id: 'prod_pro',
+    name: 'Professional Pack',
+    description: '100 Cover Art Credits',
+    credits: 100,
+    price: 8990, // $89.90 in cents
+    type: 'one_time',
+    creditType: 'coverArt'
+  },
+  'video_30s': {
+    id: 'video_30s',
+    name: 'Single 30s Lyric Video',
+    description: '1 Lyric Video Credit (30 seconds)',
+    credits: 1,
+    price: 1490, // $14.90 in cents
+    type: 'one_time',
+    creditType: 'lyricVideo'
+  },
+  'video_3pack_30s': {
+    id: 'video_3pack_30s',
+    name: '3-Pack 30s Lyric Videos',
+    description: '3 Lyric Video Credits (30 seconds each)',
+    credits: 3,
+    price: 3990, // $39.90 in cents
+    type: 'one_time',
+    creditType: 'lyricVideo'
+  },
+  'video_full': {
+    id: 'video_full',
+    name: 'Single Full Lyric Video',
+    description: '2 Lyric Video Credits (Full song)',
+    credits: 2,
+    price: 2490, // $24.90 in cents
+    type: 'one_time',
+    creditType: 'lyricVideo'
+  },
+  'video_3pack_full': {
+    id: 'video_3pack_full',
+    name: '3-Pack Full Lyric Videos',
+    description: '6 Lyric Video Credits (Full song each)',
+    credits: 6,
+    price: 6990, // $69.90 in cents
+    type: 'one_time',
+    creditType: 'lyricVideo'
+  },
+  'video_10pack_full': {
+    id: 'video_10pack_full',
+    name: '10-Pack Full Lyric Videos',
+    description: '20 Lyric Video Credits (Full song each)',
+    credits: 20,
+    price: 19900, // $199.00 in cents
+    type: 'one_time',
+    creditType: 'lyricVideo'
+  },
+  
+  // Subscriptions
+  'sub_basic_monthly': {
+    id: 'sub_basic_monthly',
+    name: 'Basic Monthly',
+    description: '10 Cover Art Credits / Month',
+    credits: 10,
+    price: 990, // $9.90/month in cents
+    type: 'subscription',
+    creditType: 'coverArt',
+    interval: 'monthly'
+  },
+  'sub_creator_monthly': {
+    id: 'sub_creator_monthly',
+    name: 'Creator Monthly',
+    description: '25 Cover Art Credits / Month',
+    credits: 25,
+    price: 2490, // $24.90/month in cents
+    type: 'subscription',
+    creditType: 'coverArt',
+    interval: 'monthly'
+  },
+  'sub_pro_monthly': {
+    id: 'sub_pro_monthly',
+    name: 'Professional Monthly',
+    description: '100 Cover Art Credits / Month',
+    credits: 100,
+    price: 8990, // $89.90/month in cents
+    type: 'subscription',
+    creditType: 'coverArt',
+    interval: 'monthly'
+  }
+};
 
-if (isStandalone) {
-  import('express').then(expressModule => {
-    const express = expressModule.default;
-    const app = express();
+// ==================== ADDITIONAL ENDPOINTS ====================
+
+// Get available products
+router.get('/products', (req, res) => {
+  try {
+    console.log('📦 Fetching product catalog');
     
-    app.use(express.json());
+    // Filter products by type if specified
+    const { type, creditType } = req.query;
+    let products = Object.values(PRODUCT_CATALOG);
     
-    // Add credit management endpoints for testing
-    app.get('/api/health', (req, res) => {
-      console.log('🏥 Health check requested');
-      res.json({
-        success: true,
-        service: 'checkout-api',
-        status: 'healthy',
-        firebaseAuth: isFirebaseAuthAvailable() ? 'available' : 'unavailable',
-        dodoApi: process.env.DODO_PAYMENTS_API_KEY ? 'configured' : 'not configured'
-      });
+    if (type) {
+      products = products.filter(p => p.type === type);
+    }
+    
+    if (creditType) {
+      products = products.filter(p => p.creditType === creditType);
+    }
+    
+    res.json({
+      success: true,
+      products: products,
+      count: products.length,
+      timestamp: new Date().toISOString()
     });
+  } catch (error) {
+    console.error('❌ Error fetching products:', error.message);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// Get specific product
+router.get('/products/:productId', (req, res) => {
+  try {
+    const { productId } = req.params;
+    console.log(`📦 Fetching product: ${productId}`);
     
-    app.post('/api/test-checkout', async (req, res) => {
-      try {
-        console.log('🧪 Test checkout requested');
-        
-        const DODO_API_KEY = process.env.DODO_PAYMENTS_API_KEY;
-        
-        if (!DODO_API_KEY) {
-          return res.status(500).json({
-            success: false,
-            error: 'Dodo API key not configured'
-          });
-        }
-        
-        // Test Dodo API connection
-        const response = await fetch('https://api.dodopayments.com/v1/ping', {
-          method: 'GET',
-          headers: {
-            'Authorization': `Bearer ${DODO_API_KEY}`
-          }
-        });
-        
-        if (response.ok) {
-          console.log('✅ Dodo API connection successful');
-          res.json({
-            success: true,
-            message: 'Dodo API connection successful'
-          });
-        } else {
-          const error = await response.json();
-          console.error('❌ Dodo API connection failed:', error);
-          res.status(response.status).json({
-            success: false,
-            error: error.message || 'Dodo API connection failed'
-          });
-        }
-      } catch (error) {
-        console.error('❌ Test checkout error:', error.message);
-        res.status(500).json({
-          success: false,
-          error: error.message
-        });
+    const product = PRODUCT_CATALOG[productId];
+    
+    if (!product) {
+      return res.status(404).json({
+        success: false,
+        error: `Product not found: ${productId}`
+      });
+    }
+    
+    res.json({
+      success: true,
+      product: product,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('❌ Error fetching product:', error.message);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// Test endpoint
+router.get('/test', (req, res) => {
+  res.json({
+    success: true,
+    message: 'Checkout API is working',
+    environment: process.env.NODE_ENV || 'development',
+    firebaseAuth: isFirebaseAuthAvailable() ? 'available' : 'unavailable',
+    dodoApi: process.env.DODO_PAYMENTS_API_KEY ? 'configured' : 'not configured',
+    timestamp: new Date().toISOString()
+  });
+});
+
+// Test Dodo API connection
+router.get('/test-dodo', async (req, res) => {
+  try {
+    console.log('🧪 Testing Dodo API connection');
+    
+    const DODO_API_KEY = process.env.DODO_PAYMENTS_API_KEY;
+    
+    if (!DODO_API_KEY) {
+      return res.status(500).json({
+        success: false,
+        error: 'Dodo API key not configured'
+      });
+    }
+    
+    // Try to get account info or ping endpoint
+    const response = await fetch('https://api.dodopayments.com/v1/account', {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${DODO_API_KEY}`
       }
     });
     
-    const PORT = process.env.PORT || 3003;
-    app.listen(PORT, () => {
-      console.log(`🧪 Checkout test server running on port ${PORT}`);
+    if (response.ok) {
+      const result = await response.json();
+      console.log('✅ Dodo API connection successful');
+      res.json({
+        success: true,
+        message: 'Dodo API connection successful',
+        account: {
+          id: result.id,
+          name: result.name,
+          email: result.email,
+          mode: result.mode // 'test' or 'live'
+        }
+      });
+    } else {
+      const error = await response.json();
+      console.error('❌ Dodo API connection failed:', error);
+      res.status(response.status).json({
+        success: false,
+        error: error.message || 'Dodo API connection failed',
+        details: error
+      });
+    }
+  } catch (error) {
+    console.error('❌ Test Dodo API error:', error.message);
+    res.status(500).json({
+      success: false,
+      error: error.message
     });
-  });
-}
+  }
+});
+
+// Get checkout session status
+router.get('/session/:sessionId', async (req, res) => {
+  try {
+    const { sessionId } = req.params;
+    console.log(`📋 Checking session status: ${sessionId}`);
+    
+    const DODO_API_KEY = process.env.DODO_PAYMENTS_API_KEY;
+    
+    if (!DODO_API_KEY) {
+      return res.status(500).json({
+        success: false,
+        error: 'Dodo API key not configured'
+      });
+    }
+    
+    const response = await fetch(`https://api.dodopayments.com/v1/checkouts/${sessionId}`, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${DODO_API_KEY}`
+      }
+    });
+    
+    const result = await response.json();
+    
+    if (!response.ok) {
+      console.error('❌ Dodo API Error:', result);
+      return res.status(response.status).json({
+        success: false,
+        error: result.message || 'Failed to get session',
+        details: result
+      });
+    }
+    
+    res.json({
+      success: true,
+      session: result,
+      status: result.status,
+      timestamp: new Date().toISOString()
+    });
+    
+  } catch (error) {
+    console.error('❌ Error getting session:', error.message);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// Webhook test endpoint (for manual testing)
+router.post('/test-webhook', async (req, res) => {
+  try {
+    const { eventType, data } = req.body;
+    
+    if (!eventType) {
+      return res.status(400).json({
+        success: false,
+        message: 'eventType is required'
+      });
+    }
+    
+    console.log(`🔄 Simulating webhook event: ${eventType}`);
+    
+    // This would normally send to your webhook endpoint
+    // For testing, just return success
+    res.json({
+      success: true,
+      message: `Simulated ${eventType} event`,
+      eventType,
+      data,
+      timestamp: new Date().toISOString()
+    });
+    
+  } catch (error) {
+    console.error('❌ Error in webhook test:', error.message);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+console.log('🚀 Dodo Payments Checkout API Initialized');
+console.log(`✅ Firebase Auth: ${isFirebaseAuthAvailable() ? 'Available' : 'Not Available'}`);
+console.log(`✅ Dodo API Key: ${process.env.DODO_PAYMENTS_API_KEY ? 'Configured' : 'Not Configured'}`);
+console.log(`📊 Products Available: ${Object.keys(PRODUCT_CATALOG).length}`);
+console.log(`🎯 Endpoint: /api/create-checkout`);
+
+export default router;

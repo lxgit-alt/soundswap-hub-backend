@@ -5,33 +5,17 @@
       "src": "server.js",
       "use": "@vercel/node",
       "config": {
-        "maxDuration": 10,
-        "memory": 1024
+        "maxDuration": 30,
+        "memory": 2048
       }
     },
     {
       "src": "api/generate-video.js",
       "use": "@vercel/node",
       "config": {
-        "maxDuration": 60,
-        "memory": 2048,
+        "maxDuration": 300,
+        "memory": 4096,
         "runtime": "nodejs18.x"
-      }
-    },
-    {
-      "src": "api/create-checkout.js",
-      "use": "@vercel/node",
-      "config": {
-        "maxDuration": 10,
-        "memory": 1024
-      }
-    },
-    {
-      "src": "api/lemon-webhook.js",
-      "use": "@vercel/node",
-      "config": {
-        "maxDuration": 10,
-        "memory": 1024
       }
     }
   ],
@@ -46,58 +30,6 @@
         "Access-Control-Allow-Headers": "Content-Type, Authorization, X-CSRF-Token, X-Requested-With, Accept, Accept-Version, Content-Length, Content-MD5, Date, X-Api-Version",
         "Access-Control-Allow-Credentials": "true"
       }
-    },
-    {
-      "src": "/api/create-checkout",
-      "dest": "/api/create-checkout.js",
-      "methods": ["POST", "OPTIONS"],
-      "headers": {
-        "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Methods": "POST, OPTIONS",
-        "Access-Control-Allow-Headers": "Content-Type, Authorization",
-        "Access-Control-Allow-Credentials": "true"
-      }
-    },
-    {
-      "src": "/api/lemon-webhook",
-      "dest": "/api/lemon-webhook.js",
-      "methods": ["POST", "OPTIONS"],
-      "headers": {
-        "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Methods": "POST, OPTIONS",
-        "Access-Control-Allow-Headers": "Content-Type, X-Signature",
-        "Access-Control-Allow-Credentials": "true"
-      }
-    },
-    {
-      "src": "/api/reddit-admin/(.*)",
-      "dest": "/server.js",
-      "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
-    },
-    {
-      "src": "/api/email/(.*)",
-      "dest": "/server.js",
-      "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
-    },
-    {
-      "src": "/api/check-credits",
-      "dest": "/server.js",
-      "methods": ["GET", "POST", "OPTIONS"]
-    },
-    {
-      "src": "/api/deduct-credits",
-      "dest": "/server.js",
-      "methods": ["POST", "OPTIONS"]
-    },
-    {
-      "src": "/api/transactions/(.*)",
-      "dest": "/server.js",
-      "methods": ["GET", "POST", "OPTIONS"]
-    },
-    {
-      "src": "/api/send-welcome-email",
-      "dest": "/server.js",
-      "methods": ["POST", "OPTIONS"]
     },
     {
       "src": "/api/(.*)",
