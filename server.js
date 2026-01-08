@@ -755,7 +755,7 @@ app.get('/api/health', (req, res) => {
     timezone: APP_TIMEZONE,
     currentTime: currentTime,
     currentDay: currentDay,
-    version: '2.2.0',
+    version: '2.1.0',
     cronSafe: true,
     moduleLoading: 'isolated',
     services: {
@@ -780,7 +780,7 @@ app.get('/api/status', (req, res) => {
     success: true,
     service: 'soundswap-backend',
     status: 'operational',
-    version: '2.2.0',
+    version: '2.1.0',
     environment: process.env.NODE_ENV || 'development',
     timezone: APP_TIMEZONE,
     currentTime: currentTime,
@@ -789,28 +789,89 @@ app.get('/api/status', (req, res) => {
     endpoints: {
       health: '/api/health',
       status: '/api/status',
-      email: '/api/email/*',
-      reddit_admin: '/api/reddit-admin/*',
-      lyric_video: '/api/lyric-video/*',
-      generate_video: '/api/generate-video/*',
-      doodle_art: '/api/doodle-art/*',
-      ai_art: '/api/ai-art/*',
-      create_checkout: '/api/create-checkout',
-      lemon_webhook: '/api/lemon-webhook',
-      payments_status: '/api/payments/status',
-      payments_test: '/api/payments/test',
-      credit_management: {
-        check_credits: 'POST /api/check-credits',
-        deduct_credits: 'POST /api/deduct-credits',
-        get_transactions: 'GET /api/transactions/:userId',
-        get_balance: 'GET /api/credits/:userId',
-        get_purchases: 'GET /api/purchases/:userId'
-      },
-      cron_isolation: {
-        isolated_cron: 'POST /api/cron-reddit',
-        module_status: 'GET /api/module-status',
-        isolate_modules: 'POST /api/isolate-for-cron'
+      isolated_cron: 'POST /api/cron-reddit (For GitHub Actions)',
+      email: '/api/email/send-welcome-email',
+      reddit_admin: '/api/reddit-admin/admin',
+      lyric_video: '/api/lyric-video',
+      generate_video: '/api/generate-video',
+      doodle_art: '/api/doodle-art/generate',
+      ai_art: '/api/ai-art/generate',
+      gemini_ai: '/api/reddit-admin/generate-comment',
+      automation: '/api/reddit-admin/cron-status',
+      reddit_api_test: '/api/reddit-admin/test-reddit',
+      cron: '/api/reddit-admin/cron (POST)',
+      premium_analytics: '/api/reddit-admin/premium-analytics',
+      generate_premium_content: '/api/reddit-admin/generate-premium-content',
+      optimized_schedule: '/api/reddit-admin/optimized-schedule',
+      post_premium_feature: '/api/reddit-admin/post-premium-feature',
+      reset_daily: '/api/reddit-admin/reset-daily',
+      check_credits: 'POST /api/check-credits',
+      deduct_credits: 'POST /api/deduct-credits',
+      get_transactions: 'GET /api/transactions/:userId',
+      get_balance: 'GET /api/credits/:userId',
+      get_purchases: 'GET /api/purchases/:userId'
+    },
+    video_generation_api: {
+      generate_video: 'POST /api/generate-video',
+      generate_video_optimized: 'POST /api/generate-video/optimized',
+      regular_job_status: 'GET /api/generate-video?action=status&jobId={jobId}',
+      optimized_job_status: 'GET /api/generate-video/optimized/status?jobId={jobId}',
+      storage_usage: 'GET /api/generate-video/storage-usage',
+      manual_cleanup: 'POST /api/generate-video/manual-cleanup',
+      cleanup_expired_videos: 'GET /api/generate-video/cleanup-expired-videos',
+      physics_animations: 'GET /api/generate-video/physics-animations',
+      webhook_callback: 'POST /api/generate-video?action=webhook'
+    },
+    doodle_to_art_api: {
+      generate: 'POST /api/doodle-art/generate',
+      test: 'GET /api/doodle-art/test',
+      features: {
+        model: 'ControlNet Scribble',
+        creativity_slider: '0.1 (creative) to 1.0 (strict)',
+        nsfw_filter: 'enabled',
+        cost: '$0.30 - $0.50 per credit',
+        speed: '5-8 seconds',
+        text_warning: 'AI may not render text accurately'
       }
+    },
+    credit_management_api: {
+      check_credits: 'POST /api/check-credits - Check user credit balance',
+      deduct_credits: 'POST /api/deduct-credits - Deduct credits for generation',
+      get_transactions: 'GET /api/transactions/:userId - Get transaction history',
+      get_balance: 'GET /api/credits/:userId - Get complete credit balance'
+    },
+    reddit_premium_endpoints: {
+      premium_analytics: 'GET /api/reddit-admin/premium-analytics - Track premium lead generation',
+      generate_premium_content: 'POST /api/reddit-admin/generate-premium-content - Generate premium-focused content',
+      optimized_schedule: 'GET /api/reddit-admin/optimized-schedule - View optimized posting schedule',
+      post_premium_feature: 'POST /api/reddit-admin/post-premium-feature - Manual premium feature post',
+      reset_daily: 'POST /api/reddit-admin/reset-daily - Manual daily reset'
+    },
+    ai_features: {
+      comment_generation: 'active',
+      dm_replies: 'active',
+      post_analysis: 'active',
+      audio_analysis: 'active',
+      lyric_enhancement: 'active',
+      doodle_to_art: 'active',
+      automation_system: 'active',
+      cron_scheduler: 'running',
+      vercel_cron: 'active',
+      educational_posts: 'active',
+      top50_promotion: 'active',
+      chart_notifications: 'active',
+      reddit_api: 'live',
+      premium_feature_focus: 'active',
+      credit_system: 'active'
+    },
+    reddit_automation_updates: {
+      total_subreddits: 12,
+      new_premium_subreddits: 8,
+      total_audience: '5M+',
+      daily_comments: '15 posts/day (rate limit safe)',
+      premium_focus: '80% of content focuses on premium features',
+      features: 'Rate limit aware, lead tracking, daily reset',
+      api_mode: 'LIVE REDDIT API'
     }
   });
 });
@@ -823,22 +884,97 @@ app.get('/', (req, res) => {
   res.json({
     success: true,
     message: 'SoundSwap API - Backend service is running',
-    version: '2.2.0',
-    environment: process.env.NODE_ENV || 'development',
+    version: '2.1.0',
+    environment: 'production',
     timezone: APP_TIMEZONE,
     currentTime: currentTime,
-    currentDay: currentDay,
+    currentDay: currentDay.toLowerCase(),
     timestamp: new Date().toISOString(),
     endpoints: {
       health: '/api/health',
       status: '/api/status',
-      isolated_cron: 'POST /api/cron-reddit (For GitHub Actions)',
       email: '/api/email/send-welcome-email',
       reddit_admin: '/api/reddit-admin/admin',
-      credit_management: 'GET /api/credits/:userId'
+      lyric_video: '/api/lyric-video',
+      generate_video: '/api/generate-video',
+      doodle_art: '/api/doodle-art/generate',
+      ai_art: '/api/ai-art/generate',
+      gemini_ai: '/api/reddit-admin/generate-comment',
+      automation: '/api/reddit-admin/cron-status',
+      reddit_api_test: '/api/reddit-admin/test-reddit',
+      cron: '/api/reddit-admin/cron (POST)',
+      premium_analytics: '/api/reddit-admin/premium-analytics',
+      generate_premium_content: '/api/reddit-admin/generate-premium-content',
+      optimized_schedule: '/api/reddit-admin/optimized-schedule',
+      post_premium_feature: '/api/reddit-admin/post-premium-feature',
+      reset_daily: '/api/reddit-admin/reset-daily',
+      check_credits: 'POST /api/check-credits',
+      deduct_credits: 'POST /api/deduct-credits',
+      get_transactions: 'GET /api/transactions/:userId',
+      get_balance: 'GET /api/credits/:userId'
     },
-    module_isolation: 'ACTIVE - Email/Payments modules suppressed during cron',
-    cron_optimization: 'Single subreddit processing with timeout protection'
+    video_generation_api: {
+      generate_video: 'POST /api/generate-video',
+      generate_video_optimized: 'POST /api/generate-video/optimized',
+      regular_job_status: 'GET /api/generate-video?action=status&jobId={jobId}',
+      optimized_job_status: 'GET /api/generate-video/optimized/status?jobId={jobId}',
+      storage_usage: 'GET /api/generate-video/storage-usage',
+      manual_cleanup: 'POST /api/generate-video/manual-cleanup',
+      cleanup_expired_videos: 'GET /api/generate-video/cleanup-expired-videos',
+      physics_animations: 'GET /api/generate-video/physics-animations',
+      webhook_callback: 'POST /api/generate-video?action=webhook'
+    },
+    doodle_to_art_api: {
+      generate: 'POST /api/doodle-art/generate',
+      test: 'GET /api/doodle-art/test',
+      features: {
+        model: 'ControlNet Scribble',
+        creativity_slider: '0.1 (creative) to 1.0 (strict)',
+        nsfw_filter: 'enabled',
+        cost: '$0.30 - $0.50 per credit',
+        speed: '5-8 seconds',
+        text_warning: 'AI may not render text accurately'
+      }
+    },
+    credit_management_api: {
+      check_credits: 'POST /api/check-credits - Check user credit balance',
+      deduct_credits: 'POST /api/deduct-credits - Deduct credits for generation',
+      get_transactions: 'GET /api/transactions/:userId - Get transaction history',
+      get_balance: 'GET /api/credits/:userId - Get complete credit balance'
+    },
+    reddit_premium_endpoints: {
+      premium_analytics: 'GET /api/reddit-admin/premium-analytics - Track premium lead generation',
+      generate_premium_content: 'POST /api/reddit-admin/generate-premium-content - Generate premium-focused content',
+      optimized_schedule: 'GET /api/reddit-admin/optimized-schedule - View optimized posting schedule',
+      post_premium_feature: 'POST /api/reddit-admin/post-premium-feature - Manual premium feature post',
+      reset_daily: 'POST /api/reddit-admin/reset-daily - Manual daily reset'
+    },
+    ai_features: {
+      comment_generation: 'active',
+      dm_replies: 'active',
+      post_analysis: 'active',
+      audio_analysis: 'active',
+      lyric_enhancement: 'active',
+      doodle_to_art: 'active',
+      automation_system: 'active',
+      cron_scheduler: 'running',
+      vercel_cron: 'active',
+      educational_posts: 'active',
+      top50_promotion: 'active',
+      chart_notifications: 'active',
+      reddit_api: 'live',
+      premium_feature_focus: 'active',
+      credit_system: 'active'
+    },
+    reddit_automation_updates: {
+      total_subreddits: 12,
+      new_premium_subreddits: 8,
+      total_audience: '5M+',
+      daily_comments: '15 posts/day (rate limit safe)',
+      premium_focus: '80% of content focuses on premium features',
+      features: 'Rate limit aware, lead tracking, daily reset',
+      api_mode: 'LIVE REDDIT API'
+    }
   });
 });
 
@@ -861,6 +997,19 @@ app.use('*', (req, res) => {
       '/api/cron-reddit (POST)',
       '/api/email/send-welcome-email',
       '/api/reddit-admin/admin',
+      '/api/lyric-video',
+      '/api/generate-video',
+      '/api/doodle-art/generate',
+      '/api/ai-art/generate',
+      '/api/reddit-admin/generate-comment',
+      '/api/reddit-admin/cron-status',
+      '/api/reddit-admin/test-reddit',
+      '/api/reddit-admin/cron (POST)',
+      '/api/reddit-admin/premium-analytics',
+      '/api/reddit-admin/generate-premium-content',
+      '/api/reddit-admin/optimized-schedule',
+      '/api/reddit-admin/post-premium-feature',
+      '/api/reddit-admin/reset-daily',
       '/api/create-checkout',
       '/api/lemon-webhook',
       '/api/payments/status',
