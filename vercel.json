@@ -17,6 +17,22 @@
         "memory": 2048,
         "runtime": "nodejs18.x"
       }
+    },
+    {
+      "src": "api/create-checkout.js",
+      "use": "@vercel/node",
+      "config": {
+        "maxDuration": 10,
+        "memory": 1024
+      }
+    },
+    {
+      "src": "api/lemon-webhook.js",
+      "use": "@vercel/node",
+      "config": {
+        "maxDuration": 10,
+        "memory": 1024
+      }
     }
   ],
   "routes": [
@@ -32,6 +48,28 @@
       }
     },
     {
+      "src": "/api/create-checkout",
+      "dest": "/api/create-checkout.js",
+      "methods": ["POST", "OPTIONS"],
+      "headers": {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "POST, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type, Authorization",
+        "Access-Control-Allow-Credentials": "true"
+      }
+    },
+    {
+      "src": "/api/lemon-webhook",
+      "dest": "/api/lemon-webhook.js",
+      "methods": ["POST", "OPTIONS"],
+      "headers": {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "POST, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type, X-Signature",
+        "Access-Control-Allow-Credentials": "true"
+      }
+    },
+    {
       "src": "/api/reddit-admin/(.*)",
       "dest": "/server.js",
       "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
@@ -40,6 +78,26 @@
       "src": "/api/email/(.*)",
       "dest": "/server.js",
       "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
+    },
+    {
+      "src": "/api/check-credits",
+      "dest": "/server.js",
+      "methods": ["GET", "POST", "OPTIONS"]
+    },
+    {
+      "src": "/api/deduct-credits",
+      "dest": "/server.js",
+      "methods": ["POST", "OPTIONS"]
+    },
+    {
+      "src": "/api/transactions/(.*)",
+      "dest": "/server.js",
+      "methods": ["GET", "POST", "OPTIONS"]
+    },
+    {
+      "src": "/api/send-welcome-email",
+      "dest": "/server.js",
+      "methods": ["POST", "OPTIONS"]
     },
     {
       "src": "/api/(.*)",
