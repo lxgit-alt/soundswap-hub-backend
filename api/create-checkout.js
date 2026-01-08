@@ -1,4 +1,4 @@
-import { auth } from '../backend/firebaseAdmin.js';
+import { auth } from '../firebaseAdmin.js';
 
 // Check if Firebase Auth is available (for logging purposes only)
 const isFirebaseAuthAvailable = () => {
