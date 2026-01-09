@@ -140,39 +140,7 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'webhook-id', 'webhook-timestamp', 'webhook-signature']
 }));
 
-// ==================== WEBHOOK ROUTE (BEFORE BODY PARSERS) ====================
-// Mount webhook FIRST before global body parsers to ensure raw body access for signature verification
-app.use('/api/lemon-webhook', createLazyRouter('./routes/lemon-webhook.js', 'payments'));
-
-// Body parsing middleware
-app.use(bodyParser.json({
-  limit: '20mb',
-  verify: (req, res, buf) => {
-    req.rawBody = buf.toString();
-  }
-}));
-app.use(bodyParser.urlencoded({ extended: true, limit: '20mb' }));
-
-// ==================== ROUTE LOADING MIDDLEWARE ====================
-app.use((req, res, next) => {
-  const path = req.path;
-  
-  if (path.includes('/api/reddit-admin/cron') || path.includes('/api/cron-reddit')) {
-    console.log('[ISOLATION] 🚫 Cron detected - suppressing non-essential modules');
-    loadedModules.email = false;
-    loadedModules.payments = false;
-    loadedModules.doodleArt = false;
-  }
-  
-  if (path.includes('/api/email')) loadedModules.email = true;
-  if (path.includes('/api/create-checkout') || path.includes('/api/lemon-webhook')) loadedModules.payments = true;
-  if (path.includes('/api/reddit-admin')) loadedModules.reddit = true;
-  if (path.includes('/api/doodle-art') || path.includes('/api/ai-art')) loadedModules.doodleArt = true;
-  
-  next();
-});
-
-// ==================== LAZY ROUTE LOADERS ====================
+// ==================== LAZY ROUTE LOADERS (DEFINED EARLY FOR WEBHOOK) ====================
 const createLazyRouter = (modulePath, moduleName) => {
   let router = null;
   let loading = false;
@@ -231,6 +199,38 @@ const createLazyRouter = (modulePath, moduleName) => {
     }
   };
 };
+
+// ==================== WEBHOOK ROUTE (BEFORE BODY PARSERS) ====================
+// Mount webhook FIRST before global body parsers to ensure raw body access for signature verification
+app.use('/api/lemon-webhook', createLazyRouter('./routes/lemon-webhook.js', 'payments'));
+
+// Body parsing middleware
+app.use(bodyParser.json({
+  limit: '20mb',
+  verify: (req, res, buf) => {
+    req.rawBody = buf.toString();
+  }
+}));
+app.use(bodyParser.urlencoded({ extended: true, limit: '20mb' }));
+
+// ==================== ROUTE LOADING MIDDLEWARE ====================
+app.use((req, res, next) => {
+  const path = req.path;
+  
+  if (path.includes('/api/reddit-admin/cron') || path.includes('/api/cron-reddit')) {
+    console.log('[ISOLATION] 🚫 Cron detected - suppressing non-essential modules');
+    loadedModules.email = false;
+    loadedModules.payments = false;
+    loadedModules.doodleArt = false;
+  }
+  
+  if (path.includes('/api/email')) loadedModules.email = true;
+  if (path.includes('/api/create-checkout') || path.includes('/api/lemon-webhook')) loadedModules.payments = true;
+  if (path.includes('/api/reddit-admin')) loadedModules.reddit = true;
+  if (path.includes('/api/doodle-art') || path.includes('/api/ai-art')) loadedModules.doodleArt = true;
+  
+  next();
+});
 
 // ==================== MOUNT ROUTERS ====================
 
