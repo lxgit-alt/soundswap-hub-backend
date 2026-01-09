@@ -1,5 +1,6 @@
-// lemon-webhook.js - Dodo Payments Webhook Handler
+// lemon-webhook.js - Dodo Payments Webhook Handler (FIXED)
 import express from 'express';
+import crypto from 'crypto';
 
 const router = express.Router();
 
@@ -8,25 +9,9 @@ console.log('[INFO] 🚀 Dodo Payments Webhook Handler Initialized');
 // ==================== LAZY LOADING CONFIGURATION ====================
 
 let isFirebaseLoaded = false;
-
-// Lazy loaded dependencies
-let crypto = null;
-let initializeApp = null;
-let getFirestore = null;
-let collection = null;
-let doc = null;
-let updateDoc = null;
-let increment = null;
-let query = null;
-let where = null;
-let getDocs = null;
-let serverTimestamp = null;
-let setDoc = null;
-
-// Lazy loaded instances
 let db = null;
 
-// Collections (strings only - no imports needed)
+// Collections
 const PENDING_CREDIT_TRANSACTIONS_COLLECTION = 'pending_credit_transactions';
 const CREDIT_TRANSACTIONS_COLLECTION = 'credit_transactions';
 const PURCHASES_COLLECTION = 'purchases';
@@ -40,49 +25,31 @@ const loadFirebaseModules = async () => {
   if (!isFirebaseLoaded) {
     console.log('[INFO] 🔥 Firebase: Lazy loading modules');
     
-    // Dynamically import dependencies
-    crypto = (await import('crypto')).default;
-    
-    const firebaseAppModule = await import('firebase/app');
-    const firestoreModule = await import('firebase/firestore');
-    
-    initializeApp = firebaseAppModule.initializeApp;
-    getFirestore = firestoreModule.getFirestore;
-    collection = firestoreModule.collection;
-    doc = firestoreModule.doc;
-    updateDoc = firestoreModule.updateDoc;
-    increment = firestoreModule.increment;
-    query = firestoreModule.query;
-    where = firestoreModule.where;
-    getDocs = firestoreModule.getDocs;
-    serverTimestamp = firestoreModule.serverTimestamp;
-    setDoc = firestoreModule.setDoc;
-    
-    // Initialize Firebase
-    const firebaseConfig = {
-      apiKey: process.env.FIREBASE_API_KEY,
-      authDomain: process.env.FIREBASE_AUTH_DOMAIN,
-      projectId: process.env.FIREBASE_PROJECT_ID,
-      storageBucket: process.env.FIREBASE_STORAGE_BUCKET,
-      messagingSenderId: process.env.FIREBASE_MESSAGING_SENDER_ID,
-      appId: process.env.FIREBASE_APP_ID
-    };
-    
-    const firebaseApp = initializeApp(firebaseConfig);
-    db = getFirestore(firebaseApp);
-    
-    isFirebaseLoaded = true;
-    console.log('[INFO] 🔥 Firebase: Modules loaded successfully');
+    try {
+      // Import from your existing firebaseAdmin.js file
+      const firebaseAdmin = await import('../backend/firebaseAdmin.js');
+      
+      // Get the initialized app and db from your existing setup
+      if (firebaseAdmin.db) {
+        db = firebaseAdmin.db;
+        console.log('[INFO] 🔥 Firebase: Using existing Firestore instance from backend/firebaseAdmin.js');
+      } else {
+        console.error('[ERROR] ❌ Firestore not initialized in firebaseAdmin.js');
+        db = null;
+      }
+      
+      isFirebaseLoaded = true;
+      console.log('[INFO] 🔥 Firebase: Modules loaded successfully');
+    } catch (error) {
+      console.error('[ERROR] ❌ Failed to load Firebase from backend/firebaseAdmin.js:', error.message);
+      db = null;
+      isFirebaseLoaded = true; // Mark as loaded to prevent repeated attempts
+    }
   }
   return db;
 };
 
-const isFirebaseAvailable = () => {
-  return !!db;
-};
-
 // ==================== CREDIT MAPPING FUNCTIONS ====================
-// These don't need Firebase yet
 
 function getCreditsForVariant(productId) {
   // Map your Dodo Product IDs to credit amounts
@@ -125,348 +92,360 @@ function getCreditsForVariant(productId) {
 }
 
 // ==================== CREDIT MANAGEMENT FUNCTIONS ====================
-// These will be defined after Firebase loads
 
-let addCreditsToUser = null;
-let updateUserSubscription = null;
-let handlePaymentSucceeded = null;
-let handleSubscriptionEvent = null;
-let handleSubscriptionCancelled = null;
-let handlePaymentFailed = null;
-let handleSubscriptionPaymentFailed = null;
-
-const defineEventHandlers = () => {
-  // Define event handlers that use Firebase
-  handlePaymentSucceeded = async function(data) {
-    const transactionId = data.transaction_id;
-    const customerEmail = data.customer?.email;
-    const customerId = data.customer?.id;
-    const userId = data.metadata?.user_id; 
-    const amount = data.amount / 100; // Convert from cents to dollars
-    
-    console.log(`[INFO] 💰 Payment succeeded - Transaction: ${transactionId}, Amount: $${amount}, Email: ${customerEmail}, Customer ID: ${customerId}, UserID: ${userId || 'not provided'}`);
-    
-    const items = data.product_cart || [];
-    let totalCredits = 0;
-    let coverArtCredits = 0;
-    let lyricVideoCredits = 0;
-
-    for (const item of items) {
-      const productId = item.product_id;
-      const quantity = item.quantity || 1;
-      const credits = getCreditsForVariant(productId);
-      
-      if (productId.startsWith('prod_') || productId.includes('cover') || productId.includes('art')) {
-        coverArtCredits += credits * quantity;
-      } else if (productId.includes('video')) {
-        lyricVideoCredits += credits * quantity;
-      }
-      
-      totalCredits += credits * quantity;
-      
-      console.log(`[INFO] 📦 Cart item - Product: ${productId}, Quantity: ${quantity}, Credits: ${credits * quantity}`);
+const addCreditsToUser = async function(email, coverArtCredits, lyricVideoCredits, orderId, userIdFromMeta) {
+  try {
+    if (!db) {
+      console.error('[ERROR] ❌ Firebase not available for adding credits');
+      return;
     }
 
-    console.log(`[INFO] 💰 Total credits breakdown - Cover Art: ${coverArtCredits}, Lyric Video: ${lyricVideoCredits}, Total: ${totalCredits}`);
+    let userDocId = userIdFromMeta;
+    let userEmail = email;
 
-    if (customerEmail && totalCredits > 0) {
-      await addCreditsToUser(customerEmail, coverArtCredits, lyricVideoCredits, transactionId, userId);
-    } else {
-      console.warn(`[WARN] ⚠️ No email or zero credits - Email: ${customerEmail}, Credits: ${totalCredits}`);
-    }
-  };
-
-  handleSubscriptionEvent = async function(data) {
-    const subscriptionId = data.subscription_id;
-    const customerEmail = data.customer?.email;
-    const customerId = data.customer?.id;
-    const status = data.status;
-    const productId = data.product_id;
-    const userId = data.metadata?.user_id;
-    
-    console.log(`[INFO] 📅 Subscription event - ID: ${subscriptionId}, Status: ${status}, Product: ${productId}, Customer: ${customerEmail} (${customerId})`);
-
-    if (status === 'active' || status === 'renewed') {
-      const monthlyCredits = getCreditsForVariant(productId);
-      let coverArtCredits = 0;
-      let lyricVideoCredits = 0;
+    if (!userDocId) {
+      const usersRef = db.collection(USERS_COLLECTION);
+      const querySnapshot = await usersRef.where('email', '==', email.toLowerCase()).get();
       
-      if (productId.startsWith('prod_') || productId.includes('cover') || productId.includes('art')) {
-        coverArtCredits = monthlyCredits;
-      } else if (productId.includes('video')) {
-        lyricVideoCredits = monthlyCredits;
-      }
-      
-      if (customerEmail && monthlyCredits > 0) {
-        await updateUserSubscription(customerEmail, productId, coverArtCredits, lyricVideoCredits, subscriptionId, userId);
-      }
-    }
-  };
-
-  handleSubscriptionCancelled = async function(data) {
-    const subscriptionId = data.subscription_id;
-    const customerEmail = data.customer?.email;
-    const userId = data.metadata?.user_id;
-    
-    console.log(`[INFO] 📅 Subscription cancelled - ID: ${subscriptionId}, Email: ${customerEmail}`);
-    
-    try {
-      let userDocId = userId;
-      
-      if (!userDocId && customerEmail) {
-        const usersRef = collection(db, USERS_COLLECTION);
-        const q = query(usersRef, where('email', '==', customerEmail.toLowerCase()));
-        const querySnapshot = await getDocs(q);
+      if (querySnapshot.empty) {
+        console.warn(`[WARN] ⚠️ User not found for email: ${email}, creating transaction record only`);
         
-        if (!querySnapshot.empty) {
-          userDocId = querySnapshot.docs[0].id;
-        }
-      }
-      
-      if (userDocId) {
-        const userRef = doc(db, USERS_COLLECTION, userDocId);
-        await updateDoc(userRef, {
-          subscriptionStatus: 'cancelled',
-          subscriptionUpdatedAt: serverTimestamp(),
-          updatedAt: serverTimestamp()
+        const transactionRef = db.collection(PENDING_CREDIT_TRANSACTIONS_COLLECTION).doc();
+        await transactionRef.set({
+          email: email.toLowerCase(),
+          orderId,
+          coverArtCredits,
+          lyricVideoCredits,
+          totalCredits: coverArtCredits + lyricVideoCredits,
+          status: 'pending_user_creation',
+          date: new Date().toISOString(),
+          type: 'purchase',
+          timestamp: Date.now()
         });
         
-        console.log(`[INFO] ✅ Updated subscription status to cancelled for user ${userDocId}`);
-      }
-    } catch (error) {
-      console.error('[ERROR] ❌ Error handling subscription cancellation:', error.message);
-    }
-  };
-
-  handlePaymentFailed = async function(data) {
-    const transactionId = data.transaction_id;
-    const customerEmail = data.customer?.email;
-    
-    console.log(`[ERROR] ❌ Payment failed - Transaction: ${transactionId}, Email: ${customerEmail}`);
-    
-    try {
-      const failedRef = doc(collection(db, 'failed_payments'));
-      await setDoc(failedRef, {
-        transactionId,
-        customerEmail,
-        amount: data.amount / 100,
-        reason: data.failure_reason || 'unknown',
-        date: serverTimestamp(),
-        timestamp: Date.now()
-      });
-    } catch (error) {
-      console.error('[ERROR] ❌ Error recording failed payment:', error.message);
-    }
-  };
-
-  handleSubscriptionPaymentFailed = async function(data) {
-    const subscriptionId = data.subscription_id;
-    const customerEmail = data.customer?.email;
-    
-    console.log(`[ERROR] ❌ Subscription payment failed - ID: ${subscriptionId}, Email: ${customerEmail}`);
-    
-    try {
-      const failedRef = doc(collection(db, 'failed_subscription_payments'));
-      await setDoc(failedRef, {
-        subscriptionId,
-        customerEmail,
-        date: serverTimestamp(),
-        timestamp: Date.now()
-      });
-    } catch (error) {
-      console.error('[ERROR] ❌ Error recording failed subscription payment:', error.message);
-    }
-  };
-
-  addCreditsToUser = async function(email, coverArtCredits, lyricVideoCredits, orderId, userIdFromMeta) {
-    try {
-      if (!isFirebaseAvailable()) {
-        console.error('[ERROR] ❌ Firebase not available for adding credits');
+        console.log(`[INFO] 📝 Created pending transaction for email: ${email}`);
         return;
       }
-
-      let userDocId = userIdFromMeta;
-      let userEmail = email;
-
-      if (!userDocId) {
-        const usersRef = collection(db, USERS_COLLECTION);
-        const q = query(usersRef, where('email', '==', email.toLowerCase()));
-        const querySnapshot = await getDocs(q);
-        
-        if (querySnapshot.empty) {
-          console.warn(`[WARN] ⚠️ User not found for email: ${email}, creating transaction record only`);
-          
-          const transactionRef = doc(collection(db, PENDING_CREDIT_TRANSACTIONS_COLLECTION));
-          await setDoc(transactionRef, {
-            email: email.toLowerCase(),
-            orderId,
-            coverArtCredits,
-            lyricVideoCredits,
-            totalCredits: coverArtCredits + lyricVideoCredits,
-            status: 'pending_user_creation',
-            date: serverTimestamp(),
-            type: 'purchase',
-            timestamp: Date.now()
-          });
-          
-          console.log(`[INFO] 📝 Created pending transaction for email: ${email}`);
-          return;
-        }
-        userDocId = querySnapshot.docs[0].id;
-        userEmail = querySnapshot.docs[0].data().email || email;
+      userDocId = querySnapshot.docs[0].id;
+      userEmail = querySnapshot.docs[0].data().email || email;
+    }
+    
+    const userRef = db.collection(USERS_COLLECTION).doc(userDocId);
+    const userDoc = await userRef.get();
+    
+    if (!userDoc.exists) {
+      console.warn(`[WARN] ⚠️ User document not found: ${userDocId}`);
+      return;
+    }
+    
+    const userData = userDoc.data();
+    
+    // Prepare update data
+    const updateData = {
+      updatedAt: new Date().toISOString(),
+      lastTransaction: {
+        orderId,
+        creditsAdded: coverArtCredits + lyricVideoCredits,
+        date: new Date().toISOString(),
+        type: 'purchase'
       }
-      
-      const userRef = doc(db, USERS_COLLECTION, userDocId);
-      
-      const updateData = {
-        updatedAt: serverTimestamp(),
-        lastTransaction: {
-          orderId,
-          creditsAdded: coverArtCredits + lyricVideoCredits,
-          date: serverTimestamp(),
-          type: 'purchase'
-        }
-      };
-      
-      if (coverArtCredits > 0) {
-        updateData.points = increment(coverArtCredits);
-        updateData.totalCreditsEarned = increment(coverArtCredits);
-      }
-      
-      if (lyricVideoCredits > 0) {
-        updateData.lyricVideoCredits = increment(lyricVideoCredits);
-        updateData.totalLyricVideoCredits = increment(lyricVideoCredits);
-      }
-      
-      await updateDoc(userRef, updateData);
-      
-      if (coverArtCredits > 0) {
-        const transactionRef = doc(collection(db, CREDIT_TRANSACTIONS_COLLECTION));
-        await setDoc(transactionRef, {
-          userId: userDocId,
-          userEmail: userEmail.toLowerCase(),
-          orderId,
-          type: 'purchase',
-          creditType: 'coverArt',
-          amount: coverArtCredits,
-          status: 'completed',
-          date: serverTimestamp(),
-          timestamp: Date.now()
-        });
-      }
-      
-      if (lyricVideoCredits > 0) {
-        const transactionRef = doc(collection(db, CREDIT_TRANSACTIONS_COLLECTION));
-        await setDoc(transactionRef, {
-          userId: userDocId,
-          userEmail: userEmail.toLowerCase(),
-          orderId,
-          type: 'purchase',
-          creditType: 'lyricVideo',
-          amount: lyricVideoCredits,
-          status: 'completed',
-          date: serverTimestamp(),
-          timestamp: Date.now()
-        });
-      }
-      
-      const purchaseRef = doc(collection(db, PURCHASES_COLLECTION));
-      await setDoc(purchaseRef, {
+    };
+    
+    // Get current values
+    const currentPoints = userData.points || 0;
+    const currentLyricVideoCredits = userData.lyricVideoCredits || 0;
+    
+    // Update credits
+    if (coverArtCredits > 0) {
+      updateData.points = currentPoints + coverArtCredits;
+      updateData.totalCreditsEarned = (userData.totalCreditsEarned || 0) + coverArtCredits;
+    }
+    
+    if (lyricVideoCredits > 0) {
+      updateData.lyricVideoCredits = currentLyricVideoCredits + lyricVideoCredits;
+      updateData.totalLyricVideoCredits = (userData.totalLyricVideoCredits || 0) + lyricVideoCredits;
+    }
+    
+    await userRef.update(updateData);
+    
+    // Create transaction records
+    if (coverArtCredits > 0) {
+      const transactionRef = db.collection(CREDIT_TRANSACTIONS_COLLECTION).doc();
+      await transactionRef.set({
         userId: userDocId,
         userEmail: userEmail.toLowerCase(),
         orderId,
-        coverArtCredits,
-        lyricVideoCredits,
-        totalCredits: coverArtCredits + lyricVideoCredits,
-        date: serverTimestamp(),
+        type: 'purchase',
+        creditType: 'coverArt',
+        amount: coverArtCredits,
         status: 'completed',
-        type: 'one_time'
-      });
-      
-      console.log(`[INFO] ✅ Added credits to user ${userDocId} (${userEmail}) - Cover Art: ${coverArtCredits}, Lyric Video: ${lyricVideoCredits}`);
-    } catch (error) {
-      console.error('[ERROR] ❌ Error adding credits:', error.message);
-    }
-  };
-
-  updateUserSubscription = async function(email, productId, coverArtCredits, lyricVideoCredits, subscriptionId, userIdFromMeta) {
-    try {
-      if (!isFirebaseAvailable()) {
-        console.error('[ERROR] ❌ Firebase not available for updating subscription');
-        return;
-      }
-
-      let userDocId = userIdFromMeta;
-      let userEmail = email;
-
-      if (!userDocId) {
-        const usersRef = collection(db, USERS_COLLECTION);
-        const q = query(usersRef, where('email', '==', email.toLowerCase()));
-        const querySnapshot = await getDocs(q);
-        if (querySnapshot.empty) {
-          console.warn(`[WARN] ⚠️ User not found for subscription: ${email}`);
-          
-          const pendingRef = doc(collection(db, PENDING_SUBSCRIPTIONS_COLLECTION));
-          await setDoc(pendingRef, {
-            email: email.toLowerCase(),
-            subscriptionId,
-            productId,
-            coverArtCredits,
-            lyricVideoCredits,
-            status: 'pending_user_creation',
-            date: serverTimestamp(),
-            timestamp: Date.now()
-          });
-          
-          return;
-        }
-        userDocId = querySnapshot.docs[0].id;
-        userEmail = querySnapshot.docs[0].data().email || email;
-      }
-      
-      const userRef = doc(db, USERS_COLLECTION, userDocId);
-      
-      const updateData = {
-        subscriptionVariant: productId,
-        subscriptionId,
-        subscriptionStatus: 'active',
-        subscriptionUpdatedAt: serverTimestamp(),
-        updatedAt: serverTimestamp()
-      };
-      
-      if (coverArtCredits > 0) {
-        updateData.monthlyCoverArtCredits = coverArtCredits;
-        updateData.points = increment(coverArtCredits);
-        updateData.totalCreditsEarned = increment(coverArtCredits);
-      }
-      
-      if (lyricVideoCredits > 0) {
-        updateData.monthlyLyricVideoCredits = lyricVideoCredits;
-        updateData.lyricVideoCredits = increment(lyricVideoCredits);
-        updateData.totalLyricVideoCredits = increment(lyricVideoCredits);
-      }
-      
-      await updateDoc(userRef, updateData);
-      
-      const transactionRef = doc(collection(db, SUBSCRIPTION_TRANSACTIONS_COLLECTION));
-      await setDoc(transactionRef, {
-        userId: userDocId,
-        userEmail: userEmail.toLowerCase(),
-        subscriptionId,
-        productId,
-        coverArtCredits,
-        lyricVideoCredits,
-        date: serverTimestamp(),
-        type: 'subscription_renewal',
-        status: 'completed',
+        date: new Date().toISOString(),
         timestamp: Date.now()
       });
-      
-      console.log(`[INFO] ✅ Updated subscription for user ${userDocId} (${userEmail}) - Product: ${productId}, Cover Art: ${coverArtCredits}, Lyric Video: ${lyricVideoCredits}`);
-    } catch (error) {
-      console.error('[ERROR] ❌ Error updating subscription:', error.message);
     }
-  };
+    
+    if (lyricVideoCredits > 0) {
+      const transactionRef = db.collection(CREDIT_TRANSACTIONS_COLLECTION).doc();
+      await transactionRef.set({
+        userId: userDocId,
+        userEmail: userEmail.toLowerCase(),
+        orderId,
+        type: 'purchase',
+        creditType: 'lyricVideo',
+        amount: lyricVideoCredits,
+        status: 'completed',
+        date: new Date().toISOString(),
+        timestamp: Date.now()
+      });
+    }
+    
+    // Create purchase record
+    const purchaseRef = db.collection(PURCHASES_COLLECTION).doc();
+    await purchaseRef.set({
+      userId: userDocId,
+      userEmail: userEmail.toLowerCase(),
+      orderId,
+      coverArtCredits,
+      lyricVideoCredits,
+      totalCredits: coverArtCredits + lyricVideoCredits,
+      date: new Date().toISOString(),
+      status: 'completed',
+      type: 'one_time'
+    });
+    
+    console.log(`[INFO] ✅ Added credits to user ${userDocId} (${userEmail}) - Cover Art: ${coverArtCredits}, Lyric Video: ${lyricVideoCredits}`);
+  } catch (error) {
+    console.error('[ERROR] ❌ Error adding credits:', error.message);
+  }
+};
+
+const updateUserSubscription = async function(email, productId, coverArtCredits, lyricVideoCredits, subscriptionId, userIdFromMeta) {
+  try {
+    if (!db) {
+      console.error('[ERROR] ❌ Firebase not available for updating subscription');
+      return;
+    }
+
+    let userDocId = userIdFromMeta;
+    let userEmail = email;
+
+    if (!userDocId) {
+      const usersRef = db.collection(USERS_COLLECTION);
+      const querySnapshot = await usersRef.where('email', '==', email.toLowerCase()).get();
+      
+      if (querySnapshot.empty) {
+        console.warn(`[WARN] ⚠️ User not found for subscription: ${email}`);
+        
+        const pendingRef = db.collection(PENDING_SUBSCRIPTIONS_COLLECTION).doc();
+        await pendingRef.set({
+          email: email.toLowerCase(),
+          subscriptionId,
+          productId,
+          coverArtCredits,
+          lyricVideoCredits,
+          status: 'pending_user_creation',
+          date: new Date().toISOString(),
+          timestamp: Date.now()
+        });
+        
+        return;
+      }
+      userDocId = querySnapshot.docs[0].id;
+      userEmail = querySnapshot.docs[0].data().email || email;
+    }
+    
+    const userRef = db.collection(USERS_COLLECTION).doc(userDocId);
+    const userDoc = await userRef.get();
+    
+    if (!userDoc.exists) {
+      console.warn(`[WARN] ⚠️ User document not found: ${userDocId}`);
+      return;
+    }
+    
+    const userData = userDoc.data();
+    
+    const updateData = {
+      subscriptionVariant: productId,
+      subscriptionId,
+      subscriptionStatus: 'active',
+      subscriptionUpdatedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+    
+    if (coverArtCredits > 0) {
+      updateData.monthlyCoverArtCredits = coverArtCredits;
+      updateData.points = (userData.points || 0) + coverArtCredits;
+      updateData.totalCreditsEarned = (userData.totalCreditsEarned || 0) + coverArtCredits;
+    }
+    
+    if (lyricVideoCredits > 0) {
+      updateData.monthlyLyricVideoCredits = lyricVideoCredits;
+      updateData.lyricVideoCredits = (userData.lyricVideoCredits || 0) + lyricVideoCredits;
+      updateData.totalLyricVideoCredits = (userData.totalLyricVideoCredits || 0) + lyricVideoCredits;
+    }
+    
+    await userRef.update(updateData);
+    
+    const transactionRef = db.collection(SUBSCRIPTION_TRANSACTIONS_COLLECTION).doc();
+    await transactionRef.set({
+      userId: userDocId,
+      userEmail: userEmail.toLowerCase(),
+      subscriptionId,
+      productId,
+      coverArtCredits,
+      lyricVideoCredits,
+      date: new Date().toISOString(),
+      type: 'subscription_renewal',
+      status: 'completed',
+      timestamp: Date.now()
+    });
+    
+    console.log(`[INFO] ✅ Updated subscription for user ${userDocId} (${userEmail}) - Product: ${productId}, Cover Art: ${coverArtCredits}, Lyric Video: ${lyricVideoCredits}`);
+  } catch (error) {
+    console.error('[ERROR] ❌ Error updating subscription:', error.message);
+  }
+};
+
+// ==================== EVENT HANDLERS ====================
+
+const handlePaymentSucceeded = async function(data) {
+  const transactionId = data.transaction_id;
+  const customerEmail = data.customer?.email;
+  const customerId = data.customer?.id;
+  const userId = data.metadata?.user_id; 
+  const amount = data.amount / 100; // Convert from cents to dollars
+  
+  console.log(`[INFO] 💰 Payment succeeded - Transaction: ${transactionId}, Amount: $${amount}, Email: ${customerEmail}, Customer ID: ${customerId}, UserID: ${userId || 'not provided'}`);
+  
+  const items = data.product_cart || [];
+  let totalCredits = 0;
+  let coverArtCredits = 0;
+  let lyricVideoCredits = 0;
+
+  for (const item of items) {
+    const productId = item.product_id;
+    const quantity = item.quantity || 1;
+    const credits = getCreditsForVariant(productId);
+    
+    if (productId.startsWith('prod_') || productId.includes('cover') || productId.includes('art')) {
+      coverArtCredits += credits * quantity;
+    } else if (productId.includes('video')) {
+      lyricVideoCredits += credits * quantity;
+    }
+    
+    totalCredits += credits * quantity;
+    
+    console.log(`[INFO] 📦 Cart item - Product: ${productId}, Quantity: ${quantity}, Credits: ${credits * quantity}`);
+  }
+
+  console.log(`[INFO] 💰 Total credits breakdown - Cover Art: ${coverArtCredits}, Lyric Video: ${lyricVideoCredits}, Total: ${totalCredits}`);
+
+  if (customerEmail && totalCredits > 0) {
+    await addCreditsToUser(customerEmail, coverArtCredits, lyricVideoCredits, transactionId, userId);
+  } else {
+    console.warn(`[WARN] ⚠️ No email or zero credits - Email: ${customerEmail}, Credits: ${totalCredits}`);
+  }
+};
+
+const handleSubscriptionEvent = async function(data) {
+  const subscriptionId = data.subscription_id;
+  const customerEmail = data.customer?.email;
+  const customerId = data.customer?.id;
+  const status = data.status;
+  const productId = data.product_id;
+  const userId = data.metadata?.user_id;
+  
+  console.log(`[INFO] 📅 Subscription event - ID: ${subscriptionId}, Status: ${status}, Product: ${productId}, Customer: ${customerEmail} (${customerId})`);
+
+  if (status === 'active' || status === 'renewed') {
+    const monthlyCredits = getCreditsForVariant(productId);
+    let coverArtCredits = 0;
+    let lyricVideoCredits = 0;
+    
+    if (productId.startsWith('prod_') || productId.includes('cover') || productId.includes('art')) {
+      coverArtCredits = monthlyCredits;
+    } else if (productId.includes('video')) {
+      lyricVideoCredits = monthlyCredits;
+    }
+    
+    if (customerEmail && monthlyCredits > 0) {
+      await updateUserSubscription(customerEmail, productId, coverArtCredits, lyricVideoCredits, subscriptionId, userId);
+    }
+  }
+};
+
+const handleSubscriptionCancelled = async function(data) {
+  const subscriptionId = data.subscription_id;
+  const customerEmail = data.customer?.email;
+  const userId = data.metadata?.user_id;
+  
+  console.log(`[INFO] 📅 Subscription cancelled - ID: ${subscriptionId}, Email: ${customerEmail}`);
+  
+  try {
+    let userDocId = userId;
+    
+    if (!userDocId && customerEmail) {
+      const usersRef = db.collection(USERS_COLLECTION);
+      const querySnapshot = await usersRef.where('email', '==', customerEmail.toLowerCase()).get();
+      
+      if (!querySnapshot.empty) {
+        userDocId = querySnapshot.docs[0].id;
+      }
+    }
+    
+    if (userDocId) {
+      const userRef = db.collection(USERS_COLLECTION).doc(userDocId);
+      await userRef.update({
+        subscriptionStatus: 'cancelled',
+        subscriptionUpdatedAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      });
+      
+      console.log(`[INFO] ✅ Updated subscription status to cancelled for user ${userDocId}`);
+    }
+  } catch (error) {
+    console.error('[ERROR] ❌ Error handling subscription cancellation:', error.message);
+  }
+};
+
+const handlePaymentFailed = async function(data) {
+  const transactionId = data.transaction_id;
+  const customerEmail = data.customer?.email;
+  
+  console.log(`[ERROR] ❌ Payment failed - Transaction: ${transactionId}, Email: ${customerEmail}`);
+  
+  try {
+    const failedRef = db.collection('failed_payments').doc();
+    await failedRef.set({
+      transactionId,
+      customerEmail,
+      amount: data.amount / 100,
+      reason: data.failure_reason || 'unknown',
+      date: new Date().toISOString(),
+      timestamp: Date.now()
+    });
+  } catch (error) {
+    console.error('[ERROR] ❌ Error recording failed payment:', error.message);
+  }
+};
+
+const handleSubscriptionPaymentFailed = async function(data) {
+  const subscriptionId = data.subscription_id;
+  const customerEmail = data.customer?.email;
+  
+  console.log(`[ERROR] ❌ Subscription payment failed - ID: ${subscriptionId}, Email: ${customerEmail}`);
+  
+  try {
+    const failedRef = db.collection('failed_subscription_payments').doc();
+    await failedRef.set({
+      subscriptionId,
+      customerEmail,
+      date: new Date().toISOString(),
+      timestamp: Date.now()
+    });
+  } catch (error) {
+    console.error('[ERROR] ❌ Error recording failed subscription payment:', error.message);
+  }
 };
 
 // ==================== WEBHOOK ENDPOINT ====================
@@ -584,7 +563,6 @@ router.post('/', rawBodyMiddleware, async (req, res) => {
     if (!isFirebaseLoaded) {
       console.log('[INFO] 🔄 Lazy loading Firebase for event processing');
       await loadFirebaseModules();
-      defineEventHandlers();
     }
 
     // 5. Process event and respond immediately
@@ -671,7 +649,7 @@ router.get('/status', (req, res) => {
   res.json({
     success: true,
     service: 'dodo-payments-webhook',
-    version: '1.0.0',
+    version: '1.1.0',
     timestamp: new Date().toISOString(),
     configuration: {
       firebase: isFirebaseLoaded ? 'loaded' : 'not loaded',

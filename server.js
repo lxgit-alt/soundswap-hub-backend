@@ -160,24 +160,108 @@ const createLazyRouter = (modulePath, moduleName) => {
     if (!router && !loading) {
       try {
         loading = true;
-        console.log(`[LAZY-LOAD] 📦 Loading ${moduleName} module...`);
+        console.log(`[LAZY-LOAD] 📦 Loading ${moduleName} module from ${modulePath}...`);
         
-        // Resolve module path relative to this file so dynamic imports work
-        const resolvedModulePath = new URL(modulePath, import.meta.url).href;
-        const module = await withTimeout(import(resolvedModulePath), 5000, `Module ${moduleName} load timeout`);
-        router = module.default;
-        loadedModules[moduleName] = true;
-        
-        console.log(`[LAZY-LOAD] ✅ ${moduleName} module loaded`);
+        // Try to import with relative path
+        try {
+          const module = await withTimeout(import(modulePath), 5000, `Module ${moduleName} load timeout`);
+          router = module.default;
+          loadedModules[moduleName] = true;
+          console.log(`[LAZY-LOAD] ✅ ${moduleName} module loaded successfully`);
+        } catch (importError) {
+          console.error(`[LAZY-LOAD] ❌ Failed to import ${moduleName} from ${modulePath}:`, importError.message);
+          
+          // Try alternative path format
+          try {
+            const altModulePath = modulePath.startsWith('./') ? modulePath.substring(2) : `./${modulePath}`;
+            console.log(`[LAZY-LOAD] 🔄 Trying alternative path: ${altModulePath}`);
+            
+            const module = await withTimeout(import(altModulePath), 3000, `Alternative path timeout`);
+            router = module.default;
+            loadedModules[moduleName] = true;
+            console.log(`[LAZY-LOAD] ✅ ${moduleName} module loaded from alternative path`);
+          } catch (altError) {
+            console.error(`[LAZY-LOAD] ❌ Alternative path also failed:`, altError.message);
+            throw new Error(`Could not load ${moduleName} module from any path`);
+          }
+        }
       } catch (error) {
         console.error(`[LAZY-LOAD] ❌ Failed to load ${moduleName} module:`, error.message);
+        
+        // Create a minimal router for the module
         router = express.Router();
-        router.use((req, res) => {
-          res.status(503).json({
-            error: `${moduleName} module temporarily unavailable`,
-            timestamp: new Date().toISOString()
+        
+        // Add basic routes for the specific module
+        if (moduleName === 'payments') {
+          console.log(`[LAZY-LOAD] 🛠️ Creating minimal router for ${moduleName}`);
+          
+          // For lemon-webhook routes
+          if (modulePath.includes('lemon-webhook')) {
+            router.post('/', (req, res) => {
+              res.status(503).json({
+                error: 'Payment webhook service temporarily unavailable',
+                message: 'The payment webhook module failed to load',
+                timestamp: new Date().toISOString()
+              });
+            });
+            
+            router.get('/test', (req, res) => {
+              res.json({
+                success: false,
+                message: 'Payment webhook module not loaded',
+                error: 'Module failed to load',
+                timestamp: new Date().toISOString()
+              });
+            });
+            
+            router.get('/status', (req, res) => {
+              res.json({
+                success: false,
+                service: 'dodo-payments-webhook',
+                status: 'module-load-failed',
+                timestamp: new Date().toISOString()
+              });
+            });
+          }
+          
+          // For create-checkout routes
+          if (modulePath.includes('create-checkout')) {
+            router.post('/', (req, res) => {
+              res.status(503).json({
+                error: 'Checkout service temporarily unavailable',
+                message: 'The checkout module failed to load',
+                timestamp: new Date().toISOString()
+              });
+            });
+            
+            router.get('/products', (req, res) => {
+              res.json({
+                success: false,
+                message: 'Checkout module not loaded',
+                products: [],
+                timestamp: new Date().toISOString()
+              });
+            });
+            
+            router.get('/test', (req, res) => {
+              res.json({
+                success: false,
+                message: 'Checkout module not loaded',
+                timestamp: new Date().toISOString()
+              });
+            });
+          }
+        } else {
+          // Generic fallback for other modules
+          router.use((req, res) => {
+            res.status(503).json({
+              error: `${moduleName} module temporarily unavailable`,
+              timestamp: new Date().toISOString()
+            });
           });
-        });
+        }
+        
+        loadedModules[moduleName] = false;
       } finally {
         loading = false;
       }
@@ -662,11 +746,10 @@ app.post('/api/cron-reddit', async (req, res) => {
     // Isolate modules for cron
     await isolateCronExecution();
     
-    // Dynamically load ONLY the reddit admin module (resolve relative to this file)
-    const redditModulePath = new URL('./api/reddit-admin.js', import.meta.url).href;
+    // Dynamically load ONLY the reddit admin module
     const redditModule = await withTimeout(
-      import(redditModulePath),
-      3000,
+      import('./api/reddit-admin.js'), 
+      3000, 
       'Reddit module load timeout'
     );
     
