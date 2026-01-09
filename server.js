@@ -3,253 +3,202 @@ import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import dotenv from 'dotenv';
-import admin from 'firebase-admin';
 import bodyParser from 'body-parser';
-
-
-
-// Use the `VERCEL_INCLUDE_ROUTES=1` env var to enable; otherwise this
-// block will not run. Using an env check avoids static "unreachable"
-// warnings from linters that flag `if (false)` blocks.
-if (process.env.VERCEL_INCLUDE_ROUTES === '1') {
-  import('./routes/lemon-webhook.js');
-  import('./routes/create-checkout.js');
-  import('./routes/reddit-admin.js');
-  import('./routes/send-welcome-email.js');
-  import('./routes/doodle-art.js');
-  import('./routes/generate-video.js');
-}
 
 // Load environment variables FIRST
 dotenv.config();
 
-// ==================== MODULE LOADING ISOLATION ====================
-const MODULE_LOAD_TIMEOUT = 8000;
-let loadedModules = {
-  firebase: false,
-  email: false,
-  reddit: false,
-  payments: false,
-  doodleArt: false
-};
-
-// Safe timeout function
-const safeSetTimeout = (callback, delay) => {
-  const safeDelay = Math.max(1, Math.min(Number.MAX_SAFE_INTEGER, Number(delay) || 1000));
-  if (!Number.isFinite(safeDelay) || safeDelay <= 0) {
-    return setTimeout(callback, 1000);
-  }
-  return setTimeout(callback, safeDelay);
-};
-
-// Timeout wrapper
-const withTimeout = async (promise, timeoutMs, timeoutMessage = 'Operation timed out') => {
-  let timeoutId;
-  const timeoutPromise = new Promise((_, reject) => {
-    timeoutId = safeSetTimeout(() => reject(new Error(timeoutMessage)), timeoutMs);
-  });
-  
-  try {
-    return await Promise.race([promise, timeoutPromise]);
-  } finally {
-    if (timeoutId) {
-      clearTimeout(timeoutId);
-    }
-  }
-};
-
-// ==================== FIREBASE ADMIN INITIALIZATION ====================
-let db = null;
-
-// Initialize Firebase in the background to avoid blocking cold-start.
-// Endpoints already check for `db` and will return 500 if Firebase
-// isn't ready yet — this reduces startup latency in serverless envs.
-const initFirebase = async () => {
-  if (admin.apps.length) {
-    db = admin.firestore();
-    loadedModules.firebase = true;
-    console.log('🔥 Firebase Admin already initialized');
-    return;
-  }
-
-  try {
-    const firebaseConfig = {
-      projectId: process.env.FIREBASE_PROJECT_ID,
-      clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-      privateKey: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n'),
-    };
-
-    if (firebaseConfig.projectId && firebaseConfig.clientEmail && firebaseConfig.privateKey) {
-      admin.initializeApp({
-        credential: admin.credential.cert(firebaseConfig),
-        databaseURL: process.env.FIREBASE_DATABASE_URL
-      });
-      db = admin.firestore();
-      loadedModules.firebase = true;
-      console.log('🔥 Firebase Admin initialized (background)');
-    } else {
-      console.warn('⚠️ Firebase config incomplete, Firebase Admin not initialized');
-      db = null;
-    }
-  } catch (error) {
-    console.error('❌ Firebase Admin initialization error (background):', error.message);
-    db = null;
-  }
-};
-
-// Kick off background initialization (non-blocking)
-initFirebase().catch(err => console.error('Firebase background init failed:', err));
-
 const app = express();
 
-// ==================== TIMEZONE CONFIGURATION ====================
-const APP_TIMEZONE = process.env.APP_TIMEZONE || 'America/New_York';
+// ==================== MODULE LOADING ISOLATION ====================
+// Flag to track if payments processing is active
+global.__payments_running = false;
+global.__automation_running = false;
 
-const getCurrentTimeInAppTimezone = () => {
-  const now = new Date();
-  return now.toLocaleTimeString('en-US', { 
-    timeZone: APP_TIMEZONE,
-    hour12: false,
-    hour: '2-digit',
-    minute: '2-digit'
-  }).slice(0, 5);
+// ==================== LAZY MODULE LOADERS ====================
+// These functions will be used to lazily load modules
+const lazyModules = {
+  firebase: null,
+  firestore: null,
+  payments: {
+    checkout: null,
+    webhook: null
+  },
+  reddit: null,
+  email: null,
+  doodleArt: null,
+  lyricVideo: null
 };
 
-const getCurrentDayInAppTimezone = () => {
-  const now = new Date();
-  return now.toLocaleDateString('en-US', { 
-    timeZone: APP_TIMEZONE,
-    weekday: 'long'
-  }).toLowerCase();
+// Lazy load Firebase Admin
+const lazyLoadFirebase = async () => {
+  if (!lazyModules.firebase) {
+    console.log('[LAZY-LOAD] 🔥 Loading Firebase Admin...');
+    const adminModule = await import('firebase-admin');
+    lazyModules.firebase = adminModule.default;
+    
+    // Initialize Firebase if not already initialized
+    if (lazyModules.firebase.apps.length === 0) {
+      const serviceAccount = {
+        projectId: process.env.FIREBASE_PROJECT_ID,
+        clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+        privateKey: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n'),
+      };
+      
+      if (serviceAccount.projectId && serviceAccount.clientEmail && serviceAccount.privateKey) {
+        lazyModules.firebase.initializeApp({
+          credential: lazyModules.firebase.credential.cert(serviceAccount),
+          databaseURL: process.env.FIREBASE_DATABASE_URL
+        });
+        console.log('[LAZY-LOAD] 🔥 Firebase Admin initialized');
+      } else {
+        console.warn('[WARN] ⚠️ Firebase credentials incomplete');
+      }
+    }
+  }
+  return lazyModules.firebase;
 };
 
-// Trust proxy
+// Lazy load Firestore
+const lazyLoadFirestore = async () => {
+  if (!lazyModules.firestore) {
+    const admin = await lazyLoadFirebase();
+    lazyModules.firestore = admin.firestore();
+  }
+  return lazyModules.firestore;
+};
+
+// ==================== MIDDLEWARE ====================
 app.set('trust proxy', 1);
 
-// Security headers
+// Security headers - minimal for payments
 app.use(helmet({
   contentSecurityPolicy: false,
-  crossOriginEmbedderPolicy: false
+  crossOriginEmbedderPolicy: false,
+  crossOriginResourcePolicy: { policy: "cross-origin" }
 }));
 
-// CORS configuration
+// CORS configuration optimized for payments
 app.use(cors({
-  origin: '*',
+  origin: process.env.NODE_ENV === 'production' 
+    ? (process.env.CORS_ORIGINS ? process.env.CORS_ORIGINS.split(',') : ['https://soundswap.live'])
+    : '*',
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'webhook-id', 'webhook-timestamp', 'webhook-signature']
 }));
 
-// Body parsing middleware
+// Body parsing - raw body preserved for webhooks
 app.use(bodyParser.json({
-  limit: '20mb',
+  limit: '10mb',
   verify: (req, res, buf) => {
-    req.rawBody = buf.toString();
+    req.rawBody = buf;
   }
 }));
-app.use(bodyParser.urlencoded({ extended: true, limit: '20mb' }));
+
+app.use(bodyParser.urlencoded({ extended: true, limit: '10mb' }));
 
 // ==================== ROUTE LOADING MIDDLEWARE ====================
 app.use((req, res, next) => {
   const path = req.path;
   
-  if (path.includes('/api/reddit-admin/cron') || path.includes('/api/cron-reddit')) {
-    console.log('[ISOLATION] 🚫 Cron detected - suppressing non-essential modules');
-    loadedModules.email = false;
-    loadedModules.payments = false;
-    loadedModules.doodleArt = false;
+  // Set flags for isolation
+  if (path.includes('/api/create-checkout') || path.includes('/api/lemon-webhook')) {
+    global.__payments_running = true;
+    global.__automation_running = false;
   }
   
-  if (path.includes('/api/email')) loadedModules.email = true;
-  if (path.includes('/api/create-checkout') || path.includes('/api/lemon-webhook')) loadedModules.payments = true;
-  if (path.includes('/api/reddit-admin')) loadedModules.reddit = true;
-  if (path.includes('/api/doodle-art') || path.includes('/api/ai-art')) loadedModules.doodleArt = true;
+  if (path.includes('/api/reddit-admin/cron') || path.includes('/api/cron-reddit')) {
+    global.__automation_running = true;
+    global.__payments_running = false;
+  }
   
   next();
 });
 
-// ==================== LAZY ROUTE LOADERS ====================
-const createLazyRouter = (modulePath, moduleName) => {
-  let router = null;
-  let loading = false;
-  
-  return async (req, res, next) => {
-    // Skip loading for cron requests (except reddit)
-    if ((req.path.includes('/api/reddit-admin/cron') || req.path.includes('/api/cron-reddit')) && moduleName !== 'reddit') {
-      console.log(`[ISOLATION] ⏭️ Skipping ${moduleName} loading for cron`);
-      return next();
-    }
+// ==================== FAST ENDPOINTS (NO EXTERNAL DEPS) ====================
+app.get('/api/health', (req, res) => {
+  res.json({
+    success: true,
+    status: 'OK',
+    timestamp: new Date().toISOString(),
+    environment: process.env.NODE_ENV || 'development',
+    payments_active: global.__payments_running,
+    automation_active: global.__automation_running
+  });
+});
 
-    // If the automation engine is running, skip non-reddit modules
-    if (process.__automation_running && moduleName !== 'reddit') {
-      console.log(`[ISOLATION] ⏭️ Skipping ${moduleName} loading due to automation engine`);
-      return next();
-    }
-
-    // If payments are running, skip non-payments modules
-    if (process.__payments_running && moduleName !== 'payments') {
-      console.log(`[ISOLATION] ⏭️ Skipping ${moduleName} loading due to payments processing`);
-      return next();
-    }
-    
-    if (!router && !loading) {
-      try {
-        loading = true;
-        console.log(`[LAZY-LOAD] 📦 Loading ${moduleName} module...`);
-        
-        // Resolve module path relative to this file for serverless/bundled environments
-        const module = await withTimeout(import('./' + modulePath.replace(/^\.\//, '')), 5000, `Module ${moduleName} load timeout`);
-        router = module.default;
-        loadedModules[moduleName] = true;
-        
-        console.log(`[LAZY-LOAD] ✅ ${moduleName} module loaded`);
-      } catch (error) {
-        console.error(`[LAZY-LOAD] ❌ Failed to load ${moduleName} module:`, error.message);
-        router = express.Router();
-        router.use((req, res) => {
-          res.status(503).json({
-            error: `${moduleName} module temporarily unavailable`,
-            timestamp: new Date().toISOString()
-          });
-        });
-      } finally {
-        loading = false;
+app.get('/api/status', (req, res) => {
+  res.json({
+    success: true,
+    service: 'soundswap-backend',
+    status: 'operational',
+    version: '2.2.0',
+    lazy_loading: 'ENABLED',
+    timestamp: new Date().toISOString(),
+    module_status: {
+      firebase: lazyModules.firebase ? 'loaded' : 'not loaded',
+      firestore: lazyModules.firestore ? 'loaded' : 'not loaded',
+      payments: {
+        checkout: lazyModules.payments.checkout ? 'loaded' : 'not loaded',
+        webhook: lazyModules.payments.webhook ? 'loaded' : 'not loaded'
       }
     }
-    
-    if (router) {
-      return router(req, res, next);
-    } else {
-      res.status(503).json({
-        error: `Module ${moduleName} is loading, please try again`,
-        timestamp: new Date().toISOString()
-      });
+  });
+});
+
+// ==================== PAYMENTS ENDPOINTS (LAZY LOADED) ====================
+app.post('/api/create-checkout', async (req, res, next) => {
+  try {
+    if (!lazyModules.payments.checkout) {
+      console.log('[LAZY-LOAD] 🛒 Loading checkout module...');
+      const checkoutModule = await import('./routes/create-checkout.js');
+      lazyModules.payments.checkout = checkoutModule.default;
     }
-  };
-};
+    
+    // Set payments flag
+    global.__payments_running = true;
+    
+    // Handle raw body for webhook-like requests
+    if (req.rawBody) {
+      req.body = JSON.parse(req.rawBody.toString());
+    }
+    
+    return lazyModules.payments.checkout(req, res, next);
+  } catch (error) {
+    console.error('[ERROR] ❌ Failed to load checkout module:', error);
+    res.status(503).json({
+      success: false,
+      error: 'Payments service temporarily unavailable',
+      timestamp: new Date().toISOString()
+    });
+  }
+});
 
-// ==================== MOUNT ROUTERS ====================
+app.post('/api/lemon-webhook', bodyParser.raw({ type: '*/*', limit: '10mb' }), async (req, res, next) => {
+  try {
+    if (!lazyModules.payments.webhook) {
+      console.log('[LAZY-LOAD] 🔄 Loading webhook module...');
+      const webhookModule = await import('./routes/lemon-webhook.js');
+      lazyModules.payments.webhook = webhookModule.default;
+    }
+    
+    // Set payments flag
+    global.__payments_running = true;
+    
+    return lazyModules.payments.webhook(req, res, next);
+  } catch (error) {
+    console.error('[ERROR] ❌ Failed to load webhook module:', error);
+    res.status(503).json({
+      success: false,
+      error: 'Webhook service temporarily unavailable',
+      timestamp: new Date().toISOString()
+    });
+  }
+});
 
-// Mount webhook first (needs raw body access) - parse raw body for signature verification
-app.use('/api/lemon-webhook', bodyParser.raw({ type: '*/*', limit: '20mb' }), createLazyRouter('./routes/lemon-webhook.js', 'payments'));
+// ==================== CREDIT MANAGEMENT ENDPOINTS (LAZY LOAD FIREBASE) ====================
 
-// Mount other routers with lazy loading
-app.use('/api/reddit-admin', createLazyRouter('./routes/reddit-admin.js', 'reddit'));
-app.use('/api/email', createLazyRouter('./routes/send-welcome-email.js', 'email'));
-// Mount create-checkout with raw parser to match webhook handling (helps signature/raw-body needs)
-app.use('/api/create-checkout', bodyParser.raw({ type: '*/*', limit: '20mb' }), createLazyRouter('./routes/create-checkout.js', 'payments'));
-
-// Lyric Video API - lazy loaded to improve cold start
-app.use('/api/lyric-video', createLazyRouter('./routes/generate-video.js', 'lyricVideo'));
-app.use('/api/generate-video', createLazyRouter('./routes/generate-video.js', 'lyricVideo'));
-
-// Doodle-to-Art API - LAZY LOADED
-app.use('/api/doodle-art', createLazyRouter('./routes/doodle-art.js', 'doodleArt'));
-app.use('/api/ai-art', createLazyRouter('./routes/doodle-art.js', 'doodleArt'));
-
-// ==================== CREDIT MANAGEMENT ENDPOINTS ====================
-
-// Check user credits
 app.post('/api/check-credits', async (req, res) => {
   try {
     const { userId, type } = req.body;
@@ -261,10 +210,12 @@ app.post('/api/check-credits', async (req, res) => {
       });
     }
     
+    const db = await lazyLoadFirestore();
+    
     if (!db) {
       return res.status(500).json({
         success: false,
-        error: 'Firebase not initialized',
+        error: 'Database not available',
         timestamp: new Date().toISOString()
       });
     }
@@ -304,7 +255,6 @@ app.post('/api/check-credits', async (req, res) => {
   }
 });
 
-// Deduct credits
 app.post('/api/deduct-credits', async (req, res) => {
   try {
     const { userId, type, amount, reason } = req.body;
@@ -316,10 +266,13 @@ app.post('/api/deduct-credits', async (req, res) => {
       });
     }
     
+    const admin = await lazyLoadFirebase();
+    const db = await lazyLoadFirestore();
+    
     if (!db) {
       return res.status(500).json({
         success: false,
-        error: 'Firebase not initialized',
+        error: 'Database not available',
         timestamp: new Date().toISOString()
       });
     }
@@ -398,671 +351,99 @@ app.post('/api/deduct-credits', async (req, res) => {
   }
 });
 
-// Get transaction history
-app.get('/api/transactions/:userId', async (req, res) => {
+// ==================== OTHER ENDPOINTS ====================
+// Get checkout products (FAST - no Firebase)
+app.get('/api/create-checkout/products', async (req, res) => {
   try {
-    const { userId } = req.params;
-    const { limit = 50, type } = req.query;
-    
-    if (!db) {
-      return res.status(500).json({
-        success: false,
-        error: 'Firebase not initialized',
-        timestamp: new Date().toISOString()
-      });
+    // Lazy load just the checkout module for products endpoint
+    if (!lazyModules.payments.checkout) {
+      const checkoutModule = await import('./routes/create-checkout.js');
+      lazyModules.payments.checkout = checkoutModule.default;
     }
     
-    let query = db.collection('credit_transactions')
-      .where('userId', '==', userId)
-      .orderBy('date', 'desc')
-      .limit(parseInt(limit));
+    // Create mock request for products endpoint
+    const mockReq = {
+      method: 'GET',
+      path: '/products',
+      query: req.query,
+      headers: req.headers
+    };
     
-    if (type) {
-      query = query.where('creditType', '==', type);
-    }
+    const mockRes = {
+      json: (data) => res.json(data),
+      status: (code) => ({
+        json: (data) => res.status(code).json(data)
+      })
+    };
     
-    const snapshot = await query.get();
-    const transactions = [];
+    const mockNext = (err) => {
+      if (err) {
+        res.status(500).json({
+          success: false,
+          error: err.message,
+          timestamp: new Date().toISOString()
+        });
+      }
+    };
     
-    snapshot.forEach(doc => {
-      const data = doc.data();
-      transactions.push({
-        id: doc.id,
-        ...data,
-        date: data.date?.toDate?.()?.toISOString() || data.date
-      });
-    });
-    
-    res.json({ 
-      success: true,
-      transactions,
-      count: transactions.length,
-      userId,
-      timestamp: new Date().toISOString()
-    });
+    // Route to products endpoint
+    return lazyModules.payments.checkout(mockReq, mockRes, mockNext);
   } catch (error) {
-    console.error('❌ Error fetching transactions:', error);
-    res.status(500).json({ 
-      success: false,
-      error: error.message,
-      timestamp: new Date().toISOString()
-    });
-  }
-});
-
-// Get credit balance
-app.get('/api/credits/:userId', async (req, res) => {
-  try {
-    const { userId } = req.params;
-    
-    if (!db) {
-      return res.status(500).json({
-        success: false,
-        error: 'Firebase not initialized',
-        timestamp: new Date().toISOString()
-      });
-    }
-    
-    const userDoc = await db.collection('users').doc(userId).get();
-    
-    if (!userDoc.exists) {
-      return res.status(404).json({ 
-        error: 'User not found',
-        timestamp: new Date().toISOString()
-      });
-    }
-    
-    const userData = userDoc.data();
-    
-    res.json({
-      success: true,
-      userId,
-      credits: {
-        coverArt: userData.points || 0,
-        lyricVideo: userData.lyricVideoCredits || 0,
-        subscription: userData.subscription || 'free',
-        founderPoints: userData.founderPoints || 0
-      },
-      subscription: {
-        status: userData.subscriptionStatus || 'none',
-        plan: userData.subscriptionVariant || 'none',
-        id: userData.subscriptionId || 'none',
-        monthlyCredits: {
-          coverArt: userData.monthlyCoverArtCredits || 0,
-          lyricVideo: userData.monthlyLyricVideoCredits || 0
-        }
-      },
-      timestamp: new Date().toISOString()
-    });
-  } catch (error) {
-    console.error('❌ Error getting credit balance:', error);
-    res.status(500).json({ 
-      success: false,
-      error: error.message,
-      timestamp: new Date().toISOString()
-    });
-  }
-});
-
-// Get user's purchases
-app.get('/api/purchases/:userId', async (req, res) => {
-  try {
-    const { userId } = req.params;
-    const { limit = 20 } = req.query;
-    
-    if (!db) {
-      return res.status(500).json({
-        success: false,
-        error: 'Firebase not initialized',
-        timestamp: new Date().toISOString()
-      });
-    }
-    
-    const query = db.collection('purchases')
-      .where('userId', '==', userId)
-      .orderBy('date', 'desc')
-      .limit(parseInt(limit));
-    
-    const snapshot = await query.get();
-    const purchases = [];
-    
-    snapshot.forEach(doc => {
-      const data = doc.data();
-      purchases.push({
-        id: doc.id,
-        ...data,
-        date: data.date?.toDate?.()?.toISOString() || data.date
-      });
-    });
-    
-    res.json({
-      success: true,
-      purchases,
-      count: purchases.length,
-      userId,
-      timestamp: new Date().toISOString()
-    });
-  } catch (error) {
-    console.error('❌ Error fetching purchases:', error);
+    console.error('[ERROR] ❌ Failed to get products:', error);
     res.status(500).json({
       success: false,
-      error: error.message,
+      error: 'Failed to get products',
       timestamp: new Date().toISOString()
     });
   }
 });
 
-// ==================== DODO PAYMENTS STATUS ENDPOINTS ====================
-
-app.get('/api/payments/status', (req, res) => {
+// Test payments endpoint
+app.get('/api/payments/test', (req, res) => {
   res.json({
     success: true,
-    service: 'dodo-payments',
-    status: 'active',
-    configuration: {
-      dodoApiKey: process.env.DODO_PAYMENTS_API_KEY ? 'configured' : 'missing',
-      dodoWebhookKey: process.env.DODO_PAYMENTS_WEBHOOK_KEY ? 'configured' : 'missing',
-      firebase: db ? 'connected' : 'disconnected',
-      environment: process.env.NODE_ENV || 'development'
-    },
-    endpoints: {
-      createCheckout: 'POST /api/create-checkout',
-      webhook: 'POST /api/lemon-webhook',
-      testWebhook: 'POST /api/lemon-webhook/simulate',
-      webhookStatus: 'GET /api/lemon-webhook/status',
-      products: 'GET /api/create-checkout/products',
-      testDodo: 'GET /api/create-checkout/test-dodo'
-    },
+    message: 'Payments API is accessible',
+    lazy_loading: 'ENABLED',
+    checkout_module: lazyModules.payments.checkout ? 'loaded' : 'not loaded',
+    webhook_module: lazyModules.payments.webhook ? 'loaded' : 'not loaded',
     timestamp: new Date().toISOString()
   });
 });
 
-// Test Dodo API connection
-app.get('/api/payments/test', async (req, res) => {
-  try {
-    const DODO_API_KEY = process.env.DODO_PAYMENTS_API_KEY;
-    
-    if (!DODO_API_KEY) {
-      return res.status(500).json({
-        success: false,
-        error: 'Dodo API key not configured',
-        timestamp: new Date().toISOString()
-      });
-    }
-    
-    const response = await fetch('https://api.dodopayments.com/v1/account', {
-      method: 'GET',
-      headers: {
-        'Authorization': `Bearer ${DODO_API_KEY}`
-      }
-    });
-    
-    if (response.ok) {
-      const result = await response.json();
-      res.json({
-        success: true,
-        message: 'Dodo API connection successful',
-        account: {
-          id: result.id,
-          name: result.name,
-          email: result.email,
-          mode: result.mode || 'test'
-        },
-        timestamp: new Date().toISOString()
-      });
-    } else {
-      const error = await response.json();
-      res.status(response.status).json({
-        success: false,
-        error: error.message || 'Dodo API connection failed',
-        details: error,
-        timestamp: new Date().toISOString()
-      });
-    }
-  } catch (error) {
-    console.error('❌ Dodo API test error:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message,
-      timestamp: new Date().toISOString()
-    });
-  }
-});
-
-// ==================== CRON ISOLATION ENDPOINTS ====================
-
-app.get('/api/module-status', (req, res) => {
-  res.json({
-    success: true,
-    modules: loadedModules,
-    timestamp: new Date().toISOString(),
-    memoryUsage: process.memoryUsage(),
-    uptime: process.uptime()
+// Clean up flags after request
+app.use((req, res, next) => {
+  // Reset flags after response
+  res.on('finish', () => {
+    global.__payments_running = false;
+    global.__automation_running = false;
   });
-});
-
-// Isolate modules for cron
-const isolateCronExecution = async () => {
-  console.log('[ISOLATION] 🔒 Isolating Reddit cron execution');
-  loadedModules.email = false;
-  loadedModules.payments = false;
-  loadedModules.doodleArt = false;
-  return true;
-};
-
-// Restore modules after cron
-const restoreModulesAfterCron = () => {
-  console.log('[ISOLATION] 🔄 Restoring modules after cron completion');
-  return true;
-};
-
-app.post('/api/isolate-for-cron', async (req, res) => {
-  try {
-    await isolateCronExecution();
-    res.json({
-      success: true,
-      message: 'Modules isolated for cron execution',
-      isolated: true,
-      modules: loadedModules,
-      timestamp: new Date().toISOString()
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      error: error.message,
-      timestamp: new Date().toISOString()
-    });
-  }
-});
-
-// ==================== ISOLATED CRON ENDPOINT ====================
-
-app.post('/api/cron-reddit', async (req, res) => {
-  const startTime = Date.now();
-  
-  try {
-    // Quick auth check
-    const authHeader = req.headers.authorization;
-    if (!authHeader || authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
-      return res.status(401).json({ 
-        success: false, 
-        error: 'Unauthorized',
-        timestamp: new Date().toISOString()
-      });
-    }
-
-    console.log('[CRON-ISOLATED] 🚀 Starting isolated Reddit cron execution');
-    
-    // Isolate modules for cron
-    await isolateCronExecution();
-    
-    // Dynamically load ONLY the reddit admin module
-    const redditModule = await withTimeout(
-      import('./routes/reddit-admin.js'), 
-      3000, 
-      'Reddit module load timeout'
-    );
-    
-    const redditRouter = redditModule.default;
-    
-    // Create minimal request wrapper
-    const cronReq = {
-      ...req,
-      method: 'POST',
-      path: '/cron',
-      headers: {
-        ...req.headers,
-        'x-isolated-cron': 'true'
-      }
-    };
-    
-    // Create response wrapper
-    let cronResponse = null;
-    const cronRes = {
-      json: (data) => {
-        cronResponse = data;
-      },
-      status: (code) => {
-        return {
-          json: (data) => {
-            cronResponse = data;
-          }
-        };
-      }
-    };
-    
-    // Execute the cron with timeout
-    await withTimeout(
-      new Promise((resolve, reject) => {
-        redditRouter(cronReq, cronRes, (err) => {
-          if (err) reject(err);
-          else resolve();
-        });
-      }),
-      8000,
-      'Cron execution timeout'
-    );
-    
-    // Restore modules
-    restoreModulesAfterCron();
-    
-    const processingTime = Date.now() - startTime;
-    console.log(`[CRON-ISOLATED] ✅ Cron completed in ${processingTime}ms`);
-    
-    res.json({
-      ...cronResponse,
-      isolated: true,
-      processingTime: processingTime,
-      modulesLoaded: loadedModules,
-      timestamp: new Date().toISOString()
-    });
-    
-  } catch (error) {
-    console.error('[CRON-ISOLATED] ❌ Error in isolated cron:', error);
-    
-    // Restore modules even on error
-    restoreModulesAfterCron();
-    
-    const processingTime = Date.now() - startTime;
-    
-    res.json({
-      success: false,
-      message: 'Cron execution failed',
-      error: error.message,
-      isolated: true,
-      processingTime: processingTime,
-      timestamp: new Date().toISOString()
-    });
-  }
-});
-
-// ==================== ENDPOINTS ====================
-
-// Health check endpoint - cron safe
-app.get('/api/health', (req, res) => {
-  const currentTime = getCurrentTimeInAppTimezone();
-  const currentDay = getCurrentDayInAppTimezone();
-
-  res.status(200).json({
-    success: true,
-    status: 'OK',
-    timestamp: new Date().toISOString(),
-    environment: process.env.NODE_ENV || 'development',
-    timezone: APP_TIMEZONE,
-    currentTime: currentTime,
-    currentDay: currentDay,
-    version: '2.1.0',
-    cronSafe: true,
-    moduleLoading: 'isolated',
-    services: {
-      reddit_automation: 'available',
-      cron_scheduler: 'running',
-      module_isolation: 'active'
-    }
-  });
-});
-
-// Simple health endpoint (alias)
-app.get('/health', (req, res) => {
-  res.redirect('/api/health');
-});
-
-// Enhanced API status endpoint
-app.get('/api/status', (req, res) => {
-  const currentTime = getCurrentTimeInAppTimezone();
-  const currentDay = getCurrentDayInAppTimezone();
-
-  res.json({
-    success: true,
-    service: 'soundswap-backend',
-    status: 'operational',
-    version: '2.1.0',
-    environment: process.env.NODE_ENV || 'development',
-    timezone: APP_TIMEZONE,
-    currentTime: currentTime,
-    currentDay: currentDay,
-    timestamp: new Date().toISOString(),
-    endpoints: {
-      health: '/api/health',
-      status: '/api/status',
-      isolated_cron: 'POST /api/cron-reddit (For GitHub Actions)',
-      email: '/api/email/send-welcome-email',
-      reddit_admin: '/api/reddit-admin/admin',
-      lyric_video: '/api/lyric-video',
-      generate_video: '/api/generate-video',
-      doodle_art: '/api/doodle-art/generate',
-      ai_art: '/api/ai-art/generate',
-      gemini_ai: '/api/reddit-admin/generate-comment',
-      automation: '/api/reddit-admin/cron-status',
-      reddit_api_test: '/api/reddit-admin/test-reddit',
-      cron: '/api/reddit-admin/cron (POST)',
-      premium_analytics: '/api/reddit-admin/premium-analytics',
-      generate_premium_content: '/api/reddit-admin/generate-premium-content',
-      optimized_schedule: '/api/reddit-admin/optimized-schedule',
-      post_premium_feature: '/api/reddit-admin/post-premium-feature',
-      reset_daily: '/api/reddit-admin/reset-daily',
-      check_credits: 'POST /api/check-credits',
-      deduct_credits: 'POST /api/deduct-credits',
-      get_transactions: 'GET /api/transactions/:userId',
-      get_balance: 'GET /api/credits/:userId',
-      get_purchases: 'GET /api/purchases/:userId'
-    },
-    video_generation_api: {
-      generate_video: 'POST /api/generate-video',
-      generate_video_optimized: 'POST /api/generate-video/optimized',
-      regular_job_status: 'GET /api/generate-video?action=status&jobId={jobId}',
-      optimized_job_status: 'GET /api/generate-video/optimized/status?jobId={jobId}',
-      storage_usage: 'GET /api/generate-video/storage-usage',
-      manual_cleanup: 'POST /api/generate-video/manual-cleanup',
-      cleanup_expired_videos: 'GET /api/generate-video/cleanup-expired-videos',
-      physics_animations: 'GET /api/generate-video/physics-animations',
-      webhook_callback: 'POST /api/generate-video?action=webhook'
-    },
-    doodle_to_art_api: {
-      generate: 'POST /api/doodle-art/generate',
-      test: 'GET /api/doodle-art/test',
-      features: {
-        model: 'ControlNet Scribble',
-        creativity_slider: '0.1 (creative) to 1.0 (strict)',
-        nsfw_filter: 'enabled',
-        cost: '$0.30 - $0.50 per credit',
-        speed: '5-8 seconds',
-        text_warning: 'AI may not render text accurately'
-      }
-    },
-    credit_management_api: {
-      check_credits: 'POST /api/check-credits - Check user credit balance',
-      deduct_credits: 'POST /api/deduct-credits - Deduct credits for generation',
-      get_transactions: 'GET /api/transactions/:userId - Get transaction history',
-      get_balance: 'GET /api/credits/:userId - Get complete credit balance'
-    },
-    reddit_premium_endpoints: {
-      premium_analytics: 'GET /api/reddit-admin/premium-analytics - Track premium lead generation',
-      generate_premium_content: 'POST /api/reddit-admin/generate-premium-content - Generate premium-focused content',
-      optimized_schedule: 'GET /api/reddit-admin/optimized-schedule - View optimized posting schedule',
-      post_premium_feature: 'POST /api/reddit-admin/post-premium-feature - Manual premium feature post',
-      reset_daily: 'POST /api/reddit-admin/reset-daily - Manual daily reset'
-    },
-    ai_features: {
-      comment_generation: 'active',
-      dm_replies: 'active',
-      post_analysis: 'active',
-      audio_analysis: 'active',
-      lyric_enhancement: 'active',
-      doodle_to_art: 'active',
-      automation_system: 'active',
-      cron_scheduler: 'running',
-      vercel_cron: 'active',
-      educational_posts: 'active',
-      top50_promotion: 'active',
-      chart_notifications: 'active',
-      reddit_api: 'live',
-      premium_feature_focus: 'active',
-      credit_system: 'active'
-    },
-    reddit_automation_updates: {
-      total_subreddits: 12,
-      new_premium_subreddits: 8,
-      total_audience: '5M+',
-      daily_comments: '15 posts/day (rate limit safe)',
-      premium_focus: '80% of content focuses on premium features',
-      features: 'Rate limit aware, lead tracking, daily reset',
-      api_mode: 'LIVE REDDIT API'
-    }
-  });
-});
-
-// Root endpoint
-app.get('/', (req, res) => {
-  const currentTime = getCurrentTimeInAppTimezone();
-  const currentDay = getCurrentDayInAppTimezone();
-
-  res.json({
-    success: true,
-    message: 'SoundSwap API - Backend service is running',
-    version: '2.1.0',
-    environment: 'production',
-    timezone: APP_TIMEZONE,
-    currentTime: currentTime,
-    currentDay: currentDay.toLowerCase(),
-    timestamp: new Date().toISOString(),
-    endpoints: {
-      health: '/api/health',
-      status: '/api/status',
-      email: '/api/email/send-welcome-email',
-      reddit_admin: '/api/reddit-admin/admin',
-      lyric_video: '/api/lyric-video',
-      generate_video: '/api/generate-video',
-      doodle_art: '/api/doodle-art/generate',
-      ai_art: '/api/ai-art/generate',
-      gemini_ai: '/api/reddit-admin/generate-comment',
-      automation: '/api/reddit-admin/cron-status',
-      reddit_api_test: '/api/reddit-admin/test-reddit',
-      cron: '/api/reddit-admin/cron (POST)',
-      premium_analytics: '/api/reddit-admin/premium-analytics',
-      generate_premium_content: '/api/reddit-admin/generate-premium-content',
-      optimized_schedule: '/api/reddit-admin/optimized-schedule',
-      post_premium_feature: '/api/reddit-admin/post-premium-feature',
-      reset_daily: '/api/reddit-admin/reset-daily',
-      check_credits: 'POST /api/check-credits',
-      deduct_credits: 'POST /api/deduct-credits',
-      get_transactions: 'GET /api/transactions/:userId',
-      get_balance: 'GET /api/credits/:userId'
-    },
-    video_generation_api: {
-      generate_video: 'POST /api/generate-video',
-      generate_video_optimized: 'POST /api/generate-video/optimized',
-      regular_job_status: 'GET /api/generate-video?action=status&jobId={jobId}',
-      optimized_job_status: 'GET /api/generate-video/optimized/status?jobId={jobId}',
-      storage_usage: 'GET /api/generate-video/storage-usage',
-      manual_cleanup: 'POST /api/generate-video/manual-cleanup',
-      cleanup_expired_videos: 'GET /api/generate-video/cleanup-expired-videos',
-      physics_animations: 'GET /api/generate-video/physics-animations',
-      webhook_callback: 'POST /api/generate-video?action=webhook'
-    },
-    doodle_to_art_api: {
-      generate: 'POST /api/doodle-art/generate',
-      test: 'GET /api/doodle-art/test',
-      features: {
-        model: 'ControlNet Scribble',
-        creativity_slider: '0.1 (creative) to 1.0 (strict)',
-        nsfw_filter: 'enabled',
-        cost: '$0.30 - $0.50 per credit',
-        speed: '5-8 seconds',
-        text_warning: 'AI may not render text accurately'
-      }
-    },
-    credit_management_api: {
-      check_credits: 'POST /api/check-credits - Check user credit balance',
-      deduct_credits: 'POST /api/deduct-credits - Deduct credits for generation',
-      get_transactions: 'GET /api/transactions/:userId - Get transaction history',
-      get_balance: 'GET /api/credits/:userId - Get complete credit balance'
-    },
-    reddit_premium_endpoints: {
-      premium_analytics: 'GET /api/reddit-admin/premium-analytics - Track premium lead generation',
-      generate_premium_content: 'POST /api/reddit-admin/generate-premium-content - Generate premium-focused content',
-      optimized_schedule: 'GET /api/reddit-admin/optimized-schedule - View optimized posting schedule',
-      post_premium_feature: 'POST /api/reddit-admin/post-premium-feature - Manual premium feature post',
-      reset_daily: 'POST /api/reddit-admin/reset-daily - Manual daily reset'
-    },
-    ai_features: {
-      comment_generation: 'active',
-      dm_replies: 'active',
-      post_analysis: 'active',
-      audio_analysis: 'active',
-      lyric_enhancement: 'active',
-      doodle_to_art: 'active',
-      automation_system: 'active',
-      cron_scheduler: 'running',
-      vercel_cron: 'active',
-      educational_posts: 'active',
-      top50_promotion: 'active',
-      chart_notifications: 'active',
-      reddit_api: 'live',
-      premium_feature_focus: 'active',
-      credit_system: 'active'
-    },
-    reddit_automation_updates: {
-      total_subreddits: 12,
-      new_premium_subreddits: 8,
-      total_audience: '5M+',
-      daily_comments: '15 posts/day (rate limit safe)',
-      premium_focus: '80% of content focuses on premium features',
-      features: 'Rate limit aware, lead tracking, daily reset',
-      api_mode: 'LIVE REDDIT API'
-    }
-  });
+  next();
 });
 
 // Handle 404
 app.use('*', (req, res) => {
-  const currentTime = getCurrentTimeInAppTimezone();
-  const currentDay = getCurrentDayInAppTimezone();
-
   res.status(404).json({
     success: false,
     error: 'Route not found',
     path: req.originalUrl,
-    timezone: APP_TIMEZONE,
-    currentTime: currentTime,
-    currentDay: currentDay,
+    timestamp: new Date().toISOString(),
     availableEndpoints: [
       '/api/health',
-      '/health',
       '/api/status',
-      '/api/cron-reddit (POST)',
-      '/api/email/send-welcome-email',
-      '/api/reddit-admin/admin',
-      '/api/lyric-video',
-      '/api/generate-video',
-      '/api/doodle-art/generate',
-      '/api/ai-art/generate',
-      '/api/reddit-admin/generate-comment',
-      '/api/reddit-admin/cron-status',
-      '/api/reddit-admin/test-reddit',
-      '/api/reddit-admin/cron (POST)',
-      '/api/reddit-admin/premium-analytics',
-      '/api/reddit-admin/generate-premium-content',
-      '/api/reddit-admin/optimized-schedule',
-      '/api/reddit-admin/post-premium-feature',
-      '/api/reddit-admin/reset-daily',
-      '/api/create-checkout',
-      '/api/lemon-webhook',
-      '/api/payments/status',
+      '/api/create-checkout (POST)',
+      '/api/create-checkout/products (GET)',
+      '/api/lemon-webhook (POST)',
       '/api/check-credits (POST)',
       '/api/deduct-credits (POST)',
-      '/api/transactions/:userId',
-      '/api/credits/:userId',
-      '/api/purchases/:userId'
-    ],
-    timestamp: new Date().toISOString()
+      '/api/payments/test (GET)'
+    ]
   });
 });
 
-// Error handling middleware
+// Error handler
 app.use((error, req, res, next) => {
-  console.error('❌ Unhandled error:', error.message);
-  console.error(error.stack);
+  console.error('❌ Server error:', error.message);
+  
   res.status(500).json({
     success: false,
     error: 'Internal server error',
@@ -1071,22 +452,18 @@ app.use((error, req, res, next) => {
   });
 });
 
-// For Vercel serverless functions, export the app
+// For Vercel serverless functions
 export default app;
 
-// For local development
-const PORT = process.env.PORT || 3001;
+// Local development
 if (process.env.NODE_ENV !== 'production' || process.env.VERCEL !== '1') {
+  const PORT = process.env.PORT || 3001;
   app.listen(PORT, '0.0.0.0', () => {
-    const currentTime = getCurrentTimeInAppTimezone();
-    const currentDay = getCurrentDayInAppTimezone();
-
     console.log(`🚀 Server running on port ${PORT}`);
     console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
-    console.log(`⏰ Timezone: ${APP_TIMEZONE}`);
-    console.log(`📅 Current time: ${currentTime} on ${currentDay}`);
     console.log(`❤️  Health check: http://localhost:${PORT}/api/health`);
-    console.log(`🔒 Isolated cron: POST http://localhost:${PORT}/api/cron-reddit`);
-    console.log(`📊 Module status: GET http://localhost:${PORT}/api/module-status`);
+    console.log(`💰 Payments endpoint: POST http://localhost:${PORT}/api/create-checkout`);
+    console.log(`🔄 Webhook endpoint: POST http://localhost:${PORT}/api/lemon-webhook`);
+    console.log(`📦 Products: GET http://localhost:${PORT}/api/create-checkout/products`);
   });
 }

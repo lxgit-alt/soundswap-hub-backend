@@ -1,16 +1,11 @@
-// create-checkout.js - Dodo Payments Checkout API (Optimized)
 import express from 'express';
-
 const router = express.Router();
 
 console.log('[INFO] 🚀 Dodo Payments Checkout API Initialized');
 
-// ==================== LAZY LOADING CONFIGURATION ====================
+// ==================== STATIC CONFIGURATION ====================
+// No heavy imports at the top
 
-let isFirebaseLoaded = false;
-let auth = null;
-
-// Static product catalog - no imports needed
 const PRODUCT_CATALOG = {
   // One-time purchases (credits)
   'prod_starter': {
@@ -119,23 +114,19 @@ const PRODUCT_CATALOG = {
   }
 };
 
-// ==================== LAZY LOAD HELPER ====================
+// ==================== LAZY LOAD HELPERS ====================
+let firebaseAuth = null;
+let isFirebaseLoaded = false;
 
 const loadFirebaseAuth = async () => {
   if (!isFirebaseLoaded) {
-    console.log('[INFO] 🔥 Firebase: Lazy loading Firebase Admin auth');
     try {
-      // Dynamically import Firebase Admin
+      console.log('[LAZY-LOAD] 🔥 Loading Firebase Admin auth for checkout...');
       const adminModule = await import('firebase-admin');
       const admin = adminModule.default;
       
-      // Check if Firebase is already initialized (by server.js)
-      if (admin.apps.length > 0) {
-        auth = admin.auth();
-        console.log('[INFO] 🔥 Firebase: Using existing Firebase Admin instance');
-      } else {
-        // Initialize Firebase if not already initialized
-        console.log('[INFO] 🔥 Firebase: Initializing Firebase Admin');
+      if (admin.apps.length === 0) {
+        // Initialize with env variables
         const serviceAccount = {
           projectId: process.env.FIREBASE_PROJECT_ID,
           clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
@@ -147,22 +138,21 @@ const loadFirebaseAuth = async () => {
             credential: admin.credential.cert(serviceAccount),
             databaseURL: process.env.FIREBASE_DATABASE_URL
           });
-          auth = admin.auth();
-          console.log('[INFO] 🔥 Firebase: Initialized successfully');
+          console.log('[LAZY-LOAD] 🔥 Firebase initialized for checkout');
         } else {
-          console.error('[ERROR] ❌ Firebase credentials incomplete');
-          auth = null;
+          console.warn('[WARN] ⚠️ Firebase credentials incomplete for checkout');
         }
       }
       
+      firebaseAuth = admin.auth();
       isFirebaseLoaded = true;
-      console.log('[INFO] 🔥 Firebase: Admin auth loaded successfully');
+      console.log('[LAZY-LOAD] 🔥 Firebase auth loaded for checkout');
     } catch (error) {
-      console.error('[ERROR] ❌ Failed to load Firebase Admin:', error.message);
-      // For testing, create a mock auth object
-      auth = {
+      console.error('[ERROR] ❌ Failed to load Firebase auth:', error.message);
+      // Mock auth for testing
+      firebaseAuth = {
         verifyIdToken: async (token) => {
-          console.log('[TEST] 🔐 Mock token verification for testing');
+          console.log('[TEST] 🔐 Mock token verification');
           return { 
             uid: token === 'test-token' ? 'test-user-id' : 'mock-user-id',
             email: 'test@example.com'
@@ -170,23 +160,14 @@ const loadFirebaseAuth = async () => {
         }
       };
       isFirebaseLoaded = true;
-      console.log('[INFO] 🔥 Firebase: Using mock auth for testing');
     }
   }
-  return auth;
+  return firebaseAuth;
 };
 
-const isFirebaseAuthAvailable = () => {
-  return isFirebaseLoaded && auth !== null;
-};
-
-// ==================== CHECKOUT ENDPOINT WITH TIMEOUT PROTECTION ====================
-
+// ==================== CHECKOUT ENDPOINT ====================
 router.post('/', async (req, res) => {
-  // Signal that payments processing is active to suppress other modules
-  try { process.__payments_running = true; } catch (e) { /* no-op */ }
-
-  // Set request timeout
+  // Set timeout
   const requestTimeout = setTimeout(() => {
     console.error('[ERROR] ⏰ Checkout request timeout after 8 seconds');
     if (!res.headersSent) {
@@ -197,34 +178,28 @@ router.post('/', async (req, res) => {
         timestamp: new Date().toISOString()
       });
     }
-  }, 8000); // 8 seconds timeout (slightly less than Vercel's 10s)
+  }, 8000);
 
   try {
     console.log('[INFO] 🔄 Creating checkout session');
     
-    // Get the authorization token from headers
     const authHeader = req.headers.authorization;
     
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
       console.log('[WARN] ⚠️ No authorization header provided - allowing test mode');
-      // For testing, allow without token but log warning
-      console.log('[INFO] 🧪 Test mode: Skipping token verification');
     }
 
     const idToken = authHeader ? authHeader.split('Bearer ')[1] : 'test-token';
     
-    // Verify Firebase ID token (lazy load if needed)
+    // Verify token (lazy load if needed)
     let decodedToken;
     try {
       if (process.env.NODE_ENV === 'test' || !authHeader) {
-        // Test mode - skip verification
-        console.log('[TEST] 🧪 Test mode: Using mock user for checkout');
         decodedToken = { 
           uid: 'test-user-id', 
           email: req.body.email || 'test@example.com' 
         };
       } else {
-        // Production - verify token (lazy load Firebase)
         const authInstance = await loadFirebaseAuth();
         decodedToken = await authInstance.verifyIdToken(idToken);
       }
@@ -239,11 +214,10 @@ router.post('/', async (req, res) => {
 
     const { uid, email: tokenEmail } = decodedToken;
     const { variantId, type, successUrl, cancelUrl } = req.body;
-    
     const { name, email: bodyEmail } = req.body;
     
     if (!variantId) {
-      console.log('[ERROR] ❌ Missing variantId in request');
+      console.log('[ERROR] ❌ Missing variantId');
       clearTimeout(requestTimeout);
       return res.status(400).json({ 
         success: false,
@@ -251,11 +225,11 @@ router.post('/', async (req, res) => {
       });
     }
 
-    // Security check (skip in test mode)
+    // Security check
     if (process.env.NODE_ENV !== 'test') {
       const { userId } = req.body;
       if (userId && userId !== uid) {
-        console.log(`[ERROR] ❌ User ID mismatch - Token: ${uid}, Request: ${userId}`);
+        console.log(`[ERROR] ❌ User ID mismatch`);
         clearTimeout(requestTimeout);
         return res.status(403).json({ 
           success: false,
@@ -264,7 +238,6 @@ router.post('/', async (req, res) => {
       }
     }
 
-    // Use email from token or body
     const customerEmail = tokenEmail || bodyEmail;
     
     if (!customerEmail) {
@@ -287,9 +260,9 @@ router.post('/', async (req, res) => {
       });
     }
     
-    console.log(`[INFO] 🛒 Creating checkout - User: ${uid}, Product: ${variantId}, Type: ${type}`);
+    console.log(`[INFO] 🛒 Creating checkout - User: ${uid}, Product: ${variantId}`);
     
-    // Validate product exists in catalog
+    // Validate product
     if (!PRODUCT_CATALOG[variantId]) {
       console.error(`[ERROR] ❌ Invalid product variant: ${variantId}`);
       clearTimeout(requestTimeout);
@@ -300,10 +273,10 @@ router.post('/', async (req, res) => {
       });
     }
 
-    // Create Checkout Session via Dodo API with timeout
+    // Call Dodo API
     try {
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 5000); // 5 second timeout for Dodo API
+      const timeoutId = setTimeout(() => controller.abort(), 5000);
 
       const response = await fetch('https://api.dodopayments.com/v1/checkouts', {
         method: 'POST',
@@ -385,19 +358,14 @@ router.post('/', async (req, res) => {
       error: 'Internal server error',
       details: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
-  } finally {
-    try { process.__payments_running = false; } catch (e) { /* no-op */ }
   }
 });
 
-// ==================== FAST ENDPOINTS (NO EXTERNAL DEPENDENCIES) ====================
-
-// Get available products - FAST (no Firebase loading)
+// ==================== FAST ENDPOINTS ====================
 router.get('/products', (req, res) => {
   try {
     console.log('[INFO] 📦 Fetching product catalog');
     
-    // Filter products by type if specified
     const { type, creditType } = req.query;
     let products = Object.values(PRODUCT_CATALOG);
     
@@ -424,7 +392,6 @@ router.get('/products', (req, res) => {
   }
 });
 
-// Get specific product - FAST (no Firebase loading)
 router.get('/products/:productId', (req, res) => {
   try {
     const { productId } = req.params;
@@ -454,262 +421,15 @@ router.get('/products/:productId', (req, res) => {
   }
 });
 
-// Test endpoint - FAST (no Firebase loading)
 router.get('/test', (req, res) => {
   res.json({
     success: true,
     message: 'Dodo Payments Checkout API is working',
     environment: process.env.NODE_ENV || 'development',
-    firebaseAuth: isFirebaseAuthAvailable() ? 'loaded' : 'not loaded (lazy)',
-    dodoApi: process.env.DODO_PAYMENTS_API_KEY ? 'configured' : 'not configured',
     lazy_loading: 'ENABLED - Firebase loads only when needed',
     products_available: Object.keys(PRODUCT_CATALOG).length,
     timestamp: new Date().toISOString()
   });
 });
-
-// Fast checkout test (for payment system testing without dependencies)
-router.post('/test-fast-checkout', async (req, res) => {
-  try {
-    const { variantId, email } = req.body;
-    
-    if (!variantId || !email) {
-      return res.status(400).json({
-        success: false,
-        error: 'variantId and email are required'
-      });
-    }
-    
-    // Validate product
-    if (!PRODUCT_CATALOG[variantId]) {
-      return res.status(400).json({
-        success: false,
-        error: 'Invalid product variant',
-        availableProducts: Object.keys(PRODUCT_CATALOG)
-      });
-    }
-    
-    const product = PRODUCT_CATALOG[variantId];
-    
-    // Simulate checkout creation without external API calls
-    const mockCheckoutUrl = `https://checkout.dodopayments.com/test/${Date.now()}`;
-    const mockSessionId = `test_session_${Date.now()}`;
-    
-    console.log(`[TEST] 🧪 Fast checkout test - Product: ${product.name}, Email: ${email}`);
-    
-    res.json({
-      success: true,
-      checkoutUrl: mockCheckoutUrl,
-      sessionId: mockSessionId,
-      expiresAt: new Date(Date.now() + 3600000).toISOString(), // 1 hour from now
-      product: product,
-      note: 'This is a test checkout - no actual payment will be processed',
-      timestamp: new Date().toISOString()
-    });
-  } catch (error) {
-    console.error('[ERROR] ❌ Fast checkout test error:', error.message);
-    res.status(500).json({
-      success: false,
-      error: error.message
-    });
-  }
-});
-
-// ==================== ENDPOINTS WITH EXTERNAL DEPENDENCIES ====================
-
-// Test Dodo API connection (lazy loads)
-router.get('/test-dodo', async (req, res) => {
-  const requestTimeout = setTimeout(() => {
-    console.error('[ERROR] ⏰ Dodo API test timeout');
-    if (!res.headersSent) {
-      res.status(504).json({
-        success: false,
-        error: 'Dodo API test timeout'
-      });
-    }
-  }, 5000);
-
-  try {
-    console.log('[INFO] 🧪 Testing Dodo API connection');
-    
-    const DODO_API_KEY = process.env.DODO_PAYMENTS_API_KEY;
-    
-    if (!DODO_API_KEY) {
-      clearTimeout(requestTimeout);
-      return res.status(500).json({
-        success: false,
-        error: 'Dodo API key not configured'
-      });
-    }
-    
-    // Test with a short timeout
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 3000);
-    
-    const response = await fetch('https://api.dodopayments.com/v1/account', {
-      method: 'GET',
-      headers: {
-        'Authorization': `Bearer ${DODO_API_KEY}`
-      },
-      signal: controller.signal
-    });
-    
-    clearTimeout(timeoutId);
-    clearTimeout(requestTimeout);
-    
-    if (response.ok) {
-      const result = await response.json();
-      console.log('[INFO] ✅ Dodo API connection successful');
-      res.json({
-        success: true,
-        message: 'Dodo API connection successful',
-        account: {
-          id: result.id,
-          name: result.name,
-          email: result.email,
-          mode: result.mode || 'unknown'
-        }
-      });
-    } else {
-      const error = await response.json();
-      console.error('[ERROR] ❌ Dodo API connection failed:', error);
-      res.status(response.status).json({
-        success: false,
-        error: error.message || 'Dodo API connection failed',
-        details: error
-      });
-    }
-  } catch (error) {
-    clearTimeout(requestTimeout);
-    if (error.name === 'AbortError') {
-      console.error('[ERROR] ❌ Dodo API test timeout');
-      res.status(504).json({
-        success: false,
-        error: 'Dodo API timeout - service may be down or slow'
-      });
-    } else {
-      console.error('[ERROR] ❌ Test Dodo API error:', error.message);
-      res.status(500).json({
-        success: false,
-        error: error.message
-      });
-    }
-  }
-});
-
-// Get checkout session status (lazy loads if needed)
-router.get('/session/:sessionId', async (req, res) => {
-  const requestTimeout = setTimeout(() => {
-    console.error('[ERROR] ⏰ Session status check timeout');
-    if (!res.headersSent) {
-      res.status(504).json({
-        success: false,
-        error: 'Session check timeout'
-      });
-    }
-  }, 5000);
-
-  try {
-    const { sessionId } = req.params;
-    console.log(`[INFO] 📋 Checking session status: ${sessionId}`);
-    
-    const DODO_API_KEY = process.env.DODO_PAYMENTS_API_KEY;
-    
-    if (!DODO_API_KEY) {
-      clearTimeout(requestTimeout);
-      return res.status(500).json({
-        success: false,
-        error: 'Dodo API key not configured'
-      });
-    }
-    
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 3000);
-    
-    const response = await fetch(`https://api.dodopayments.com/v1/checkouts/${sessionId}`, {
-      method: 'GET',
-      headers: {
-        'Authorization': `Bearer ${DODO_API_KEY}`
-      },
-      signal: controller.signal
-    });
-    
-    clearTimeout(timeoutId);
-    
-    const result = await response.json();
-    
-    if (!response.ok) {
-      console.error('[ERROR] ❌ Dodo API Error:', result);
-      clearTimeout(requestTimeout);
-      return res.status(response.status).json({
-        success: false,
-        error: result.message || 'Failed to get session',
-        details: result
-      });
-    }
-    
-    clearTimeout(requestTimeout);
-    res.json({
-      success: true,
-      session: result,
-      status: result.status,
-      timestamp: new Date().toISOString()
-    });
-    
-  } catch (error) {
-    clearTimeout(requestTimeout);
-    if (error.name === 'AbortError') {
-      console.error('[ERROR] ❌ Session check timeout');
-      res.status(504).json({
-        success: false,
-        error: 'Session check timeout - Dodo API slow'
-      });
-    } else {
-      console.error('[ERROR] ❌ Error getting session:', error.message);
-      res.status(500).json({
-        success: false,
-        error: error.message
-      });
-    }
-  }
-});
-
-// Webhook test endpoint (for manual testing - minimal)
-router.post('/test-webhook', async (req, res) => {
-  try {
-    const { eventType, data } = req.body;
-    
-    if (!eventType) {
-      return res.status(400).json({
-        success: false,
-        message: 'eventType is required'
-      });
-    }
-    
-    console.log(`[INFO] 🔄 Simulating webhook event: ${eventType}`);
-    
-    res.json({
-      success: true,
-      message: `Simulated ${eventType} event`,
-      eventType,
-      data,
-      note: 'This is a simulation - no actual webhook was sent',
-      timestamp: new Date().toISOString()
-    });
-    
-  } catch (error) {
-    console.error('[ERROR] ❌ Error in webhook test:', error.message);
-    res.status(500).json({
-      success: false,
-      error: error.message
-    });
-  }
-});
-
-console.log('[INFO] ✅ Dodo API Key:', process.env.DODO_PAYMENTS_API_KEY ? 'Configured' : 'Not Configured');
-console.log('[INFO] 📊 Products Available:', Object.keys(PRODUCT_CATALOG).length);
-console.log('[INFO] 🎯 Endpoint: /api/create-checkout');
-console.log('[INFO] 🔄 Lazy loading enabled: Firebase Admin loads only for token verification');
-console.log('[INFO] ⏱️  Timeout protection: 8s request timeout, 5s API timeouts');
 
 export default router;
