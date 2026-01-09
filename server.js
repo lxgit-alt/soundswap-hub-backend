@@ -165,7 +165,13 @@ const createLazyRouter = (modulePath, moduleName) => {
         loading = true;
         console.log(`[LAZY-LOAD] 📦 Loading ${moduleName} module...`);
         
-        const module = await withTimeout(import(modulePath), 5000, `Module ${moduleName} load timeout`);
+        // FIXED: Use dynamic import with proper path
+        const module = await withTimeout(
+          import(new URL(modulePath, import.meta.url).href),
+          5000, 
+          `Module ${moduleName} load timeout`
+        );
+        
         router = module.default;
         loadedModules[moduleName] = true;
         
@@ -666,7 +672,7 @@ app.post('/api/cron-reddit', async (req, res) => {
     
     // Dynamically load ONLY the reddit admin module with CORRECT PATH
     const redditModule = await withTimeout(
-      import('./backend/api/reddit-admin.js'),  // FIXED PATH
+      import(new URL('./backend/api/reddit-admin.js', import.meta.url).href),  // FIXED PATH
       3000, 
       'Reddit module load timeout'
     );
