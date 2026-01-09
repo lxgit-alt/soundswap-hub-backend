@@ -503,15 +503,51 @@ const handleSubscriptionPaymentFailed = async function(data) {
 const rawBodyMiddleware = (req, res, next) => {
   console.log('[INFO] 🔄 Raw body middleware processing');
   req.rawBody = '';
+  
+  // Set encoding for text data
   req.setEncoding('utf8');
 
+  // Timeout to prevent hanging
+  const bodyTimeout = setTimeout(() => {
+    console.error('[ERROR] ❌ Raw body reading timeout after 5 seconds');
+    if (!res.headersSent) {
+      res.status(408).json({ error: 'Request body timeout' });
+    }
+  }, 5000);
+
+  const cleanup = () => clearTimeout(bodyTimeout);
+
+  // Handle incoming data chunks
   req.on('data', (chunk) => {
-    req.rawBody += chunk;
+    if (chunk) {
+      req.rawBody += chunk;
+    }
   });
 
+  // Handle normal request end
   req.on('end', () => {
+    cleanup();
     console.log(`[INFO] 📦 Raw body received, length: ${req.rawBody?.length || 0}`);
     next();
+  });
+
+  // Handle errors during body reading
+  req.on('error', (error) => {
+    cleanup();
+    console.error('[ERROR] ❌ Error reading request body:', error.message);
+    if (!res.headersSent) {
+      res.status(400).json({ error: 'Invalid request body' });
+    }
+  });
+
+  // Handle client disconnect
+  req.on('close', () => {
+    cleanup();
+  });
+
+  // Handle response close (abort)
+  res.on('close', () => {
+    cleanup();
   });
 };
 

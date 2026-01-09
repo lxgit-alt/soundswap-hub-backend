@@ -230,14 +230,15 @@ const createLazyRouter = (modulePath, moduleName) => {
 
 // ==================== MOUNT ROUTERS ====================
 
-// Mount webhook first (needs raw body access) - parse raw body for signature verification
-app.use('/api/lemon-webhook', bodyParser.raw({ type: '*/*', limit: '20mb' }), createLazyRouter('./routes/lemon-webhook.js', 'payments'));
+// Mount webhook first (needs raw body access) - custom middleware handles raw body for signature verification
+// Do NOT use bodyParser.raw() here - it conflicts with the custom rawBodyMiddleware
+app.use('/api/lemon-webhook', createLazyRouter('./routes/lemon-webhook.js', 'payments'));
 
 // Mount other routers with lazy loading
 app.use('/api/reddit-admin', createLazyRouter('./routes/reddit-admin.js', 'reddit'));
 app.use('/api/email', createLazyRouter('./routes/send-welcome-email.js', 'email'));
-// Mount create-checkout with raw parser to match webhook handling (helps signature/raw-body needs)
-app.use('/api/create-checkout', bodyParser.raw({ type: '*/*', limit: '20mb' }), createLazyRouter('./routes/create-checkout.js', 'payments'));
+// Mount create-checkout with standard JSON parser
+app.use('/api/create-checkout', bodyParser.json({ limit: '20mb' }), createLazyRouter('./routes/create-checkout.js', 'payments'));
 
 // Lyric Video API - lazy loaded to improve cold start
 app.use('/api/lyric-video', createLazyRouter('./routes/generate-video.js', 'lyricVideo'));
