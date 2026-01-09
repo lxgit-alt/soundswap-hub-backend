@@ -318,10 +318,25 @@ router.post('/', async (req, res) => {
     try {
       const client = getDodoClient();
 
+      // Send a unified one-time product to the payment provider while
+      // retaining the requested variant in metadata for internal bookkeeping.
+      // Include explicit amount/currency and allowed payment methods per spec.
+      const product = PRODUCT_CATALOG[variantId];
+      const defaultCurrency = (process.env.DEFAULT_CURRENCY || 'usd').toLowerCase();
+      const allowedMethods = req.body.allowed_payment_method_types || [
+        'credit',
+        'debit',
+        'apple_pay',
+        'google_pay'
+      ];
+
       const payload = {
-        product_cart: [ { product_id: variantId, quantity: 1 } ],
+        amount: product.price, // cents
+        currency: defaultCurrency,
+        allowed_payment_method_types: allowedMethods,
+        product_cart: [ { product_id: 'prod_one_time', quantity: 1 } ],
         customer: { email: customerEmail, name: name || '' },
-        metadata: { user_id: uid, type: type || 'one_time', firebase_uid: uid },
+        metadata: { user_id: uid, type: type || 'one_time', firebase_uid: uid, requested_variant: variantId },
         return_url: successUrl || `${process.env.NEXT_PUBLIC_APP_URL || 'https://soundswap.live'}/studio?payment=success`,
         cancel_url: cancelUrl || `${process.env.NEXT_PUBLIC_APP_URL || 'https://soundswap.live'}/studio?payment=cancelled`,
         payment_link: true

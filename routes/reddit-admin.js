@@ -131,15 +131,23 @@ const safeSetTimeout = (callback, delay) => {
   const parsed = Number(delay);
 
   if (!Number.isFinite(parsed) || parsed <= 0) {
-    if (delay !== undefined) {
-      console.warn(`[WARN] ⚠️ Invalid timeout delay provided (${String(delay)}). Using default ${DEFAULT_DELAY}ms`);
-    }
+    // Silently use default for timing calculations, only log for actual issues
     return setTimeout(callback, DEFAULT_DELAY);
   }
 
   // Clamp to a safe integer range
   const safeDelay = Math.min(Number.MAX_SAFE_INTEGER, Math.max(1, Math.trunc(parsed)));
   return setTimeout(callback, safeDelay);
+};
+
+// Safer timeout calculation to prevent negative values
+const calculateTimeout = (baseMs, subtractMs = 0) => {
+  const result = baseMs - subtractMs;
+  // Ensure result is always at least 100ms and finite
+  if (!Number.isFinite(result) || result < 100) {
+    return 1000;
+  }
+  return Math.trunc(result);
 };
 
 // Gemini API quota management
@@ -1018,7 +1026,7 @@ router.post('/cron', async (req, res) => {
     }
     
     // Execute cron with timeout
-    const result = await withTimeout(runScheduledPosts(), VERCELL_TIMEOUT_MS - 1000, 'Cron processing timeout');
+    const result = await withTimeout(runScheduledPosts(), calculateTimeout(VERCELL_TIMEOUT_MS, 1000), 'Cron processing timeout');
     
     const processingTime = Date.now() - startTime;
     console.log(`[PERFORMANCE] ⏱️ Total processing time: ${processingTime}ms`);
@@ -2002,9 +2010,12 @@ Mention how ${premiumFeature.name} can help. Include soundswap.live. Use ${selec
         console.log(`[SCAN] ⏱️ Scan completed in ${scanTime}ms`);
         console.log(`[SCAN] 📊 Found ${scanResults.highQualityPosts.length} high-quality opportunities`);
         
-        // Update stats
-        postingActivity.goldenHourStats.totalPostsScanned += scanResults.allPosts.length;
-        postingActivity.goldenHourStats.totalOpportunitiesFound += scanResults.highQualityPosts.length;
+        // Update stats - ensure no NaN propagation
+        const scannedCount = scanResults.allPosts?.length || 0;
+        const opportunitiesCount = scanResults.highQualityPosts?.length || 0;
+        
+        postingActivity.goldenHourStats.totalPostsScanned = (postingActivity.goldenHourStats.totalPostsScanned || 0) + scannedCount;
+        postingActivity.goldenHourStats.totalOpportunitiesFound = (postingActivity.goldenHourStats.totalOpportunitiesFound || 0) + opportunitiesCount;
         
         let totalPosted = 0;
         let premiumPosted = 0;
