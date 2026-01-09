@@ -517,6 +517,8 @@ const rawBodyMiddleware = (req, res, next) => {
 
 // Apply middleware to webhook endpoint
 router.post('/', rawBodyMiddleware, async (req, res) => {
+  // Signal that payments processing is active to suppress other modules
+  try { process.__payments_running = true; } catch (e) { /* no-op */ }
   // Set a timeout for the entire request
   const requestTimeout = setTimeout(() => {
     console.error('[ERROR] ⏰ Request timeout after 9 seconds');
@@ -668,6 +670,8 @@ router.post('/', rawBodyMiddleware, async (req, res) => {
       details: 'Internal server error',
       timestamp: new Date().toISOString()
     });
+  } finally {
+    try { process.__payments_running = false; } catch (e) { /* no-op */ }
   }
 });
 

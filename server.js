@@ -175,9 +175,20 @@ const createLazyRouter = (modulePath, moduleName) => {
   
   return async (req, res, next) => {
     // Skip loading for cron requests (except reddit)
-    if ((req.path.includes('/api/reddit-admin/cron') || req.path.includes('/api/cron-reddit')) && 
-        moduleName !== 'reddit') {
+    if ((req.path.includes('/api/reddit-admin/cron') || req.path.includes('/api/cron-reddit')) && moduleName !== 'reddit') {
       console.log(`[ISOLATION] ⏭️ Skipping ${moduleName} loading for cron`);
+      return next();
+    }
+
+    // If the automation engine is running, skip non-reddit modules
+    if (process.__automation_running && moduleName !== 'reddit') {
+      console.log(`[ISOLATION] ⏭️ Skipping ${moduleName} loading due to automation engine`);
+      return next();
+    }
+
+    // If payments are running, skip non-payments modules
+    if (process.__payments_running && moduleName !== 'payments') {
+      console.log(`[ISOLATION] ⏭️ Skipping ${moduleName} loading due to payments processing`);
       return next();
     }
     

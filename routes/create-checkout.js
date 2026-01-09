@@ -183,6 +183,9 @@ const isFirebaseAuthAvailable = () => {
 // ==================== CHECKOUT ENDPOINT WITH TIMEOUT PROTECTION ====================
 
 router.post('/', async (req, res) => {
+  // Signal that payments processing is active to suppress other modules
+  try { process.__payments_running = true; } catch (e) { /* no-op */ }
+
   // Set request timeout
   const requestTimeout = setTimeout(() => {
     console.error('[ERROR] ⏰ Checkout request timeout after 8 seconds');
@@ -382,6 +385,8 @@ router.post('/', async (req, res) => {
       error: 'Internal server error',
       details: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
+  } finally {
+    try { process.__payments_running = false; } catch (e) { /* no-op */ }
   }
 });
 

@@ -983,6 +983,14 @@ router.get('/cron-status', async (req, res) => {
 router.post('/cron', async (req, res) => {
   const startTime = Date.now();
   
+  // Mark automation engine active so other modules (payments, email, doodleArt)
+  // can avoid heavy initialization during the run.
+  try {
+    process.__automation_running = true;
+  } catch (e) {
+    // no-op if environment prevents setting globals
+  }
+
   try {
     const authHeader = req.headers.authorization;
     if (!authHeader || authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
@@ -1038,6 +1046,13 @@ router.post('/cron', async (req, res) => {
       totalPosted: 0,
       timestamp: new Date().toISOString()
     });
+  } finally {
+    // Clear automation flag to allow other modules to initialize again
+    try {
+      process.__automation_running = false;
+    } catch (e) {
+      // ignore
+    }
   }
 });
 
