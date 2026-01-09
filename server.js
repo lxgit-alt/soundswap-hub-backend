@@ -16,8 +16,7 @@ let loadedModules = {
   email: false,
   reddit: false,
   payments: false,
-  doodleArt: false,
-  lyricVideo: false  // Added for lyric video
+  doodleArt: false
 };
 
 // Safe timeout function
@@ -135,14 +134,12 @@ app.use((req, res, next) => {
     loadedModules.email = false;
     loadedModules.payments = false;
     loadedModules.doodleArt = false;
-    loadedModules.lyricVideo = false;
   }
   
   if (path.includes('/api/email')) loadedModules.email = true;
   if (path.includes('/api/create-checkout') || path.includes('/api/lemon-webhook')) loadedModules.payments = true;
   if (path.includes('/api/reddit-admin')) loadedModules.reddit = true;
   if (path.includes('/api/doodle-art') || path.includes('/api/ai-art')) loadedModules.doodleArt = true;
-  if (path.includes('/api/lyric-video') || path.includes('/api/generate-video')) loadedModules.lyricVideo = true;
   
   next();
 });
@@ -165,13 +162,7 @@ const createLazyRouter = (modulePath, moduleName) => {
         loading = true;
         console.log(`[LAZY-LOAD] 📦 Loading ${moduleName} module...`);
         
-        // FIXED: Use dynamic import with proper path
-        const module = await withTimeout(
-          import(new URL(modulePath, import.meta.url).href),
-          5000, 
-          `Module ${moduleName} load timeout`
-        );
-        
+        const module = await withTimeout(import(modulePath), 5000, `Module ${moduleName} load timeout`);
         router = module.default;
         loadedModules[moduleName] = true;
         
@@ -204,22 +195,22 @@ const createLazyRouter = (modulePath, moduleName) => {
 // ==================== MOUNT ROUTERS ====================
 
 // Mount webhook first (needs raw body access)
-app.use('/api/lemon-webhook', createLazyRouter('./backend/api/lemon-webhook.js', 'payments'));
+app.use('/api/lemon-webhook', createLazyRouter('./api/lemon-webhook.js', 'payments'));
 
-// Mount other routers
-app.use('/api/reddit-admin', createLazyRouter('./backend/api/reddit-admin.js', 'reddit'));
-app.use('/api/email', createLazyRouter('./backend/api/send-welcome-email.js', 'email'));
-app.use('/api/create-checkout', createLazyRouter('./backend/api/create-checkout.js', 'payments'));
+// Mount other routers with lazy loading
+app.use('/api/reddit-admin', createLazyRouter('./api/reddit-admin.js', 'reddit'));
+app.use('/api/email', createLazyRouter('./api/send-welcome-email.js', 'email'));
+app.use('/api/create-checkout', createLazyRouter('./api/create-checkout.js', 'payments'));
 
-// Lyric Video API - USE LAZY LOADING like other routes
-app.use('/api/lyric-video', createLazyRouter('./backend/api/generate-video.js', 'lyricVideo'));
-app.use('/api/generate-video', createLazyRouter('./backend/api/generate-video.js', 'lyricVideo'));
+// Lyric Video API - load immediately (not in the issue)
+import lyricVideoRoutes from './api/generate-video.js';
+app.use('/api/lyric-video', lyricVideoRoutes);
+app.use('/api/generate-video', lyricVideoRoutes);
 
-// Doodle-to-Art API
-app.use('/api/doodle-art', createLazyRouter('./backend/api/doodle-art.js', 'doodleArt'));
-app.use('/api/ai-art', createLazyRouter('./backend/api/doodle-art.js', 'doodleArt'));
+// Doodle-to-Art API - LAZY LOADED
+app.use('/api/doodle-art', createLazyRouter('./api/doodle-art.js', 'doodleArt'));
+app.use('/api/ai-art', createLazyRouter('./api/doodle-art.js', 'doodleArt'));
 
-// Rest of your server.js remains the same...
 // ==================== CREDIT MANAGEMENT ENDPOINTS ====================
 
 // Check user credits
@@ -620,7 +611,6 @@ const isolateCronExecution = async () => {
   loadedModules.email = false;
   loadedModules.payments = false;
   loadedModules.doodleArt = false;
-  loadedModules.lyricVideo = false;
   return true;
 };
 
@@ -670,9 +660,9 @@ app.post('/api/cron-reddit', async (req, res) => {
     // Isolate modules for cron
     await isolateCronExecution();
     
-    // Dynamically load ONLY the reddit admin module with CORRECT PATH
+    // Dynamically load ONLY the reddit admin module
     const redditModule = await withTimeout(
-      import(new URL('./backend/api/reddit-admin.js', import.meta.url).href),  // FIXED PATH
+      import('./api/reddit-admin.js'), 
       3000, 
       'Reddit module load timeout'
     );
@@ -770,7 +760,6 @@ app.get('/api/health', (req, res) => {
     moduleLoading: 'isolated',
     services: {
       reddit_automation: 'available',
-      lyric_video: 'available',
       cron_scheduler: 'running',
       module_isolation: 'active'
     }
@@ -873,8 +862,7 @@ app.get('/api/status', (req, res) => {
       chart_notifications: 'active',
       reddit_api: 'live',
       premium_feature_focus: 'active',
-      credit_system: 'active',
-      lyric_video_generation: 'active'
+      credit_system: 'active'
     },
     reddit_automation_updates: {
       total_subreddits: 12,
@@ -976,8 +964,7 @@ app.get('/', (req, res) => {
       chart_notifications: 'active',
       reddit_api: 'live',
       premium_feature_focus: 'active',
-      credit_system: 'active',
-      lyric_video_generation: 'active'
+      credit_system: 'active'
     },
     reddit_automation_updates: {
       total_subreddits: 12,
