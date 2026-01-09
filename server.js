@@ -195,23 +195,21 @@ const createLazyRouter = (modulePath, moduleName) => {
 // ==================== MOUNT ROUTERS ====================
 
 // Mount webhook first (needs raw body access)
-// UPDATED PATH: added 'backend/'
-app.use('/api/lemon-webhook', createLazyRouter('./backend/api/lemon-webhook.js', 'payments'));
+app.use('/api/lemon-webhook', createLazyRouter('./api/lemon-webhook.js', 'payments'));
 
-// Mount other routers
-app.use('/api/reddit-admin', createLazyRouter('./backend/api/reddit-admin.js', 'reddit'));
-app.use('/api/email', createLazyRouter('./backend/api/send-welcome-email.js', 'email'));
-app.use('/api/create-checkout', createLazyRouter('./backend/api/create-checkout.js', 'payments'));
+// Mount other routers with lazy loading
+app.use('/api/reddit-admin', createLazyRouter('./api/reddit-admin.js', 'reddit'));
+app.use('/api/email', createLazyRouter('./api/send-welcome-email.js', 'email'));
+app.use('/api/create-checkout', createLazyRouter('./api/create-checkout.js', 'payments'));
 
-// Lyric Video API
-// UPDATED PATH: added 'backend/'
-import lyricVideoRoutes from './backend/api/generate-video.js';
+// Lyric Video API - load immediately (not in the issue)
+import lyricVideoRoutes from './api/generate-video.js';
 app.use('/api/lyric-video', lyricVideoRoutes);
 app.use('/api/generate-video', lyricVideoRoutes);
 
-// Doodle-to-Art API
-app.use('/api/doodle-art', createLazyRouter('./backend/api/doodle-art.js', 'doodleArt'));
-app.use('/api/ai-art', createLazyRouter('./backend/api/doodle-art.js', 'doodleArt'));
+// Doodle-to-Art API - LAZY LOADED
+app.use('/api/doodle-art', createLazyRouter('./api/doodle-art.js', 'doodleArt'));
+app.use('/api/ai-art', createLazyRouter('./api/doodle-art.js', 'doodleArt'));
 
 // ==================== CREDIT MANAGEMENT ENDPOINTS ====================
 
