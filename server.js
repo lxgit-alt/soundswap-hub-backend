@@ -197,22 +197,22 @@ const createLazyRouter = (modulePath, moduleName) => {
 // ==================== MOUNT ROUTERS ====================
 
 // Mount webhook first (needs raw body access) - parse raw body for signature verification
-app.use('/api/lemon-webhook', bodyParser.raw({ type: '*/*', limit: '20mb' }), createLazyRouter('./api/lemon-webhook.js', 'payments'));
+app.use('/api/lemon-webhook', bodyParser.raw({ type: '*/*', limit: '20mb' }), createLazyRouter('./routes/lemon-webhook.js', 'payments'));
 
 // Mount other routers with lazy loading
-app.use('/api/reddit-admin', createLazyRouter('./api/reddit-admin.js', 'reddit'));
-app.use('/api/email', createLazyRouter('./api/send-welcome-email.js', 'email'));
+app.use('/api/reddit-admin', createLazyRouter('./routes/reddit-admin.js', 'reddit'));
+app.use('/api/email', createLazyRouter('./routes/send-welcome-email.js', 'email'));
 // Mount create-checkout with raw parser to match webhook handling (helps signature/raw-body needs)
-app.use('/api/create-checkout', bodyParser.raw({ type: '*/*', limit: '20mb' }), createLazyRouter('./api/create-checkout.js', 'payments'));
+app.use('/api/create-checkout', bodyParser.raw({ type: '*/*', limit: '20mb' }), createLazyRouter('./routes/create-checkout.js', 'payments'));
 
 // Lyric Video API - load immediately (not in the issue)
-import lyricVideoRoutes from './api/generate-video.js';
+import lyricVideoRoutes from './routes/generate-video.js';
 app.use('/api/lyric-video', lyricVideoRoutes);
 app.use('/api/generate-video', lyricVideoRoutes);
 
 // Doodle-to-Art API - LAZY LOADED
-app.use('/api/doodle-art', createLazyRouter('./api/doodle-art.js', 'doodleArt'));
-app.use('/api/ai-art', createLazyRouter('./api/doodle-art.js', 'doodleArt'));
+app.use('/api/doodle-art', createLazyRouter('./routes/doodle-art.js', 'doodleArt'));
+app.use('/api/ai-art', createLazyRouter('./routes/doodle-art.js', 'doodleArt'));
 
 // ==================== CREDIT MANAGEMENT ENDPOINTS ====================
 
@@ -665,7 +665,7 @@ app.post('/api/cron-reddit', async (req, res) => {
     
     // Dynamically load ONLY the reddit admin module
     const redditModule = await withTimeout(
-      import('./api/reddit-admin.js'), 
+      import('./routes/reddit-admin.js'), 
       3000, 
       'Reddit module load timeout'
     );
