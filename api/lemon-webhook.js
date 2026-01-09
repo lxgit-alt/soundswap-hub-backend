@@ -1,4 +1,3 @@
-// lemon-webhook.js - Dodo Payments Webhook Handler (FIXED)
 import express from 'express';
 import crypto from 'crypto';
 
@@ -26,22 +25,39 @@ const loadFirebaseModules = async () => {
     console.log('[INFO] 🔥 Firebase: Lazy loading modules');
     
     try {
-      // Import from your existing firebaseAdmin.js file
-      const firebaseAdmin = await import('../backend/firebaseAdmin.js');
+      // Check if Firebase Admin is already initialized globally
+      const adminModule = await import('firebase-admin');
+      const admin = adminModule.default;
       
-      // Get the initialized app and db from your existing setup
-      if (firebaseAdmin.db) {
-        db = firebaseAdmin.db;
-        console.log('[INFO] 🔥 Firebase: Using existing Firestore instance from backend/firebaseAdmin.js');
+      if (admin.apps.length > 0) {
+        db = admin.firestore();
+        console.log('[INFO] 🔥 Firebase: Using existing Firebase Admin instance');
       } else {
-        console.error('[ERROR] ❌ Firestore not initialized in firebaseAdmin.js');
-        db = null;
+        // Initialize Firebase if not already initialized
+        console.log('[INFO] 🔥 Firebase: Initializing Firebase Admin');
+        const serviceAccount = {
+          projectId: process.env.FIREBASE_PROJECT_ID,
+          clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+          privateKey: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n'),
+        };
+        
+        if (serviceAccount.projectId && serviceAccount.clientEmail && serviceAccount.privateKey) {
+          admin.initializeApp({
+            credential: admin.credential.cert(serviceAccount),
+            databaseURL: process.env.FIREBASE_DATABASE_URL
+          });
+          db = admin.firestore();
+          console.log('[INFO] 🔥 Firebase: Initialized successfully');
+        } else {
+          console.error('[ERROR] ❌ Firebase credentials incomplete');
+          db = null;
+        }
       }
       
       isFirebaseLoaded = true;
       console.log('[INFO] 🔥 Firebase: Modules loaded successfully');
     } catch (error) {
-      console.error('[ERROR] ❌ Failed to load Firebase from backend/firebaseAdmin.js:', error.message);
+      console.error('[ERROR] ❌ Failed to load Firebase:', error.message);
       db = null;
       isFirebaseLoaded = true; // Mark as loaded to prevent repeated attempts
     }

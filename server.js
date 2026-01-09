@@ -1,4 +1,3 @@
-// server.js - Main Express server (FIXED)
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
@@ -162,28 +161,35 @@ const createLazyRouter = (modulePath, moduleName) => {
         loading = true;
         console.log(`[LAZY-LOAD] 📦 Loading ${moduleName} module from ${modulePath}...`);
         
-        // Try to import with relative path
-        try {
-          const module = await withTimeout(import(modulePath), 5000, `Module ${moduleName} load timeout`);
-          router = module.default;
-          loadedModules[moduleName] = true;
-          console.log(`[LAZY-LOAD] ✅ ${moduleName} module loaded successfully`);
-        } catch (importError) {
-          console.error(`[LAZY-LOAD] ❌ Failed to import ${moduleName} from ${modulePath}:`, importError.message);
-          
-          // Try alternative path format
+        // Try multiple path variations since we're in a serverless environment
+        const pathVariations = [
+          modulePath,  // Original path
+          modulePath.startsWith('./') ? modulePath.substring(2) : `./${modulePath}`, // Remove/add ./
+          modulePath.includes('backend/') ? modulePath : `./backend/${modulePath}`, // Add backend/
+          modulePath.includes('backend/') ? modulePath.substring(9) : `backend/${modulePath}`, // Remove/add backend/
+          `./${modulePath.replace('./', '')}`, // Ensure starts with ./
+        ];
+        
+        let importError = null;
+        
+        for (const tryPath of pathVariations) {
           try {
-            const altModulePath = modulePath.startsWith('./') ? modulePath.substring(2) : `./${modulePath}`;
-            console.log(`[LAZY-LOAD] 🔄 Trying alternative path: ${altModulePath}`);
-            
-            const module = await withTimeout(import(altModulePath), 3000, `Alternative path timeout`);
+            console.log(`[LAZY-LOAD] 🔄 Trying path: ${tryPath}`);
+            const module = await withTimeout(import(tryPath), 3000, `Module ${moduleName} load timeout`);
             router = module.default;
             loadedModules[moduleName] = true;
-            console.log(`[LAZY-LOAD] ✅ ${moduleName} module loaded from alternative path`);
-          } catch (altError) {
-            console.error(`[LAZY-LOAD] ❌ Alternative path also failed:`, altError.message);
-            throw new Error(`Could not load ${moduleName} module from any path`);
+            console.log(`[LAZY-LOAD] ✅ ${moduleName} module loaded successfully from ${tryPath}`);
+            break; // Exit loop on success
+          } catch (error) {
+            importError = error;
+            console.log(`[LAZY-LOAD] ❌ Path ${tryPath} failed:`, error.message);
+            continue; // Try next path
           }
+        }
+        
+        if (!router) {
+          console.error(`[LAZY-LOAD] ❌ All import attempts failed for ${moduleName}:`, importError?.message);
+          throw new Error(`Could not load ${moduleName} module from any path. Last error: ${importError?.message}`);
         }
       } catch (error) {
         console.error(`[LAZY-LOAD] ❌ Failed to load ${moduleName} module:`, error.message);
@@ -281,21 +287,21 @@ const createLazyRouter = (modulePath, moduleName) => {
 // ==================== MOUNT ROUTERS ====================
 
 // Mount webhook first (needs raw body access)
-app.use('/api/lemon-webhook', createLazyRouter('./api/lemon-webhook.js', 'payments'));
+app.use('/api/lemon-webhook', createLazyRouter('./backend/api/lemon-webhook.js', 'payments'));
 
 // Mount other routers with lazy loading
-app.use('/api/reddit-admin', createLazyRouter('./api/reddit-admin.js', 'reddit'));
-app.use('/api/email', createLazyRouter('./api/send-welcome-email.js', 'email'));
-app.use('/api/create-checkout', createLazyRouter('./api/create-checkout.js', 'payments'));
+app.use('/api/reddit-admin', createLazyRouter('./backend/api/reddit-admin.js', 'reddit'));
+app.use('/api/email', createLazyRouter('./backend/api/send-welcome-email.js', 'email'));
+app.use('/api/create-checkout', createLazyRouter('./backend/api/create-checkout.js', 'payments'));
 
 // Lyric Video API - load immediately (not in the issue)
-import lyricVideoRoutes from './api/generate-video.js';
+import lyricVideoRoutes from './backend/api/generate-video.js';
 app.use('/api/lyric-video', lyricVideoRoutes);
 app.use('/api/generate-video', lyricVideoRoutes);
 
 // Doodle-to-Art API - LAZY LOADED
-app.use('/api/doodle-art', createLazyRouter('./api/doodle-art.js', 'doodleArt'));
-app.use('/api/ai-art', createLazyRouter('./api/doodle-art.js', 'doodleArt'));
+app.use('/api/doodle-art', createLazyRouter('./backend/api/doodle-art.js', 'doodleArt'));
+app.use('/api/ai-art', createLazyRouter('./backend/api/doodle-art.js', 'doodleArt'));
 
 // ==================== CREDIT MANAGEMENT ENDPOINTS ====================
 
@@ -748,7 +754,7 @@ app.post('/api/cron-reddit', async (req, res) => {
     
     // Dynamically load ONLY the reddit admin module
     const redditModule = await withTimeout(
-      import('./api/reddit-admin.js'), 
+      import('./backend/api/reddit-admin.js'), 
       3000, 
       'Reddit module load timeout'
     );
