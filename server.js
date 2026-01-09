@@ -162,7 +162,9 @@ const createLazyRouter = (modulePath, moduleName) => {
         loading = true;
         console.log(`[LAZY-LOAD] 📦 Loading ${moduleName} module...`);
         
-        const module = await withTimeout(import(modulePath), 5000, `Module ${moduleName} load timeout`);
+        // Resolve module path relative to this file for serverless/bundled environments
+        const importPath = modulePath.startsWith('.') ? new URL(modulePath, import.meta.url).href : modulePath;
+        const module = await withTimeout(import(importPath), 5000, `Module ${moduleName} load timeout`);
         router = module.default;
         loadedModules[moduleName] = true;
         
