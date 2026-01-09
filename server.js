@@ -6,6 +6,20 @@ import dotenv from 'dotenv';
 import admin from 'firebase-admin';
 import bodyParser from 'body-parser';
 
+
+
+// Use the `VERCEL_INCLUDE_ROUTES=1` env var to enable; otherwise this
+// block will not run. Using an env check avoids static "unreachable"
+// warnings from linters that flag `if (false)` blocks.
+if (process.env.VERCEL_INCLUDE_ROUTES === '1') {
+  import('./routes/lemon-webhook.js');
+  import('./routes/create-checkout.js');
+  import('./routes/reddit-admin.js');
+  import('./routes/send-welcome-email.js');
+  import('./routes/doodle-art.js');
+  import('./routes/generate-video.js');
+}
+
 // Load environment variables FIRST
 dotenv.config();
 
@@ -163,8 +177,7 @@ const createLazyRouter = (modulePath, moduleName) => {
         console.log(`[LAZY-LOAD] 📦 Loading ${moduleName} module...`);
         
         // Resolve module path relative to this file for serverless/bundled environments
-        const importPath = modulePath.startsWith('.') ? new URL(modulePath, import.meta.url).href : modulePath;
-        const module = await withTimeout(import(importPath), 5000, `Module ${moduleName} load timeout`);
+        const module = await withTimeout(import('./' + modulePath.replace(/^\.\//, '')), 5000, `Module ${moduleName} load timeout`);
         router = module.default;
         loadedModules[moduleName] = true;
         
