@@ -124,13 +124,21 @@ const sendDiscordLeadNotification = async (leadData) => {
 // ==================== QUOTA AND TIMEOUT MANAGEMENT ====================
 
 const safeSetTimeout = (callback, delay) => {
-  const safeDelay = Math.max(1, Math.min(Number.MAX_SAFE_INTEGER, Number(delay) || 1000));
-  
-  if (!Number.isFinite(safeDelay) || safeDelay <= 0) {
-    console.warn(`[WARN] ⚠️ Invalid timeout delay: ${delay}, using default 1000ms`);
-    return setTimeout(callback, 1000);
+  const DEFAULT_DELAY = 1000;
+
+  // Convert to number and validate explicitly. This avoids pitfalls with
+  // values like -Infinity which are truthy and would bypass `||` fallbacks.
+  const parsed = Number(delay);
+
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    if (delay !== undefined) {
+      console.warn(`[WARN] ⚠️ Invalid timeout delay provided (${String(delay)}). Using default ${DEFAULT_DELAY}ms`);
+    }
+    return setTimeout(callback, DEFAULT_DELAY);
   }
-  
+
+  // Clamp to a safe integer range
+  const safeDelay = Math.min(Number.MAX_SAFE_INTEGER, Math.max(1, Math.trunc(parsed)));
   return setTimeout(callback, safeDelay);
 };
 
@@ -170,11 +178,20 @@ const incrementGeminiRequest = () => {
 };
 
 const withTimeout = async (promise, timeoutMs, timeoutMessage = 'Operation timed out') => {
+  // Ensure timeoutMs is a safe, positive finite integer.
+  const DEFAULT_TIMEOUT = 3000;
+  let ms = Number(timeoutMs);
+  if (!Number.isFinite(ms) || ms <= 0) {
+    ms = DEFAULT_TIMEOUT;
+  } else {
+    ms = Math.trunc(ms);
+  }
+
   let timeoutId;
   const timeoutPromise = new Promise((_, reject) => {
-    timeoutId = safeSetTimeout(() => reject(new Error(timeoutMessage)), timeoutMs);
+    timeoutId = safeSetTimeout(() => reject(new Error(timeoutMessage)), ms);
   });
-  
+
   try {
     return await Promise.race([promise, timeoutPromise]);
   } finally {
