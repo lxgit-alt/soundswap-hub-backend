@@ -584,10 +584,11 @@ router.post('/', rawBodyMiddleware, async (req, res) => {
     const webhookId = req.headers['webhook-id'];
     const webhookTimestamp = req.headers['webhook-timestamp'];
     const webhookSignature = req.headers['webhook-signature'];
-    const secret = process.env.DODO_PAYMENTS_WEBHOOK_KEY;
+    // Support either environment variable name used in different deployments
+    const secret = process.env.DODO_PAYMENTS_WEBHOOK_SECRET || process.env.DODO_PAYMENTS_WEBHOOK_KEY;
 
     if (!secret) {
-      console.error('[ERROR] ❌ DODO_PAYMENTS_WEBHOOK_KEY not set');
+      console.error('[ERROR] ❌ DODO_PAYMENTS_WEBHOOK_SECRET / DODO_PAYMENTS_WEBHOOK_KEY not set');
       clearTimeout(requestTimeout);
       return res.status(500).json({ error: 'Server configuration error' });
     }
@@ -598,34 +599,75 @@ router.post('/', rawBodyMiddleware, async (req, res) => {
       return res.status(401).json({ error: 'Missing webhook headers' });
     }
 
-    if (!webhookSignature.startsWith('v1,')) {
-      console.error('[ERROR] ❌ Invalid signature format');
+    // Timestamp tolerance (in seconds) to prevent replay attacks
+    const toleranceSeconds = Number(process.env.DODO_PAYMENTS_WEBHOOK_TOLERANCE_SECONDS) || 300;
+    const tsNum = Number(webhookTimestamp);
+    if (!Number.isFinite(tsNum) || Math.abs(Date.now() - (tsNum * 1000)) > toleranceSeconds * 1000) {
+      console.error('[ERROR] ❌ Webhook timestamp outside tolerance');
+      clearTimeout(requestTimeout);
+      return res.status(401).json({ error: 'Webhook timestamp outside tolerance' });
+    }
+
+    // Signature header can be in a few formats (e.g. "v1,<sig>", "v1=<sig>") and may contain multiple parts
+    let signature = null;
+    const v1Match = webhookSignature.match(/v1[=,]([A-Za-z0-9+/=\-._]+)/);
+    if (v1Match && v1Match[1]) {
+      signature = v1Match[1];
+    } else {
+      // Fallback: split on commas and look for a part starting with v1
+      const parts = webhookSignature.split(/[,\s]+/);
+      for (const p of parts) {
+        if (p.startsWith('v1')) {
+          const sub = p.split(/=|,/)[1];
+          if (sub) { signature = sub; break; }
+        }
+      }
+    }
+
+    if (!signature) {
+      console.error('[ERROR] ❌ Could not extract v1 signature from header');
       clearTimeout(requestTimeout);
       return res.status(401).json({ error: 'Invalid signature format' });
     }
 
-    // Extract just the signature part
-    const signatureParts = webhookSignature.split(',');
-    const signature = signatureParts[1];
-
-    // Build the signed content
+    // Build the signed content exactly as Dodo expects
     const signedContent = `${webhookId}.${webhookTimestamp}.${rawBody}`;
 
-    // Compute the expected signature
-    const hmac = crypto.createHmac('sha256', secret);
-    const expectedSignature = hmac.update(signedContent).digest('base64');
+    // Compute expected signatures in both base64 and hex to be tolerant
+    const hmacBase64 = crypto.createHmac('sha256', secret).update(signedContent).digest('base64');
+    const hmacHex = crypto.createHmac('sha256', secret).update(signedContent).digest('hex');
 
-    // Use constant-time comparison
-    const expectedBuffer = Buffer.from(expectedSignature, 'base64');
-    const receivedBuffer = Buffer.from(signature, 'base64');
-
-    if (expectedBuffer.length !== receivedBuffer.length) {
-      console.error('[ERROR] ❌ Signature length mismatch');
-      clearTimeout(requestTimeout);
-      return res.status(401).json({ error: 'Invalid signature' });
+    // Prepare received signature buffer: try base64 then hex
+    let receivedBuffer = null;
+    try {
+      receivedBuffer = Buffer.from(signature, 'base64');
+    } catch (e) {
+      try {
+        receivedBuffer = Buffer.from(signature, 'hex');
+      } catch (e2) {
+        receivedBuffer = null;
+      }
     }
 
-    if (!crypto.timingSafeEqual(expectedBuffer, receivedBuffer)) {
+    const expectedBufferBase64 = Buffer.from(hmacBase64, 'base64');
+    const expectedBufferHex = Buffer.from(hmacHex, 'hex');
+
+    let verified = false;
+    if (receivedBuffer) {
+      if (receivedBuffer.length === expectedBufferBase64.length) {
+        try { verified = crypto.timingSafeEqual(receivedBuffer, expectedBufferBase64); } catch (e) { verified = false; }
+      }
+      if (!verified && receivedBuffer.length === expectedBufferHex.length) {
+        try { verified = crypto.timingSafeEqual(receivedBuffer, expectedBufferHex); } catch (e) { verified = false; }
+      }
+    }
+
+    // Also allow direct string comparison if buffers didn't match (some providers send raw strings)
+    if (!verified) {
+      if (signature === hmacBase64 || signature === hmacHex) verified = true;
+    }
+
+    if (!verified) {
       console.error('[ERROR] ❌ Signature verification failed');
       clearTimeout(requestTimeout);
       return res.status(401).json({ error: 'Invalid signature' });
