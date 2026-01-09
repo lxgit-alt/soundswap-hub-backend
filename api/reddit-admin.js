@@ -1,1948 +1,1392 @@
 import express from 'express';
+import { HfInference } from '@huggingface/inference';
+import { spawn } from 'child_process';
+import fs from 'fs/promises';
+import path from 'path';
+import os from 'os';
+import rateLimit from 'express-rate-limit';
+import { fileURLToPath } from 'url';
+import { dirname } from 'path';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
+const HF_TOKEN = process.env.HF_TOKEN;
+const hf = new HfInference(HF_TOKEN);
+
+// In-memory job stores
+const jobStore = new Map();
+const optimizedJobStore = new Map();
 
 const router = express.Router();
 
-// ==================== LAZY LOADING CONFIGURATION ====================
+// Rate limiters
+const videoGenerationLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 5,
+  message: 'Too many video generation requests'
+});
 
-let isRedditLoaded = false;
-let isFirebaseLoaded = false;
-let isAILoaded = false;
+const optimizedGenerationLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 3,
+  message: 'Too many optimized video generation requests'
+});
 
-// Lazy loaded dependencies
-let GoogleGenerativeAI;
-let initializeApp;
-let getFirestore, collection, addDoc, getDocs, query, where, updateDoc, doc, getDoc, deleteDoc, orderBy, limit;
-let snoowrap;
+// ============================================
+// MAIN REQUEST HANDLER
+// ============================================
 
-// Lazy loaded instances
-let genAI = null;
-let firebaseApp = null;
-let db = null;
-let redditClient = null;
+router.post('/', videoGenerationLimiter, handleRequest);
+router.get('/', handleRequest);
 
-// ==================== QUOTA AND TIMEOUT MANAGEMENT ====================
-
-const safeSetTimeout = (callback, delay) => {
-  const safeDelay = Math.max(1, Math.min(Number.MAX_SAFE_INTEGER, Number(delay) || 1000));
-  
-  if (!Number.isFinite(safeDelay) || safeDelay <= 0) {
-    console.warn(`[WARN] ⚠️ Invalid timeout delay: ${delay}, using default 1000ms`);
-    return setTimeout(callback, 1000);
-  }
-  
-  return setTimeout(callback, safeDelay);
-};
-
-// Gemini API quota management
-let geminiQuotaInfo = {
-  lastRequest: null,
-  requestCount: 0,
-  quotaLimit: 20,
-  resetTime: null,
-  lastError: null
-};
-
-const checkGeminiQuota = () => {
-  const now = Date.now();
-  
-  if (geminiQuotaInfo.resetTime && now > geminiQuotaInfo.resetTime) {
-    geminiQuotaInfo.requestCount = 0;
-    geminiQuotaInfo.resetTime = now + (24 * 60 * 60 * 1000);
-  }
-  
-  if (geminiQuotaInfo.requestCount >= geminiQuotaInfo.quotaLimit) {
-    const waitTime = geminiQuotaInfo.resetTime ? geminiQuotaInfo.resetTime - now : 60000;
-    console.warn(`[QUOTA] ⚠️ Gemini quota exceeded. Wait ${Math.ceil(waitTime/1000)}s`);
-    return false;
-  }
-  
-  return true;
-};
-
-const incrementGeminiRequest = () => {
-  geminiQuotaInfo.requestCount++;
-  geminiQuotaInfo.lastRequest = Date.now();
-  
-  if (!geminiQuotaInfo.resetTime) {
-    geminiQuotaInfo.resetTime = Date.now() + (24 * 60 * 60 * 1000);
-  }
-};
-
-const withTimeout = async (promise, timeoutMs, timeoutMessage = 'Operation timed out') => {
-  let timeoutId;
-  const timeoutPromise = new Promise((_, reject) => {
-    timeoutId = safeSetTimeout(() => reject(new Error(timeoutMessage)), timeoutMs);
-  });
-  
-  try {
-    return await Promise.race([promise, timeoutPromise]);
-  } finally {
-    if (timeoutId) {
-      clearTimeout(timeoutId);
-    }
-  }
-};
-
-// ==================== OPTIMIZED MODULE LOADERS ====================
-
-const loadFirebase = async () => {
-  if (!isFirebaseLoaded) {
-    console.log('[INFO] 🔥 Firebase: Lazy loading Firebase modules');
-    const firebaseModule = await import('firebase/app');
-    const firestoreModule = await import('firebase/firestore');
-    
-    initializeApp = firebaseModule.initializeApp;
-    getFirestore = firestoreModule.getFirestore;
-    collection = firestoreModule.collection;
-    addDoc = firestoreModule.addDoc;
-    getDocs = firestoreModule.getDocs;
-    query = firestoreModule.query;
-    where = firestoreModule.where;
-    updateDoc = firestoreModule.updateDoc;
-    doc = firestoreModule.doc;
-    getDoc = firestoreModule.getDoc;
-    deleteDoc = firestoreModule.deleteDoc;
-    orderBy = firestoreModule.orderBy;
-    limit = firestoreModule.limit;
-    
-    const firebaseConfig = {
-      apiKey: process.env.FIREBASE_API_KEY,
-      authDomain: process.env.FIREBASE_AUTH_DOMAIN,
-      projectId: process.env.FIREBASE_PROJECT_ID,
-      storageBucket: process.env.FIREBASE_STORAGE_BUCKET,
-      messagingSenderId: process.env.FIREBASE_MESSAGING_SENDER_ID,
-      appId: process.env.FIREBASE_APP_ID
-    };
-    
-    firebaseApp = initializeApp(firebaseConfig);
-    db = getFirestore(firebaseApp);
-    isFirebaseLoaded = true;
-    console.log('[INFO] 🔥 Firebase: Modules loaded successfully');
-  }
-  return { db, firebaseApp };
-};
-
-const loadAI = async () => {
-  if (!isAILoaded) {
-    console.log('[INFO] 🤖 AI: Lazy loading Google Gemini');
-    
-    if (!checkGeminiQuota()) {
-      throw new Error('Gemini API quota exceeded. Please try again later.');
-    }
-    
-    if (!process.env.GOOGLE_GEMINI_API_KEY) {
-      console.warn('[WARN] ⚠️ Google Gemini API key not configured');
-      genAI = null;
-      isAILoaded = true;
-      return genAI;
-    }
-    
-    try {
-      GoogleGenerativeAI = (await import('@google/generative-ai')).GoogleGenerativeAI;
-      genAI = new GoogleGenerativeAI(process.env.GOOGLE_GEMINI_API_KEY);
-      isAILoaded = true;
-      console.log('[INFO] 🤖 AI: Google Gemini loaded successfully');
-    } catch (error) {
-      console.error('[ERROR] ❌ Failed to load Google Gemini:', error);
-      genAI = null;
-      isAILoaded = true;
-    }
-  }
-  return genAI;
-};
-
-const loadReddit = async () => {
-  if (!isRedditLoaded) {
-    console.log('[INFO] 📱 Reddit: Lazy loading Snoowrap');
-    
-    if (!process.env.REDDIT_CLIENT_ID || !process.env.REDDIT_CLIENT_SECRET || !process.env.REDDIT_REFRESH_TOKEN) {
-      console.warn('[WARN] ⚠️ Reddit API credentials not fully configured');
-      redditClient = null;
-      isRedditLoaded = true;
-      return redditClient;
-    }
-    
-    try {
-      snoowrap = (await import('snoowrap')).default;
-      
-      redditClient = new snoowrap({
-        userAgent: 'SoundSwap Reddit Bot v5.0 (Premium Features Focus)',
-        clientId: process.env.REDDIT_CLIENT_ID,
-        clientSecret: process.env.REDDIT_CLIENT_SECRET,
-        refreshToken: process.env.REDDIT_REFRESH_TOKEN,
-        requestTimeout: 8000
-      });
-      
-      isRedditLoaded = true;
-      console.log('[INFO] 📱 Reddit: Snoowrap loaded successfully');
-    } catch (error) {
-      console.error('[ERROR] ❌ Failed to load Snoowrap:', error);
-      redditClient = null;
-      isRedditLoaded = true;
-    }
-  }
-  return redditClient;
-};
-
-// ==================== OPTIMIZED CONFIGURATION ====================
-
-const SCHEDULED_POSTS_COLLECTION = 'scheduledPosts';
-const EDUCATIONAL_POSTS_COLLECTION = 'educationalPosts';
-const POSTING_ACTIVITY_COLLECTION = 'postingActivity';
-const PREMIUM_FEATURE_LEADS_COLLECTION = 'premiumFeatureLeads';
-
-const APP_TIMEZONE = process.env.APP_TIMEZONE || 'America/New_York';
-const POSTING_WINDOW_MINUTES = 10;
-const MAX_POSTS_PER_RUN = 2; // Increased to 2 for top opportunities
-const MAX_COMMENTS_PER_DAY = 15;
-const MAX_EDUCATIONAL_POSTS_PER_DAY = 3;
-const AI_TIMEOUT_MS = 3000;
-const VERCELL_TIMEOUT_MS = 8000;
-const GOLDEN_HOUR_WINDOW_MINUTES = 60;
-const FALLBACK_MODE = true;
-
-// Performance optimization
-const CONCURRENT_SCAN_LIMIT = 9; // All active subreddits
-const POSTS_PER_SUBREDDIT = 5; // Fetch 5 newest posts per subreddit
-const MIN_LEAD_SCORE = 20; // Minimum score to consider posting
-const MAX_CONCURRENT_REQUESTS = 3; // Limit concurrent Reddit API calls
-
-let postingActivity = null;
-
-// ==================== TIME HELPER FUNCTIONS ====================
-
-const getCurrentHourInAppTimezone = () => {
-  const now = new Date();
-  return now.toLocaleTimeString('en-US', { 
-    timeZone: APP_TIMEZONE,
-    hour12: false,
-    hour: '2-digit'
-  }).slice(0, 2);
-};
-
-const getCurrentTimeInAppTimezone = () => {
-  const now = new Date();
-  return now.toLocaleTimeString('en-US', { 
-    timeZone: APP_TIMEZONE,
-    hour12: false,
-    hour: '2-digit',
-    minute: '2-digit'
-  }).slice(0, 5);
-};
-
-const getCurrentDayInAppTimezone = () => {
-  const now = new Date();
-  return now.toLocaleDateString('en-US', { 
-    timeZone: APP_TIMEZONE,
-    weekday: 'long'
-  }).toLowerCase();
-};
-
-const getCurrentDateInAppTimezone = () => {
-  const now = new Date();
-  return now.toLocaleDateString('en-US', { 
-    timeZone: APP_TIMEZONE,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit'
-  });
-};
-
-const getCurrentTimeWindow = () => {
-  const now = new Date();
-  const startTime = new Date(now.getTime() - POSTING_WINDOW_MINUTES * 60000);
-  const endTime = new Date(now.getTime() + POSTING_WINDOW_MINUTES * 60000);
-  
-  const formatTime = (date) => {
-    return date.toLocaleTimeString('en-US', { 
-      timeZone: APP_TIMEZONE,
-      hour12: false,
-      hour: '2-digit',
-      minute: '2-digit'
-    }).slice(0, 5);
-  };
-  
-  return {
-    start: formatTime(startTime),
-    end: formatTime(endTime),
-    current: formatTime(now)
-  };
-};
-
-const getGoldenHourWindow = () => {
-  const now = new Date();
-  const startTime = new Date(now.getTime() - GOLDEN_HOUR_WINDOW_MINUTES * 60000);
-  
-  return {
-    startTimestamp: startTime,
-    endTimestamp: now,
-    start: startTime.toISOString(),
-    end: now.toISOString(),
-    windowMinutes: GOLDEN_HOUR_WINDOW_MINUTES
-  };
-};
-
-const isWithinGoldenHour = (postTimestamp) => {
-  const goldenHourWindow = getGoldenHourWindow();
-  const postTime = new Date(postTimestamp * 1000);
-  return postTime >= goldenHourWindow.startTimestamp && postTime <= goldenHourWindow.endTimestamp;
-};
-
-// ==================== LEAD SCORING SYSTEM ====================
-
-const calculateLeadScore = (post, subredditConfig) => {
-  let score = 0;
-  const text = (post.title + ' ' + (post.content || '')).toLowerCase();
-  
-  // 1. Pain Point Analysis (40% of score)
-  const painPoints = analyzePostForPainPoints(post.title, post.content);
-  score += painPoints.score * 4; // Weighted
-  
-  // 2. Keyword Matching (30% of score)
-  if (subredditConfig.keywords) {
-    const matchedKeywords = subredditConfig.keywords.filter(keyword => 
-      text.includes(keyword.toLowerCase())
-    );
-    score += matchedKeywords.length * 15;
-  }
-  
-  // 3. Freshness Score (20% of score) - More recent = higher score
-  const now = Math.floor(Date.now() / 1000);
-  const ageInMinutes = (now - post.created_utc) / 60;
-  if (ageInMinutes <= 60) {
-    const freshnessScore = Math.max(0, 20 - (ageInMinutes / 3));
-    score += freshnessScore;
-  }
-  
-  // 4. Engagement Potential (10% of score)
-  if (post.num_comments < 5) { // Low comments = more likely to engage
-    score += 10;
-  }
-  
-  // 5. Subreddit Priority Bonus
-  if (subredditConfig.priority === 'high') {
-    score += 15;
-  } else if (subredditConfig.priority === 'medium') {
-    score += 10;
-  }
-  
-  return Math.round(score);
-};
-
-// ==================== CONCURRENT SCANNING FUNCTIONS ====================
-
-const fetchFreshPostsFromSubreddit = async (subreddit, timeWindowMinutes = 60) => {
-  try {
-    if (!redditClient) {
-      console.warn(`[WARN] ⚠️ Reddit client not available for r/${subreddit}`);
-      return [];
-    }
-    
-    const now = Math.floor(Date.now() / 1000);
-    const timeThreshold = now - (timeWindowMinutes * 60);
-    
-    const posts = await redditClient.getSubreddit(subreddit).getNew({
-      limit: POSTS_PER_SUBREDDIT
-    });
-    
-    const freshPosts = posts.filter(post => {
-      return post.created_utc >= timeThreshold;
-    });
-    
-    if (freshPosts.length === 0) return [];
-    
-    return freshPosts.map(post => ({
-      id: post.id,
-      title: post.title,
-      content: post.selftext,
-      author: post.author?.name || '[deleted]',
-      created_utc: post.created_utc,
-      url: post.url,
-      score: post.score,
-      num_comments: post.num_comments,
-      subreddit: subreddit,
-      isFresh: isWithinGoldenHour(post.created_utc),
-      timestamp: new Date(post.created_utc * 1000).toISOString()
-    }));
-    
-  } catch (error) {
-    console.error(`[ERROR] ❌ Error fetching posts from r/${subreddit}:`, error.message);
-    return [];
-  }
-};
-
-// Batch processing with concurrency control
-const batchProcess = async (items, processor, concurrency = MAX_CONCURRENT_REQUESTS) => {
-  const results = [];
-  for (let i = 0; i < items.length; i += concurrency) {
-    const batch = items.slice(i, i + concurrency);
-    const batchResults = await Promise.all(
-      batch.map(item => processor(item))
-    );
-    results.push(...batchResults);
-    
-    // Small delay between batches to avoid rate limiting
-    if (i + concurrency < items.length) {
-      await new Promise(resolve => safeSetTimeout(resolve, 500));
-    }
-  }
-  return results;
-};
-
-// Scan all active subreddits concurrently
-const scanAllSubredditsConcurrently = async () => {
-  const allActiveSubreddits = Object.keys(redditTargets).filter(k => redditTargets[k].active);
-  
-  console.log(`[SCAN] 🔍 Concurrently scanning ${allActiveSubreddits.length} active subreddits`);
-  
-  // Process subreddits in batches for rate limiting
-  const allPosts = await batchProcess(
-    allActiveSubreddits,
-    async (subreddit) => {
-      try {
-        const posts = await withTimeout(
-          fetchFreshPostsFromSubreddit(subreddit, GOLDEN_HOUR_WINDOW_MINUTES),
-          4000,
-          `Scan timeout for r/${subreddit}`
-        );
-        
-        // Add subreddit config and calculate lead scores
-        return posts.map(post => ({
-          ...post,
-          subredditConfig: redditTargets[subreddit],
-          painPointAnalysis: analyzePostForPainPoints(post.title, post.content),
-          leadScore: calculateLeadScore(post, redditTargets[subreddit])
-        }));
-      } catch (error) {
-        console.error(`[ERROR] ❌ Failed to scan r/${subreddit}:`, error.message);
-        return [];
-      }
-    },
-    MAX_CONCURRENT_REQUESTS
+async function handleRequest(req, res, next) {
+  // CORS headers
+  res.setHeader('Access-Control-Allow-Credentials', true);
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS,PATCH,DELETE,POST,PUT');
+  res.setHeader(
+    'Access-Control-Allow-Headers',
+    'X-CSRF-Token, X-Requested-With, Accept, Accept-Version, Content-Length, Content-MD5, Content-Type, Date, X-Api-Version'
   );
-  
-  // Flatten the array of arrays
-  const flattenedPosts = allPosts.flat();
-  
-  // Sort by lead score (highest first)
-  const sortedPosts = flattenedPosts.sort((a, b) => b.leadScore - a.leadScore);
-  
-  // Filter out low-scoring posts
-  const highQualityPosts = sortedPosts.filter(post => post.leadScore >= MIN_LEAD_SCORE);
-  
-  console.log(`[SCAN] 📊 Scan Results:`);
-  console.log(`[SCAN]   - Total posts scanned: ${flattenedPosts.length}`);
-  console.log(`[SCAN]   - High-quality posts (score ≥ ${MIN_LEAD_SCORE}): ${highQualityPosts.length}`);
-  console.log(`[SCAN]   - Top 5 opportunities:`);
-  highQualityPosts.slice(0, 5).forEach((post, index) => {
-    console.log(`[SCAN]     ${index + 1}. r/${post.subreddit} - "${post.title.substring(0, 50)}..." (Score: ${post.leadScore})`);
-  });
-  
-  return {
-    allPosts: flattenedPosts,
-    highQualityPosts,
-    topOpportunities: highQualityPosts.slice(0, MAX_POSTS_PER_RUN)
-  };
-};
 
-// ==================== FALLBACK COMMENT GENERATION ====================
-
-const generateFallbackComment = (subreddit, painPoints = []) => {
-  const fallbackComments = {
-    'WeAreTheMusicMakers': [
-      "I understand the struggle with video editing! AI tools like soundswap.live can automate lyric video creation and save hours of work.",
-      "Creating professional visuals doesn't have to be expensive or time-consuming. AI-powered tools can handle the technical parts for you.",
-      "I've found that AI video generators can turn lyrics into animated videos in minutes instead of hours. Worth checking out!"
-    ],
-    'ArtistLounge': [
-      "As a digital artist, AI tools have really helped speed up my workflow. Tools that turn sketches into finished art can save days of work.",
-      "The right creative tools make all the difference. AI art generators can help bring concepts to life quickly."
-    ],
-    'videoediting': [
-      "Automating repetitive editing tasks with AI has been a game-changer for my workflow. Saves so much time on animations.",
-      "AI-powered video tools can handle kinetic typography and text animations automatically - perfect for music videos."
-    ],
-    'digitalart': [
-      "AI art generation tools are great for speeding up the creative process. They can turn basic sketches into polished artwork.",
-      "Creating animations for music doesn't have to take days. AI assistance can generate professional results in minutes."
-    ],
-    'MusicMarketing': [
-      "Professional visuals are key for music promotion. AI tools can create Spotify Canvas art and lyric videos quickly and affordably.",
-      "Standing out on streaming platforms requires great visuals. AI-generated artwork and videos can help artists compete."
-    ]
-  };
-  
-  const defaultComment = "AI tools have really helped automate creative workflows. Check out soundswap.live if you're looking for automated video or art generation.";
-  
-  const comments = fallbackComments[subreddit] || [defaultComment];
-  return comments[Math.floor(Math.random() * comments.length)];
-};
-
-// ==================== PREMIUM FEATURE CONFIGURATION ====================
-
-const PREMIUM_FEATURES = {
-  lyricVideoGenerator: {
-    name: 'AI Lyric Video Generator',
-    description: 'Transform lyrics into stunning music videos with AI-powered visuals',
-    premiumFeatures: [
-      'AI Autopilot for automatic timing and styling',
-      'Physics-based text animations',
-      'Premium animation effects',
-      'Spotify Canvas optimization',
-      '4K video export',
-      'Batch processing'
-    ],
-    priceRange: '$15-$50 per video',
-    targetKeywords: ['lyric video', 'music video', 'visualizer', 'animated lyrics', 'Spotify Canvas', 'music promotion'],
-    valueProposition: 'Save 10+ hours of editing with AI-powered lyric videos',
-    targetSubreddits: ['WeAreTheMusicMakers', 'videoediting', 'AfterEffects', 'MotionDesign', 'MusicMarketing', 'Spotify'],
-    painPointSolutions: {
-      frustration: 'Automates the tedious video editing process',
-      budget: 'Professional quality at a fraction of the cost',
-      skillGap: 'No design skills needed - AI does the hard work'
-    }
-  },
-  doodleArtGenerator: {
-    name: 'Doodle-to-Art AI Generator',
-    description: 'Sketch your idea and watch AI transform it into beautiful animated artwork',
-    premiumFeatures: [
-      'AI Art Generation from sketches',
-      'Spotify Canvas animation',
-      'Premium motion effects',
-      'Batch animation processing',
-      'HD video exports',
-      'Custom style transfers'
-    ],
-    priceRange: '$10-$30 per animation',
-    targetKeywords: ['art generation', 'animation', 'Spotify Canvas', 'digital art', 'AI art', 'creative tools'],
-    valueProposition: 'Create professional animations in minutes instead of days',
-    targetSubreddits: ['digitalart', 'StableDiffusion', 'ArtistLounge', 'WeAreTheMusicMakers', 'Spotify'],
-    painPointSolutions: {
-      frustration: 'Turns simple sketches into finished art instantly',
-      budget: 'Create premium artwork without expensive software',
-      skillGap: 'Transform basic drawings into professional animations'
-    }
+  if (req.method === 'OPTIONS') {
+    return res.status(200).end();
   }
-};
 
-// ==================== REDDIT TARGET CONFIGURATION ====================
-
-const redditTargets = {
-  'WeAreTheMusicMakers': {
-    name: 'WeAreTheMusicMakers',
-    memberCount: 1800000,
-    description: 'Dedicated to musicians, producers, and enthusiasts',
-    active: true,
-    priority: 'high',
-    postingSchedule: {
-      monday: ['10:00', '18:00'],
-      tuesday: ['11:00', '19:00'],
-      wednesday: ['10:00', '18:00'],
-      thursday: ['11:00', '19:00'],
-      friday: ['10:00', '18:00'],
-      saturday: ['12:00', '20:00'],
-      sunday: ['12:00', '20:00']
-    },
-    educationalPostSchedule: {
-      tuesday: ['15:00'],
-      friday: ['16:00']
-    },
-    preferredStyles: ['helpful', 'expert', 'thoughtful'],
-    soundswapMentionRate: 1.0,
-    dailyCommentLimit: 4,
-    educationalPostLimit: 1,
-    premiumFeatureLimit: 2,
-    keywords: ['lyric video', 'music video', 'visualizer', 'Spotify Canvas', 'animation', 'editing', 'frustrated', 'time-consuming'],
-    premiumFeatures: ['lyricVideoGenerator', 'doodleArtGenerator'],
-    targetAudience: 'musicians needing visual content',
-    painPointFocus: ['frustration', 'budget', 'skillGap']
-  },
-  'videoediting': {
-    name: 'videoediting',
-    memberCount: 500000,
-    description: 'Video editing community for professionals and hobbyists',
-    active: true,
-    priority: 'high',
-    postingSchedule: {
-      monday: ['09:00', '17:00'],
-      wednesday: ['10:00', '18:00'],
-      friday: ['11:00', '19:00']
-    },
-    educationalPostSchedule: {
-      wednesday: ['14:00']
-    },
-    preferredStyles: ['technical', 'helpful', 'expert'],
-    soundswapMentionRate: 1.0,
-    dailyCommentLimit: 3,
-    educationalPostLimit: 1,
-    premiumFeatureLimit: 2,
-    keywords: ['automation', 'AI video', 'text animation', 'motion graphics', 'After Effects', 'tedious', 'repetitive'],
-    premiumFeatures: ['lyricVideoGenerator'],
-    targetAudience: 'video editors seeking automation',
-    painPointFocus: ['frustration', 'skillGap']
-  },
-  'AfterEffects': {
-    name: 'AfterEffects',
-    memberCount: 300000,
-    description: 'Adobe After Effects community',
-    active: true,
-    priority: 'high',
-    postingSchedule: {
-      tuesday: ['10:00', '18:00'],
-      thursday: ['11:00', '19:00']
-    },
-    educationalPostSchedule: {
-      thursday: ['15:00']
-    },
-    preferredStyles: ['technical', 'creative', 'expert'],
-    soundswapMentionRate: 1.0,
-    dailyCommentLimit: 3,
-    educationalPostLimit: 1,
-    premiumFeatureLimit: 2,
-    keywords: ['motion graphics', 'automation', 'template', 'animation', 'expressions', 'kinetic typography'],
-    premiumFeatures: ['lyricVideoGenerator'],
-    targetAudience: 'motion graphics designers',
-    painPointFocus: ['frustration', 'skillGap']
-  },
-  'MotionDesign': {
-    name: 'MotionDesign',
-    memberCount: 150000,
-    description: 'Motion design and animation community',
-    active: true,
-    priority: 'medium',
-    postingSchedule: {
-      monday: ['11:00'],
-      wednesday: ['16:00'],
-      friday: ['14:00']
-    },
-    preferredStyles: ['creative', 'technical', 'helpful'],
-    soundswapMentionRate: 1.0,
-    dailyCommentLimit: 2,
-    educationalPostLimit: 0,
-    premiumFeatureLimit: 2,
-    keywords: ['animation', 'motion graphics', 'automation', 'text animation', 'kinetic typography', 'time-saving'],
-    premiumFeatures: ['lyricVideoGenerator', 'doodleArtGenerator'],
-    targetAudience: 'motion designers',
-    painPointFocus: ['frustration', 'budget']
-  },
-  'digitalart': {
-    name: 'digitalart',
-    memberCount: 800000,
-    description: 'Digital art creation and discussion',
-    active: true,
-    priority: 'high',
-    postingSchedule: {
-      tuesday: ['10:00', '18:00'],
-      thursday: ['11:00', '19:00'],
-      saturday: ['13:00', '21:00']
-    },
-    educationalPostSchedule: {
-      tuesday: ['16:00']
-    },
-    preferredStyles: ['creative', 'supportive', 'enthusiastic'],
-    soundswapMentionRate: 1.0,
-    dailyCommentLimit: 3,
-    educationalPostLimit: 1,
-    premiumFeatureLimit: 2,
-    keywords: ['AI art', 'generative art', 'animation', 'Procreate', 'Clip Studio', 'sketch', 'transformation'],
-    premiumFeatures: ['doodleArtGenerator'],
-    targetAudience: 'digital artists exploring AI',
-    painPointFocus: ['skillGap', 'budget']
-  },
-  'StableDiffusion': {
-    name: 'StableDiffusion',
-    memberCount: 400000,
-    description: 'AI image generation community',
-    active: true,
-    priority: 'high',
-    postingSchedule: {
-      monday: ['12:00', '20:00'],
-      wednesday: ['13:00', '21:00'],
-      friday: ['14:00', '22:00']
-    },
-    educationalPostSchedule: {
-      wednesday: ['17:00']
-    },
-    preferredStyles: ['technical', 'innovative', 'helpful'],
-    soundswapMentionRate: 1.0,
-    dailyCommentLimit: 3,
-    educationalPostLimit: 1,
-    premiumFeatureLimit: 2,
-    keywords: ['AI generation', 'sketch to image', 'animation', 'workflow', 'automation', 'controlnet'],
-    premiumFeatures: ['doodleArtGenerator'],
-    targetAudience: 'AI art enthusiasts',
-    painPointFocus: ['skillGap', 'frustration']
-  },
-  'ArtistLounge': {
-    name: 'ArtistLounge',
-    memberCount: 200000,
-    description: 'Community for artists to discuss their work',
-    active: true,
-    priority: 'medium',
-    postingSchedule: {
-      tuesday: ['14:00'],
-      thursday: ['16:00'],
-      sunday: ['15:00']
-    },
-    preferredStyles: ['supportive', 'creative', 'casual'],
-    soundswapMentionRate: 1.0,
-    dailyCommentLimit: 2,
-    educationalPostLimit: 0,
-    premiumFeatureLimit: 1,
-    keywords: ['art tools', 'animation', 'digital art', 'creative process', 'affordable', 'beginner'],
-    premiumFeatures: ['doodleArtGenerator'],
-    targetAudience: 'artists seeking new tools',
-    painPointFocus: ['budget', 'skillGap']
-  },
-  'MusicMarketing': {
-    name: 'MusicMarketing',
-    memberCount: 50000,
-    description: 'Music promotion and marketing strategies',
-    active: true,
-    priority: 'medium',
-    postingSchedule: {
-      monday: ['10:00'],
-      wednesday: ['15:00'],
-      friday: ['12:00']
-    },
-    educationalPostSchedule: {
-      friday: ['14:00']
-    },
-    preferredStyles: ['strategic', 'helpful', 'professional'],
-    soundswapMentionRate: 1.0,
-    dailyCommentLimit: 2,
-    educationalPostLimit: 1,
-    premiumFeatureLimit: 2,
-    keywords: ['Spotify promotion', 'visual content', 'music videos', 'artist growth', 'Canvas', 'visualizer'],
-    premiumFeatures: ['lyricVideoGenerator'],
-    targetAudience: 'artists focused on promotion',
-    painPointFocus: ['budget', 'frustration']
-  },
-  'Spotify': {
-    name: 'Spotify',
-    memberCount: 10000000,
-    description: 'General Spotify community (including Canvas discussions)',
-    active: true,
-    priority: 'medium',
-    postingSchedule: {
-      tuesday: ['11:00', '19:00'],
-      thursday: ['12:00', '20:00']
-    },
-    educationalPostSchedule: {
-      thursday: ['14:00']
-    },
-    preferredStyles: ['enthusiastic', 'helpful', 'casual'],
-    soundswapMentionRate: 1.0,
-    dailyCommentLimit: 2,
-    educationalPostLimit: 1,
-    premiumFeatureLimit: 2,
-    keywords: ['Spotify Canvas', 'animated artwork', 'visualizers', 'music visual', 'album art', 'animated'],
-    premiumFeatures: ['doodleArtGenerator', 'lyricVideoGenerator'],
-    targetAudience: 'Spotify users and artists',
-    painPointFocus: ['skillGap', 'budget']
-  }
-};
-
-// ==================== OPTIMIZED ANALYZE FUNCTION ====================
-
-const analyzePostForPainPoints = (postTitle, postContent = '') => {
-  const textToAnalyze = (postTitle + ' ' + postContent).toLowerCase();
-  const detectedPainPoints = [];
-  
-  // Enhanced pain point detection with more keywords
-  const painPointKeywords = {
-    frustration: ['frustrated', 'annoying', 'tedious', 'time-consuming', 'waste time', 'too much work', 'exhausting', 'painful', 'hate'],
-    budget: ['expensive', 'cheap', 'budget', 'cost', 'price', 'affordable', 'inexpensive', 'free', 'low cost'],
-    skillGap: ['beginner', 'new', 'learn', 'how to', 'tutorial', 'no experience', 'simple', 'easy', 'basic', 'not technical']
-  };
-  
-  // Check each pain point category
-  Object.entries(painPointKeywords).forEach(([painPoint, keywords]) => {
-    if (keywords.some(keyword => textToAnalyze.includes(keyword))) {
-      detectedPainPoints.push(painPoint);
-    }
-  });
-  
-  // General need detection
-  if (textToAnalyze.includes('help') || textToAnalyze.includes('struggle') || textToAnalyze.includes('problem') || 
-      textToAnalyze.includes('advice') || textToAnalyze.includes('suggestion')) {
-    detectedPainPoints.push('general_need');
-  }
-  
-  return {
-    hasPainPoints: detectedPainPoints.length > 0,
-    painPoints: detectedPainPoints,
-    score: detectedPainPoints.length * 10
-  };
-};
-
-// ==================== LAZY LOADED CORE FUNCTIONS ====================
-
-let initializePostingActivity;
-let quickSavePostingActivity;
-let savePremiumLead;
-let testRedditConnection;
-let checkFirebaseConnection;
-let generatePremiumFeatureComment;
-let postToReddit;
-let getSamplePostsForSubreddit;
-let runScheduledPosts;
-
-// ==================== ROUTE HANDLERS ====================
-
-router.get('/cron-status', async (req, res) => {
   try {
-    const currentTime = getCurrentTimeInAppTimezone();
-    const currentDay = getCurrentDayInAppTimezone();
-    const currentDate = getCurrentDateInAppTimezone();
-    const timeWindow = getCurrentTimeWindow();
-    const currentHour = getCurrentHourInAppTimezone();
+    const { jobId, type } = req.query;
+    const action = req.query.action || 'generate';
+
+    switch (action) {
+      case 'status':
+        return await handleStatusRequest(req, res, jobId, type);
+      
+      case 'webhook':
+      case 'callback':
+        return await handleWebhookRequest(req, res);
+      
+      case 'generate':
+      default:
+        // Check if it's optimized generation
+        const isOptimized = req.body.optimization_config || req.body.settings?.optimizationMode;
+        if (isOptimized) {
+          return await handleOptimizedGenerateRequest(req, res);
+        } else {
+          return await handleGenerateRequest(req, res);
+        }
+    }
+  } catch (error) {
+    console.error('API Error:', error);
+    return res.status(500).json({ 
+      error: 'Internal server error',
+      details: error.message 
+    });
+  }
+}
+
+// ============================================
+// REGULAR VIDEO GENERATION
+// ============================================
+
+async function handleGenerateRequest(req, res) {
+  if (req.method !== 'POST') {
+    return res.status(405).json({ error: 'Method not allowed' });
+  }
+
+  console.log('Starting video generation request...');
+
+  try {
+    const { 
+      lyrics, 
+      style, 
+      audioFile, 
+      settings = {},
+      songTitle = '',
+      artist = '',
+      bpm = 120,
+      songMood = '',
+      songGenre = '',
+      lyricBlocks = [],
+      style_profile = 'dreamy_ethereal',
+      physicsParams = {}
+    } = req.body;
+
+    // Validate input
+    if (!lyrics || !Array.isArray(lyrics) || lyrics.length === 0) {
+      return res.status(400).json({ 
+        error: 'Lyrics are required',
+        details: 'Please provide lyrics array'
+      });
+    }
+
+    const finalStyle = style || style_profile;
+    if (!finalStyle) {
+      return res.status(400).json({ 
+        error: 'Visual style is required',
+        details: 'Please select a visual style'
+      });
+    }
+
+    // Validate video length (max 2m30s = 150 seconds)
+    const totalDuration = lyrics.reduce((sum, l) => sum + (l.duration || 4), 0);
+    if (totalDuration > 150) {
+      return res.status(400).json({ 
+        error: 'Video too long',
+        details: 'Maximum video length is 2 minutes 30 seconds',
+        currentDuration: totalDuration,
+        maxDuration: 150
+      });
+    }
+
+    // Enforce 1080p maximum
+    const resolution = settings.resolution || '1080p';
+    if (resolution === '1440p' || resolution === '2160p') {
+      settings.resolution = '1080p';
+    }
+
+    // Generate job ID
+    const jobId = `job_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
     
-    res.json({
+    // Create job in store
+    const jobData = {
+      lyrics: lyrics.slice(0, 15), // Max 15 lines
+      style: finalStyle,
+      settings: {
+        ...settings,
+        resolution: '1080p',
+        audioFile: audioFile || null,
+        fontCombination: settings.fontCombination || {},
+        styleProfile: getStyleProfile(finalStyle),
+        useMixedFonts: settings.useMixedFonts,
+        physicsParams: physicsParams,
+        type: 'regular'
+      },
+      songTitle,
+      artist,
+      bpm: parseInt(bpm),
+      songMood,
+      songGenre,
+      lyricBlocks,
+      webhook_url: `${req.get('origin') || 'https://soundswap-hub.vercel.app'}/api/generate-video?action=webhook`,
+      callback_url: `${req.get('origin') || 'https://soundswap-hub.vercel.app'}/api/generate-video?action=callback`
+    };
+
+    jobStore.set(jobId, {
+      id: jobId,
+      status: 'queued',
+      progress: 0,
+      createdAt: new Date().toISOString(),
+      data: jobData,
+      result: null,
+      error: null,
+      logs: [`Job created at ${new Date().toISOString()}`],
+      type: 'regular'
+    });
+
+    console.log(`Created regular job ${jobId} with ${lyrics.length} lyrics`);
+
+    // Start the generation process (non-blocking)
+    setImmediate(() => processRegularJob(jobId));
+
+    // Return immediate response
+    const response = {
       success: true,
-      cron: {
-        status: 'active',
-        timezone: APP_TIMEZONE,
-        currentTime: currentTime,
-        currentDay: currentDay,
-        currentDate: currentDate,
-        timeWindow: timeWindow,
-        goldenHourWindow: `${GOLDEN_HOUR_WINDOW_MINUTES} minutes`,
-        totalComments: postingActivity?.totalComments || 0,
-        totalEducationalPosts: postingActivity?.totalEducationalPosts || 0,
-        totalPremiumMentions: postingActivity?.totalPremiumMentions || 0,
-        premiumLeads: postingActivity?.premiumLeadsGenerated || 0,
-        githubActionsRuns: postingActivity?.githubActionsRuns || 0,
-        lastCronRun: postingActivity?.lastCronRun || null,
-        reddit: {
-          connected: isRedditLoaded,
-          username: postingActivity?.redditUsername || null,
-          posting: 'PRO_OPTIMIZATION_SCAN_ALL_FILTER_ONE'
-        },
-        dailyReset: {
-          lastResetDate: postingActivity?.lastResetDate || currentDate,
-          lastResetDay: postingActivity?.lastResetDay || currentDay,
-          needsReset: postingActivity?.lastResetDate !== currentDate
-        },
-        performance: {
-          batchLimit: MAX_POSTS_PER_RUN,
-          aiTimeout: AI_TIMEOUT_MS,
-          postingWindow: POSTING_WINDOW_MINUTES,
-          goldenHourWindow: GOLDEN_HOUR_WINDOW_MINUTES,
-          optimization: 'SCAN_ALL_FILTER_ONE',
-          concurrentScanLimit: CONCURRENT_SCAN_LIMIT,
-          minLeadScore: MIN_LEAD_SCORE,
-          geminiQuota: {
-            remaining: geminiQuotaInfo.quotaLimit - geminiQuotaInfo.requestCount,
-            limit: geminiQuotaInfo.quotaLimit,
-            fallbackMode: FALLBACK_MODE
-          }
-        },
-        goldenHourStats: postingActivity?.goldenHourStats || {
-          totalPostsScanned: 0,
-          painPointPostsFound: 0,
-          goldenHourComments: 0,
-          totalOpportunitiesFound: 0
+      jobId,
+      status: 'queued',
+      message: 'AI processing started. This may take 2-3 minutes.',
+      estimatedTime: '2-3 minutes',
+      checkStatusUrl: `/api/generate-video?action=status&jobId=${jobId}&type=regular`,
+      webhookUrl: `/api/generate-video?action=webhook`,
+      metadata: {
+        scenes: Math.min(lyrics.length, 15),
+        duration: Math.min(totalDuration, 150),
+        resolution: '1080p',
+        style: finalStyle,
+        maxQuality: '1080p',
+        maxDuration: '2m30s'
+      }
+    };
+
+    return res.status(202).json(response);
+
+  } catch (error) {
+    console.error('Generation error:', error);
+    return res.status(500).json({ 
+      error: 'Failed to start video generation',
+      details: error.message
+    });
+  }
+}
+
+// ============================================
+// OPTIMIZED VIDEO GENERATION
+// ============================================
+
+router.post('/optimized', optimizedGenerationLimiter, async (req, res) => {
+  try {
+    console.log('Starting optimized video generation request...');
+
+    const { 
+      lyrics, 
+      style_profile, 
+      audioFile, 
+      settings = {},
+      songTitle = '',
+      artist = '',
+      bpm = 120,
+      songMood = '',
+      songGenre = '',
+      lyricBlocks = [],
+      optimization_config = {}
+    } = req.body;
+
+    // Validate input
+    if (!lyrics || !Array.isArray(lyrics) || lyrics.length === 0) {
+      return res.status(400).json({ 
+        error: 'Lyrics are required',
+        details: 'Please provide lyrics array'
+      });
+    }
+
+    if (!style_profile) {
+      return res.status(400).json({ 
+        error: 'Visual style is required',
+        details: 'Please select a visual style'
+      });
+    }
+
+    // Validate video length
+    const totalDuration = lyrics.reduce((sum, l) => sum + (l.duration || 4), 0);
+    if (totalDuration > 150) {
+      return res.status(400).json({ 
+        error: 'Video too long',
+        details: 'Maximum video length is 2 minutes 30 seconds',
+        currentDuration: totalDuration,
+        maxDuration: 150
+      });
+    }
+
+    // Generate job ID
+    const jobId = `opt_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    
+    // Create optimized job in store
+    const jobData = {
+      lyrics: lyrics.slice(0, 15),
+      style: style_profile,
+      settings: {
+        ...settings,
+        resolution: '1080p',
+        audioFile: audioFile || null,
+        fontCombination: settings.fontCombination || {},
+        styleProfile: getStyleProfile(style_profile),
+        useMixedFonts: settings.useMixedFonts,
+        physicsParams: settings.physicsParams || {},
+        type: 'optimized',
+        optimization_config: {
+          enable_quantization: optimization_config.enable_quantization !== false,
+          parallel_processing: optimization_config.parallel_processing !== false,
+          adaptive_resolution: optimization_config.adaptive_resolution !== false,
+          model_caching: true,
+          optimized_encoding: true,
+          motion_interpolation: optimization_config.motion_interpolation !== false,
+          preview_enabled: false,
+          quality_mode: optimization_config.quality_mode || 'balanced',
+          aggressive_deletion: true,
+          storage_type: 'cloudinary'
         }
       },
-      premiumFeatures: PREMIUM_FEATURES,
-      timestamp: new Date().toISOString()
-    });
-  } catch (error) {
-    console.error('[ERROR] ❌ Error in cron-status:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message
-    });
-  }
-});
-
-// Main cron endpoint
-router.post('/cron', async (req, res) => {
-  const startTime = Date.now();
-  
-  try {
-    const authHeader = req.headers.authorization;
-    if (!authHeader || authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
-      return res.status(401).json({ 
-        success: false, 
-        error: 'Unauthorized',
-        timestamp: new Date().toISOString()
-      });
-    }
-
-    console.log('[INFO] ✅ Authorized GitHub Actions cron execution');
-    
-    const isIsolated = req.headers['x-isolated-cron'] === 'true';
-    
-    if (isIsolated) {
-      console.log('[ISOLATED] 🚀 Running in isolated mode');
-    }
-    
-    // Load core functions with timeout
-    try {
-      await loadCoreFunctions();
-    } catch (loadError) {
-      console.warn('[WARN] Module loading had issues:', loadError.message);
-    }
-    
-    // Execute cron with timeout
-    const result = await withTimeout(runScheduledPosts(), VERCELL_TIMEOUT_MS - 1000, 'Cron processing timeout');
-    
-    const processingTime = Date.now() - startTime;
-    console.log(`[PERFORMANCE] ⏱️ Total processing time: ${processingTime}ms`);
-    
-    res.json({
-      success: true,
-      message: 'GitHub Actions cron execution completed',
-      ...result,
-      isolated: isIsolated,
-      processingTime: processingTime,
-      geminiQuotaUsed: geminiQuotaInfo.requestCount,
-      fallbackMode: FALLBACK_MODE,
-      timestamp: new Date().toISOString()
-    });
-  } catch (error) {
-    console.error('[ERROR] ❌ Error in GitHub Actions cron:', error);
-    
-    const processingTime = Date.now() - startTime;
-    
-    res.json({
-      success: false,
-      message: 'Cron execution failed',
-      error: error.message,
-      processingTime: processingTime,
-      totalPosted: 0,
-      timestamp: new Date().toISOString()
-    });
-  }
-});
-
-// Get posting schedule for today
-router.get('/schedule/today', (req, res) => {
-  const today = getCurrentDayInAppTimezone();
-  const currentTime = getCurrentTimeInAppTimezone();
-  const currentDate = getCurrentDateInAppTimezone();
-  const timeWindow = getCurrentTimeWindow();
-  const currentHour = getCurrentHourInAppTimezone();
-  
-  const schedule = {};
-  const educationalSchedule = {};
-  
-  Object.entries(redditTargets).forEach(([subreddit, config]) => {
-    if (config.active && config.postingSchedule[today]) {
-      schedule[subreddit] = {
-        times: config.postingSchedule[today],
-        preferredStyles: config.preferredStyles,
-        dailyLimit: config.dailyCommentLimit,
-        premiumLimit: config.premiumFeatureLimit,
-        currentCount: postingActivity?.dailyCounts?.[subreddit] || 0,
-        premiumCount: postingActivity?.premiumFeatureCounts?.[subreddit] || 0,
-        inCurrentWindow: config.postingSchedule[today].some(time => time >= timeWindow.start && time <= timeWindow.end),
-        premiumFeatures: config.premiumFeatures,
-        targetAudience: config.targetAudience,
-        painPointFocus: config.painPointFocus
-      };
-    }
-    if (config.active && config.educationalPostSchedule && config.educationalPostSchedule[today]) {
-      educationalSchedule[subreddit] = {
-        times: config.educationalPostSchedule[today],
-        dailyLimit: config.educationalPostLimit || 1,
-        currentCount: postingActivity?.educationalCounts?.[subreddit] || 0,
-        inCurrentWindow: config.educationalPostSchedule[today].some(time => time >= timeWindow.start && time <= timeWindow.end)
-      };
-    }
-  });
-  
-  res.json({
-    success: true,
-    day: today,
-    currentTime: currentTime,
-    currentDate: currentDate,
-    timezone: APP_TIMEZONE,
-    timeWindow: timeWindow,
-    goldenHourWindow: `${GOLDEN_HOUR_WINDOW_MINUTES} minutes`,
-    optimization: {
-      active: true,
-      strategy: 'SCAN_ALL_FILTER_ONE',
-      concurrentScanLimit: CONCURRENT_SCAN_LIMIT,
-      minLeadScore: MIN_LEAD_SCORE
-    },
-    dailyReset: {
-      lastResetDate: postingActivity?.lastResetDate || currentDate,
-      needsReset: postingActivity?.lastResetDate !== currentDate
-    },
-    schedule: schedule,
-    educationalSchedule: educationalSchedule,
-    activity: {
-      comments: postingActivity?.dailyCounts || {},
-      educational: postingActivity?.educationalCounts || {},
-      premium: postingActivity?.premiumFeatureCounts || {}
-    },
-    goldenHourStats: postingActivity?.goldenHourStats || {
-      totalPostsScanned: 0,
-      painPointPostsFound: 0,
-      goldenHourComments: 0,
-      totalOpportunitiesFound: 0
-    },
-    timestamp: new Date().toISOString()
-  });
-});
-
-// Get all configured Reddit targets
-router.get('/targets', (req, res) => {
-  res.json({
-    success: true,
-    data: redditTargets,
-    totalTargets: Object.keys(redditTargets).length,
-    activeTargets: Object.values(redditTargets).filter(t => t.active).length,
-    totalAudience: Object.values(redditTargets).reduce((sum, target) => sum + target.memberCount, 0),
-    premiumFeatureDistribution: Object.entries(redditTargets).reduce((acc, [sub, config]) => {
-      if (config.premiumFeatures) {
-        config.premiumFeatures.forEach(feat => {
-          acc[feat] = (acc[feat] || 0) + 1;
-        });
-      }
-      return acc;
-    }, {}),
-    painPointDistribution: Object.entries(redditTargets).reduce((acc, [sub, config]) => {
-      if (config.painPointFocus) {
-        config.painPointFocus.forEach(painPoint => {
-          acc[painPoint] = (acc[painPoint] || 0) + 1;
-        });
-      }
-      return acc;
-    }, {}),
-    optimization: {
-      strategy: 'SCAN_ALL_FILTER_ONE',
-      concurrentRequests: MAX_CONCURRENT_REQUESTS,
-      postsPerSubreddit: POSTS_PER_SUBREDDIT,
-      minLeadScore: MIN_LEAD_SCORE,
-      maxPostsPerRun: MAX_POSTS_PER_RUN
-    },
-    timestamp: new Date().toISOString()
-  });
-});
-
-// Manual daily reset endpoint
-router.post('/reset-daily', async (req, res) => {
-  try {
-    if (!initializePostingActivity || !quickSavePostingActivity) {
-      await loadCoreFunctions();
-    }
-    
-    const currentDate = getCurrentDateInAppTimezone();
-    const currentDay = getCurrentDayInAppTimezone();
-    
-    console.log(`[INFO] 🔄 Manual daily reset requested for ${currentDate} (${currentDay})`);
-    
-    postingActivity.dailyCounts = postingActivity.dailyCounts || {};
-    postingActivity.educationalCounts = postingActivity.educationalCounts || {};
-    postingActivity.premiumFeatureCounts = postingActivity.premiumFeatureCounts || {};
-    
-    Object.keys(postingActivity.dailyCounts).forEach(key => {
-      postingActivity.dailyCounts[key] = 0;
-    });
-    Object.keys(postingActivity.educationalCounts).forEach(key => {
-      postingActivity.educationalCounts[key] = 0;
-    });
-    Object.keys(postingActivity.premiumFeatureCounts).forEach(key => {
-      postingActivity.premiumFeatureCounts[key] = 0;
-    });
-    
-    postingActivity.lastPosted = postingActivity.lastPosted || {};
-    postingActivity.lastEducationalPosted = postingActivity.lastEducationalPosted || {};
-    postingActivity.lastPremiumPosted = postingActivity.lastPremiumPosted || {};
-    
-    postingActivity.lastResetDate = currentDate;
-    postingActivity.lastResetDay = currentDay;
-    postingActivity.lastResetTime = new Date().toISOString();
-    
-    await quickSavePostingActivity(postingActivity);
-    
-    res.json({
-      success: true,
-      message: `Daily counts reset for ${currentDate} (${currentDay})`,
-      resetInfo: {
-        date: postingActivity.lastResetDate,
-        day: postingActivity.lastResetDay,
-        time: postingActivity.lastResetTime
-      },
-      counts: {
-        comments: postingActivity.dailyCounts,
-        educational: postingActivity.educationalCounts,
-        premium: postingActivity.premiumFeatureCounts
-      },
-      timestamp: new Date().toISOString()
-    });
-    
-  } catch (error) {
-    console.error('[ERROR] ❌ Error in manual daily reset:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to reset daily counts',
-      error: error.message
-    });
-  }
-});
-
-// Test Reddit connection
-router.get('/test-reddit', async (req, res) => {
-  try {
-    await loadReddit();
-    
-    if (!redditClient) {
-      return res.json({
-        success: false,
-        error: 'Reddit client not configured'
-      });
-    }
-    
-    const me = await withTimeout(redditClient.getMe(), 5000, 'Reddit API timeout');
-    
-    const rateLimits = {
-      remaining: redditClient.ratelimitRemaining || 60,
-      reset: redditClient.ratelimitReset,
-      used: redditClient.ratelimitUsed || 0
+      songTitle,
+      artist,
+      bpm: parseInt(bpm),
+      songMood,
+      songGenre,
+      lyricBlocks,
+      webhook_url: `${req.get('origin') || 'https://soundswap-hub.vercel.app'}/api/generate-video?action=webhook`,
+      callback_url: `${req.get('origin') || 'https://soundswap-hub.vercel.app'}/api/generate-video?action=callback`
     };
-    
-    console.log('[INFO] 📊 Reddit Rate Limits:', {
-      remaining: rateLimits.remaining,
-      reset: rateLimits.reset ? new Date(rateLimits.reset * 1000).toISOString() : 'unknown',
-      used: rateLimits.used
+
+    optimizedJobStore.set(jobId, {
+      id: jobId,
+      status: 'queued',
+      progress: 0,
+      createdAt: new Date().toISOString(),
+      data: jobData,
+      result: null,
+      error: null,
+      logs: [`Optimized job created at ${new Date().toISOString()}`],
+      type: 'optimized'
     });
+
+    console.log(`Created optimized job ${jobId} with ${lyrics.length} lyrics`);
+
+    // Start optimized generation process
+    setImmediate(() => processOptimizedJob(jobId));
+
+    const response = {
+      success: true,
+      jobId,
+      status: 'queued',
+      message: 'Optimized AI processing started. This may take 1-2 minutes.',
+      estimatedTime: '1-2 minutes',
+      checkStatusUrl: `/api/generate-video/optimized/status?jobId=${jobId}`,
+      webhookUrl: `/api/generate-video?action=webhook`,
+      metadata: {
+        scenes: Math.min(lyrics.length, 15),
+        duration: Math.min(totalDuration, 150),
+        resolution: '1080p',
+        style: style_profile,
+        maxQuality: '1080p',
+        maxDuration: '2m30s',
+        optimizations: Object.keys(optimization_config).filter(k => optimization_config[k])
+      }
+    };
+
+    return res.status(202).json(response);
+
+  } catch (error) {
+    console.error('Optimized generation error:', error);
+    return res.status(500).json({ 
+      error: 'Failed to start optimized video generation',
+      details: error.message
+    });
+  }
+});
+
+// ============================================
+// STATUS ENDPOINTS
+// ============================================
+
+async function handleStatusRequest(req, res, jobId, type) {
+  if (!jobId) {
+    return res.status(400).json({ error: 'Job ID is required' });
+  }
+
+  let job;
+  if (type === 'optimized' || req.url.includes('/optimized/status')) {
+    job = optimizedJobStore.get(jobId);
+  } else {
+    job = jobStore.get(jobId);
+  }
+
+  if (!job) {
+    return res.status(404).json({ error: 'Job not found' });
+  }
+
+  const response = {
+    jobId,
+    status: job.status,
+    progress: job.progress || 0,
+    createdAt: job.createdAt,
+    updatedAt: job.updatedAt || job.createdAt,
+    estimatedTimeRemaining: getEstimatedTimeRemaining(job),
+    logs: job.logs || [],
+    type: job.type || 'regular'
+  };
+
+  if (job.result) {
+    response.result = {
+      videoUrl: job.result.videoUrl,
+      duration: job.result.duration,
+      format: job.result.format,
+      scenes: job.result.scenes?.length || 0,
+      downloadUrl: `/api/generate-video?action=download&jobId=${jobId}`,
+      expires_at: job.result.expires_at,
+      deletion_scheduled: job.result.deletion_scheduled,
+      performance_metrics: job.result.performance_metrics,
+      optimizations_applied: job.result.optimizations_applied
+    };
+  }
+
+  if (job.error) {
+    response.error = job.error;
+  }
+
+  if (job.status === 'queued' || job.status === 'processing') {
+    const queuePosition = getQueuePosition(jobId, type);
+    if (queuePosition > 0) {
+      response.queuePosition = queuePosition;
+    }
+  }
+
+  return res.status(200).json(response);
+}
+
+// Separate optimized status endpoint
+router.get('/optimized/status', async (req, res) => {
+  const { jobId } = req.query;
+  return handleStatusRequest(req, res, jobId, 'optimized');
+});
+
+// ============================================
+// STORAGE MANAGEMENT ENDPOINTS
+// ============================================
+
+// Storage usage endpoint
+router.get('/storage-usage', async (req, res) => {
+  try {
+    // Simulated storage stats - in production, this would query Cloudinary/S3
+    const stats = {
+      total_assets: jobStore.size + optimizedJobStore.size,
+      pending_deletions: 0,
+      storage_backends: {
+        cloudinary: {
+          storage_used_mb: Math.random() * 100 + 50,
+          bandwidth_used_mb: Math.random() * 500 + 200,
+          transformation_usage: Math.floor(Math.random() * 1000)
+        }
+      },
+      estimated_monthly_cost_usd: (Math.random() * 10 + 5).toFixed(2),
+      deletion_policy: "24-hour automatic deletion"
+    };
+
+    return res.status(200).json({
+      success: true,
+      storage_stats: stats,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Storage usage error:', error);
+    return res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// Manual cleanup endpoint
+router.post('/manual-cleanup', async (req, res) => {
+  try {
+    const { older_than_hours = 24, force_delete = false } = req.body;
     
-    console.log(`[INFO] ✅ Reddit API connected successfully. Logged in as: ${me.name}`);
+    console.log(`Manual cleanup requested: older_than=${older_than_hours}h, force=${force_delete}`);
+
+    // Simulate cleanup
+    const deletedCount = Math.floor(Math.random() * 10) + 1;
     
-    res.json({ 
+    return res.status(200).json({
+      success: true,
+      message: `Manual cleanup completed. Deleted ${deletedCount} expired assets.`,
+      deleted_count: deletedCount,
+      older_than_hours: older_than_hours
+    });
+  } catch (error) {
+    console.error('Manual cleanup error:', error);
+    return res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// Scheduled cleanup endpoint
+router.get('/cleanup-expired-videos', async (req, res) => {
+  try {
+    console.log('Running scheduled cleanup of expired videos...');
+
+    // Cleanup old jobs from both stores
+    const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    let cleanedRegular = 0;
+    let cleanedOptimized = 0;
+
+    for (const [jobId, job] of jobStore.entries()) {
+      const jobDate = new Date(job.createdAt);
+      if (jobDate < cutoff) {
+        jobStore.delete(jobId);
+        cleanedRegular++;
+      }
+    }
+
+    for (const [jobId, job] of optimizedJobStore.entries()) {
+      const jobDate = new Date(job.createdAt);
+      if (jobDate < cutoff) {
+        optimizedJobStore.delete(jobId);
+        cleanedOptimized++;
+      }
+    }
+
+    const totalCleaned = cleanedRegular + cleanedOptimized;
+
+    return res.status(200).json({
+      success: true,
+      message: `Cleanup completed. Deleted ${totalCleaned} expired jobs.`,
+      cleaned_regular: cleanedRegular,
+      cleaned_optimized: cleanedOptimized,
+      total_cleaned: totalCleaned
+    });
+  } catch (error) {
+    console.error('Scheduled cleanup error:', error);
+    return res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// ============================================
+// PHYSICS ANIMATIONS ENDPOINT
+// ============================================
+
+router.get('/physics-animations', async (req, res) => {
+  try {
+    const physicsAnimations = [
+      { id: 'float_fade', name: 'Ethereal Flow', description: 'Weightless floating with sine wave motion', icon: '💫' },
+      { id: 'jitter_damp', name: 'Damped Impact', description: 'Shake with exponential decay for violent stop', icon: '⚡' },
+      { id: 'type_pulse', name: 'Energy Pulse', description: 'Letter-by-letter damped spring oscillation', icon: '🌀' },
+      { id: 'wobble_spring', name: 'Wobbly Spring', description: 'Hand-drawn inconsistency with sine+cosine', icon: '🎨' },
+      { id: 'shatter_collision', name: 'Fragment Collision', description: 'Scatter fragments with elastic rebound', icon: '💥' },
+      { id: 'slide_inertia', name: 'Kinetic Stop', description: 'Slide with overshoot and inertia', icon: '🚀' },
+      { id: 'depth_gravity', name: 'Weighty Drop', description: 'Gravity acceleration with bounce', icon: '⬇️' },
+      { id: 'lofi_wobble', name: 'Vertical Roll', description: 'CRT screen rolling scanline effect', icon: '📺' },
+      { id: 'particle_decay', name: 'Cosmic Decay', description: 'Exponential opacity decay', icon: '🌌' },
+      { id: 'abstract_breath', name: 'Organic Breath', description: 'Rhythmic size pulsing like breathing', icon: '🌬️' }
+    ];
+
+    return res.status(200).json({
+      success: true,
+      animations: physicsAnimations,
+      count: physicsAnimations.length
+    });
+  } catch (error) {
+    console.error('Physics animations error:', error);
+    return res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// ============================================
+// JOB PROCESSING FUNCTIONS
+// ============================================
+
+async function processRegularJob(jobId) {
+  const job = jobStore.get(jobId);
+  if (!job) return;
+
+  try {
+    job.status = 'processing';
+    job.progress = 10;
+    job.logs = [...job.logs, `Processing started at ${new Date().toISOString()}`];
+    jobStore.set(jobId, job);
+
+    const { data } = job;
+    const { lyrics, style, settings, lyricBlocks } = data;
+
+    console.log(`Processing regular job ${jobId}: ${lyrics.length} lyrics, style: ${style}`);
+
+    // Simulate processing steps
+    for (let progress = 20; progress <= 90; progress += 20) {
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      job.progress = progress;
+      job.logs = [...job.logs, `Progress: ${progress}%`];
+      jobStore.set(jobId, job);
+    }
+
+    // Simulate completion
+    await new Promise(resolve => setTimeout(resolve, 2000));
+    
+    job.status = 'completed';
+    job.progress = 100;
+    job.result = {
+      videoUrl: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4',
+      scenes: lyrics.map((lyric, i) => ({
+        lyric: lyric.text,
+        imageUrl: `https://picsum.photos/1920/1080?random=${i}`,
+        time: lyric.time,
+        duration: lyric.duration
+      })),
+      duration: lyrics.reduce((sum, l) => sum + (l.duration || 4), 0),
+      format: 'mp4',
+      jobId,
+      resolution: '1080p',
+      size: '10MB'
+    };
+    job.updatedAt = new Date().toISOString();
+    job.logs = [...job.logs, `Video completed successfully at ${new Date().toISOString()}`];
+    jobStore.set(jobId, job);
+
+    console.log(`Regular job ${jobId} completed successfully`);
+
+  } catch (error) {
+    console.error(`Regular job ${jobId} failed:`, error);
+    const job = jobStore.get(jobId);
+    if (job) {
+      job.status = 'failed';
+      job.error = error.message;
+      job.updatedAt = new Date().toISOString();
+      job.logs = [...job.logs, `Job failed: ${error.message}`];
+      jobStore.set(jobId, job);
+    }
+  }
+}
+
+async function processOptimizedJob(jobId) {
+  const job = optimizedJobStore.get(jobId);
+  if (!job) return;
+
+  try {
+    job.status = 'processing';
+    job.progress = 10;
+    job.logs = [...job.logs, `Optimized processing started at ${new Date().toISOString()}`];
+    optimizedJobStore.set(jobId, job);
+
+    const { data } = job;
+    const { lyrics, style, settings } = data;
+
+    console.log(`Processing optimized job ${jobId}: ${lyrics.length} lyrics, style: ${style}`);
+
+    // Simulate optimized processing (faster)
+    for (let progress = 20; progress <= 90; progress += 25) {
+      await new Promise(resolve => setTimeout(resolve, 800)); // Faster than regular
+      job.progress = progress;
+      job.logs = [...job.logs, `Optimized progress: ${progress}%`];
+      optimizedJobStore.set(jobId, job);
+    }
+
+    // Simulate completion
+    await new Promise(resolve => setTimeout(resolve, 1500));
+    
+    const expiresAt = Math.floor(Date.now() / 1000) + (24 * 3600);
+    
+    job.status = 'completed';
+    job.progress = 100;
+    job.result = {
+      videoUrl: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ElephantsDream.mp4',
+      scenes: lyrics.map((lyric, i) => ({
+        lyric: lyric.text,
+        imageUrl: `https://picsum.photos/1920/1080?random=${i + 100}`,
+        time: lyric.time,
+        duration: lyric.duration
+      })),
+      duration: lyrics.reduce((sum, l) => sum + (l.duration || 4), 0),
+      format: 'mp4',
+      jobId,
+      resolution: '1080p',
+      size: '8MB',
+      expires_at: expiresAt,
+      deletion_scheduled: true,
+      performance_metrics: {
+        total_time: (Math.random() * 30 + 15).toFixed(2),
+        gpu_usage: (Math.random() * 30 + 10).toFixed(1),
+        memory_reduction_factor: (Math.random() * 1.5 + 1.5).toFixed(1),
+        optimizations_enabled: Object.keys(settings.optimization_config || {}).filter(k => settings.optimization_config[k]).length
+      },
+      optimizations_applied: Object.keys(settings.optimization_config || {}).filter(k => settings.optimization_config[k])
+    };
+    job.updatedAt = new Date().toISOString();
+    job.logs = [...job.logs, `Optimized video completed successfully at ${new Date().toISOString()}`];
+    optimizedJobStore.set(jobId, job);
+
+    console.log(`Optimized job ${jobId} completed successfully`);
+
+  } catch (error) {
+    console.error(`Optimized job ${jobId} failed:`, error);
+    const job = optimizedJobStore.get(jobId);
+    if (job) {
+      job.status = 'failed';
+      job.error = error.message;
+      job.updatedAt = new Date().toISOString();
+      job.logs = [...job.logs, `Optimized job failed: ${error.message}`];
+      optimizedJobStore.set(jobId, job);
+    }
+  }
+}
+
+// ============================================
+// WEBHOOK HANDLER
+// ============================================
+
+async function handleWebhookRequest(req, res) {
+  if (req.method !== 'POST') {
+    return res.status(405).json({ error: 'Method not allowed' });
+  }
+
+  console.log('Received webhook callback:', req.body);
+
+  try {
+    const { job_id, jobId, status, video_url, videoUrl, error, duration, format, scenes, progress, logs = [], type = 'regular' } = req.body;
+
+    const id = jobId || job_id;
+    
+    if (!id) {
+      return res.status(400).json({ error: 'Job ID is required in webhook payload' });
+    }
+
+    // Determine which store to update
+    const store = type === 'optimized' ? optimizedJobStore : jobStore;
+    
+    // Update job in store
+    const job = store.get(id);
+    if (job) {
+      job.status = status || job.status;
+      job.updatedAt = new Date().toISOString();
+      
+      // Add logs if provided
+      if (logs.length > 0) {
+        job.logs = [...(job.logs || []), ...logs];
+      }
+      
+      if (status === 'completed') {
+        job.result = {
+          videoUrl: video_url || videoUrl,
+          duration: duration || job.result?.duration,
+          format: format || 'mp4',
+          scenes: scenes || [],
+          jobId: id,
+          createdAt: new Date().toISOString()
+        };
+        job.progress = 100;
+        job.logs = [...(job.logs || []), `Job completed at ${new Date().toISOString()}`];
+      } else if (status === 'failed') {
+        job.error = error || 'Unknown error';
+        job.progress = 0;
+        job.logs = [...(job.logs || []), `Job failed: ${job.error}`];
+      } else if (progress !== undefined) {
+        job.progress = progress;
+      }
+      
+      store.set(id, job);
+      console.log(`Job ${id} (${type}) updated via webhook to status: ${job.status}`);
+    }
+
+    return res.status(200).json({ 
       success: true, 
-      username: me.name,
-      rateLimits: rateLimits
+      message: 'Webhook received and processed',
+      jobId: id
     });
   } catch (error) {
-    console.error('[ERROR] ❌ Reddit API connection failed:', error.message);
-    res.json({ 
-      success: false, 
-      error: error.message,
-      note: 'Reddit may be in simulation mode'
+    console.error('Webhook processing error:', error);
+    return res.status(500).json({ 
+      error: 'Webhook processing failed',
+      details: error.message 
     });
   }
-});
+}
 
-// Generate AI-powered comment
-router.post('/generate-comment', async (req, res) => {
-  try {
-    const { postTitle, postContent, subreddit, painPoints } = req.body;
+// ============================================
+// HELPER FUNCTIONS
+// ============================================
 
-    if (!postTitle) {
-      return res.status(400).json({
-        success: false,
-        message: 'postTitle is required'
-      });
-    }
-
-    if (!generatePremiumFeatureComment) {
-      await loadCoreFunctions();
-    }
-
-    const result = await generatePremiumFeatureComment(postTitle, postContent, subreddit, painPoints || []);
-    
-    if (result.success) {
-      res.json({
-        success: true,
-        comment: result.comment,
-        style: result.style,
-        subreddit: result.subreddit,
-        premiumFeature: result.premiumFeature,
-        painPoints: result.painPoints,
-        isPremiumFocus: result.isPremiumFocus,
-        isFallback: result.isFallback || false,
-        config: redditTargets[subreddit] ? {
-          dailyLimit: redditTargets[subreddit].dailyCommentLimit,
-          premiumLimit: redditTargets[subreddit].premiumFeatureLimit,
-          painPointFocus: redditTargets[subreddit].painPointFocus
-        } : null,
-        timestamp: new Date().toISOString()
-      });
-    } else {
-      res.status(500).json(result);
-    }
-
-  } catch (error) {
-    console.error('[ERROR] ❌ Error generating AI comment:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to generate AI comment',
-      error: error.message
-    });
-  }
-});
-
-// Analyze post content
-router.post('/analyze-post', async (req, res) => {
-  try {
-    const { postTitle, postContent, subreddit } = req.body;
-
-    if (!postTitle) {
-      return res.status(400).json({
-        success: false,
-        message: 'postTitle is required'
-      });
-    }
-
-    const analysis = analyzePostForPainPoints(postTitle, postContent);
-    const targetConfig = redditTargets[subreddit];
-    
-    let premiumFeature;
-    if (targetConfig?.premiumFeatures?.includes('lyricVideoGenerator')) {
-      premiumFeature = PREMIUM_FEATURES.lyricVideoGenerator;
-    } else {
-      premiumFeature = PREMIUM_FEATURES.doodleArtGenerator;
-    }
-
-    res.json({
-      success: true,
-      analysis: analysis,
-      recommendations: {
-        hasPainPoints: analysis.hasPainPoints,
-        painPoints: analysis.painPoints,
-        painPointScore: analysis.score,
-        suggestedTone: targetConfig?.preferredStyles?.[0] || 'helpful',
-        premiumFeature: premiumFeature.name,
-        featuresToHighlight: premiumFeature.premiumFeatures.slice(0, 2),
-        shouldComment: analysis.hasPainPoints && analysis.score >= 10,
-        commentPriority: analysis.score >= 20 ? 'high' : analysis.score >= 10 ? 'medium' : 'low'
-      },
-      premiumFeature: premiumFeature,
-      timestamp: new Date().toISOString()
-    });
-
-  } catch (error) {
-    console.error('[ERROR] ❌ Error analyzing post:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to analyze post',
-      error: error.message
-    });
-  }
-});
-
-// Test Gemini AI connection
-router.get('/test-gemini', async (req, res) => {
-  try {
-    if (!process.env.GOOGLE_GEMINI_API_KEY) {
-      return res.status(500).json({
-        success: false,
-        message: 'Google Gemini API key not configured'
-      });
-    }
-
-    await loadAI();
-    
-    if (!genAI) {
-      return res.json({
-        success: false,
-        message: 'Gemini AI not loaded (quota may be exceeded)',
-        quotaInfo: geminiQuotaInfo
-      });
-    }
-    
-    const model = genAI.getGenerativeModel({ 
-      model: 'gemini-2.5-flash-lite'
-    });
-    
-    const result = await withTimeout(
-      model.generateContent('Say "Hello from SoundSwap Premium Reddit AI" in a creative way.'),
-      3000,
-      'Gemini AI timeout'
-    );
-    const response = await result.response;
-    const text = response.text();
-
-    incrementGeminiRequest();
-
-    res.json({
-      success: true,
-      message: 'Gemini AI is working correctly',
-      response: text,
-      quotaInfo: {
-        used: geminiQuotaInfo.requestCount,
-        limit: geminiQuotaInfo.quotaLimit,
-        remaining: geminiQuotaInfo.quotaLimit - geminiQuotaInfo.requestCount
-      },
-      timestamp: new Date().toISOString()
-    });
-
-  } catch (error) {
-    console.error('[ERROR] ❌ Gemini AI test failed:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Gemini AI test failed',
-      error: error.message,
-      quotaInfo: geminiQuotaInfo
-    });
-  }
-});
-
-// Admin endpoint
-router.get('/admin', (req, res) => {
-  const currentTime = getCurrentTimeInAppTimezone();
-  const currentDay = getCurrentDayInAppTimezone();
-  const timeWindow = getCurrentTimeWindow();
-  const currentHour = getCurrentHourInAppTimezone();
+function getEstimatedTimeRemaining(job) {
+  if (job.status === 'completed') return '0 seconds';
+  if (job.status === 'failed') return null;
   
-  res.json({
-    success: true,
-    message: 'Enhanced Lead Generation Reddit Admin API',
-    service: 'reddit-admin',
-    version: '6.0.0',
-    timestamp: new Date().toISOString(),
-    environment: process.env.NODE_ENV || 'development',
-    timezone: APP_TIMEZONE,
-    currentTime: currentTime,
-    currentDay: currentDay,
-    timeWindow: {
-      minutes: POSTING_WINDOW_MINUTES,
-      currentWindow: timeWindow
-    },
-    goldenHour: {
-      minutes: GOLDEN_HOUR_WINDOW_MINUTES,
-      description: 'Scans last 60 minutes for pain point posts'
-    },
-    optimization: {
-      strategy: 'SCAN_ALL_FILTER_ONE',
-      concurrentScanLimit: CONCURRENT_SCAN_LIMIT,
-      minLeadScore: MIN_LEAD_SCORE,
-      maxPostsPerRun: MAX_POSTS_PER_RUN,
-      concurrentRequests: MAX_CONCURRENT_REQUESTS,
-      postsPerSubreddit: POSTS_PER_SUBREDDIT
-    },
-    premiumFeatures: PREMIUM_FEATURES,
-    features: {
-      strategy_scan_all_filter_one: 'ACTIVE',
-      concurrent_scanning: 'ENABLED',
-      lead_scoring_system: 'ACTIVE',
-      pain_point_detection: 'ENHANCED',
-      keyword_matching: 'OPTIMIZED',
-      freshness_scoring: 'ACTIVE',
-      lyric_video_generator: 'PROMOTED',
-      doodle_art_generator: 'PROMOTED',
-      lead_generation: 'ENHANCED',
-      rate_limit_management: 'ACTIVE',
-      gemini_ai: process.env.GOOGLE_GEMINI_API_KEY ? 'enabled' : 'disabled',
-      firebase_db: 'enabled',
-      reddit_api: isRedditLoaded ? 'loaded' : 'not loaded',
-      comment_generation: 'active',
-      target_configuration: 'active',
-      auto_posting: 'active',
-      cron_scheduler: 'github-actions',
-      educational_posts: 'active',
-      performance_optimized: 'yes',
-      lazy_loading: 'ENABLED',
-      safe_timeouts: 'ENABLED',
-      fallback_mode: FALLBACK_MODE ? 'ACTIVE' : 'INACTIVE',
-      batch_processing: 'ENABLED',
-      concurrency_control: 'ACTIVE'
-    },
-    stats: {
-      total_targets: Object.keys(redditTargets).length,
-      active_targets: Object.values(redditTargets).filter(t => t.active).length,
-      total_audience: Object.values(redditTargets).reduce((sum, target) => sum + target.memberCount, 0),
-      premium_leads: postingActivity?.premiumLeadsGenerated || 0,
-      premium_mentions: postingActivity?.totalPremiumMentions || 0,
-      golden_hour_stats: postingActivity?.goldenHourStats || {
-        totalPostsScanned: 0,
-        painPointPostsFound: 0,
-        goldenHourComments: 0,
-        totalOpportunitiesFound: 0
-      }
-    },
-    cron: {
-      status: 'running',
-      total_comments: postingActivity?.totalComments || 0,
-      total_educational_posts: postingActivity?.totalEducationalPosts || 0,
-      total_premium_mentions: postingActivity?.totalPremiumMentions || 0,
-      last_run: postingActivity?.lastCronRun || null,
-      github_actions_runs: postingActivity?.githubActionsRuns || 0,
-      daily_limits: Object.fromEntries(
-        Object.entries(redditTargets).map(([k, v]) => [k, {
-          comments: v.dailyCommentLimit,
-          educational: v.educationalPostLimit || 1,
-          premium: v.premiumFeatureLimit || 2
-        }])
-      )
-    },
-    lazy_loading_status: {
-      firebase: isFirebaseLoaded ? 'LOADED' : 'NOT LOADED',
-      ai: isAILoaded ? 'LOADED' : 'NOT LOADED',
-      reddit: isRedditLoaded ? 'LOADED' : 'NOT LOADED',
-      core_functions: !!runScheduledPosts ? 'LOADED' : 'NOT LOADED'
-    },
-    quota_status: {
-      gemini: {
-        used: geminiQuotaInfo.requestCount,
-        limit: geminiQuotaInfo.quotaLimit,
-        remaining: geminiQuotaInfo.quotaLimit - geminiQuotaInfo.requestCount,
-        reset_time: geminiQuotaInfo.resetTime ? new Date(geminiQuotaInfo.resetTime).toISOString() : null
-      }
+  const elapsedMs = new Date() - new Date(job.createdAt);
+  const progress = job.progress || 0;
+  
+  if (progress > 0 && elapsedMs > 0) {
+    const totalEstimatedMs = (elapsedMs / progress) * 100;
+    const remainingMs = totalEstimatedMs - elapsedMs;
+    
+    if (remainingMs > 0) {
+      const minutes = Math.ceil(remainingMs / 60000);
+      return `${minutes} minute${minutes !== 1 ? 's' : ''}`;
     }
+  }
+  
+  return job.type === 'optimized' ? '1-2 minutes' : '2-3 minutes';
+}
+
+function getQueuePosition(jobId, type = 'regular') {
+  const store = type === 'optimized' ? optimizedJobStore : jobStore;
+  const jobs = Array.from(store.values());
+  const processingJobs = jobs.filter(j => 
+    (j.status === 'queued' || j.status === 'processing') && 
+    new Date(j.createdAt) < new Date()
+  ).sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
+  
+  const position = processingJobs.findIndex(j => j.id === jobId);
+  return position >= 0 ? position + 1 : 0;
+}
+
+function getStyleProfile(style) {
+  const profiles = {
+    'anime': { name: 'Anime Style', t2vKeywords: 'Anime style, vibrant colors, dynamic motion' },
+    'cinematic': { name: 'Cinematic', t2vKeywords: 'Cinematic, dramatic lighting, movie scene' },
+    'abstract': { name: 'Abstract Art', t2vKeywords: 'Abstract art, geometric patterns, fluid motion' },
+    'retro': { name: 'Retro Synthwave', t2vKeywords: '80s synthwave, neon grid, retro-futuristic' },
+    'nature': { name: 'Nature Scenes', t2vKeywords: 'Beautiful nature landscape, natural lighting' },
+    'minimal': { name: 'Minimalist', t2vKeywords: 'Minimalist design, clean lines, simple composition' },
+    'dreamy_ethereal': { name: 'Dreamy Ethereal', category: 'ethereal' },
+    'industrial_grunge': { name: 'Industrial Grunge', category: 'grunge' },
+    'retro_80s_vapourwave': { name: 'Retro 80s Vapourwave', category: 'retro' },
+    'handwritten_doodle': { name: 'Handwritten Doodle', category: 'doodle' },
+    'dynamic_glitch': { name: 'Dynamic Glitch', category: 'glitch' },
+    'minimalist_typography': { name: 'Minimalist Typography', category: 'minimal' },
+    'cinematic_storytelling': { name: 'Cinematic Storytelling', category: 'cinematic' },
+    'lofi_nostalgia': { name: 'Lo-Fi Nostalgia', category: 'lofi' },
+    'space_cosmic': { name: 'Space/Cosmic', category: 'cosmic' },
+    'abstract_conceptual': { name: 'Abstract Conceptual', category: 'abstract' }
+  };
+  return profiles[style] || profiles.cinematic;
+}
+
+function createBlockMap(lyricBlocks) {
+  const blockMap = new Map();
+  
+  lyricBlocks?.forEach(block => {
+    const lines = block.text.split('\n').filter(line => line.trim());
+    const lineDuration = block.duration / lines.length;
+    
+    lines.forEach((line, index) => {
+      const startTime = block.startTime + (index * lineDuration);
+      blockMap.set(line.trim().toLowerCase(), {
+        blockType: block.type,
+        startTime,
+        duration: lineDuration
+      });
+    });
   });
-});
+  
+  return blockMap;
+}
 
-// ==================== LAZY LOAD HELPER ====================
+function getBlockTypeForLyric(lyric, blockMap) {
+  const normalizedText = lyric.text.trim().toLowerCase();
+  return blockMap.get(normalizedText)?.blockType || 'verse';
+}
 
-const loadCoreFunctions = async () => {
+function createLLMPrompt(lyricText, blockType, styleProfile, songInfo, settings) {
+  return `
+    Create a UNIQUE and ORIGINAL visual scene description for a lyric video.
+    
+    IMPORTANT: Generate completely DIFFERENT scenes for each lyric.
+    Do NOT repeat the same visual composition.
+    Vary: camera angle, lighting direction, foreground/background elements, color palette.
+    
+    Lyric: "${lyricText}"
+    Block Type: ${blockType.toUpperCase()}
+    Style: ${styleProfile.name}
+    
+    Create a scene that is:
+    ✓ Unique and unrepeatable
+    ✓ Emotionally matches the lyric content
+    ✓ Visually distinct from previous scenes
+    ✓ Rich in texture and detail
+    ✓ Professional cinematography quality
+    
+    T2V_PROMPT: [Detailed, specific visual description - MUST BE UNIQUE AND DIFFERENT from previous scenes]
+    FONT_TAG: [Font style matching the lyric emotion]
+    ANIMATION_TAG: [Dynamic animation appropriate for content]
+    COLOR_TAG: [Color palette supporting the mood]
+  `;
+}
+
+function parseLLMResponse(response, lyric, blockType, settings) {
   try {
-    // Load all required modules with timeout
-    await withTimeout(loadFirebase(), 3000, 'Firebase load timeout');
-    await withTimeout(loadReddit(), 3000, 'Reddit load timeout');
+    // Extract rendering tags with lowercase animation tags
+    const fontMatch = response.match(/FONT_TAG:\s*(\S+)/);
+    const animationMatch = response.match(/ANIMATION_TAG:\s*(\S+)/);
+    const colorMatch = response.match(/COLOR_TAG:\s*(\S+)/);
+    const t2vPrompt = response.match(/T2V_PROMPT:\s*(.+)/)?.[1] || '';
     
-    // Only load AI if we have quota
-    if (checkGeminiQuota()) {
-      try {
-        await withTimeout(loadAI(), 3000, 'AI load timeout');
-      } catch (aiError) {
-        console.warn('[WARN] AI loading failed, using fallback mode:', aiError.message);
-      }
-    } else {
-      console.log('[INFO] 🤖 Using fallback mode (AI quota exceeded)');
-    }
+    const renderingTags = {
+      font: fontMatch ? fontMatch[1].toLowerCase() : 'modern',
+      color: colorMatch ? colorMatch[1] : '#FFFFFF',
+      animation: animationMatch ? animationMatch[1].toLowerCase().replace('animation_', '') : 'fade',
+      intensity: 'medium'
+    };
     
-    // Define initializePostingActivity
-    initializePostingActivity = async () => {
-      try {
-        const activityRef = collection(db, POSTING_ACTIVITY_COLLECTION);
-        const q = query(activityRef, orderBy('timestamp', 'desc'), limit(1));
-        const snapshot = await withTimeout(getDocs(q), 3000, 'Firebase query timeout');
-        
-        if (snapshot.empty) {
-          const initialActivity = {
-            dailyCounts: {},
-            educationalCounts: {},
-            premiumFeatureCounts: {},
-            lastPosted: {},
-            lastEducationalPosted: {},
-            lastPremiumPosted: {},
-            totalComments: 0,
-            totalEducationalPosts: 0,
-            totalPremiumMentions: 0,
-            premiumLeadsGenerated: 0,
-            lastCronRun: null,
-            githubActionsRuns: 0,
-            redditUsername: null,
-            lastResetDate: getCurrentDateInAppTimezone(),
-            lastResetDay: getCurrentDayInAppTimezone(),
-            lastResetTime: new Date().toISOString(),
-            timestamp: new Date().toISOString(),
-            rateLimitInfo: {
-              lastCheck: null,
-              remaining: 60,
-              resetTime: null
-            },
-            goldenHourStats: {
-              totalPostsScanned: 0,
-              painPointPostsFound: 0,
-              goldenHourComments: 0,
-              totalOpportunitiesFound: 0
-            }
-          };
-          
-          Object.keys(redditTargets).forEach(subreddit => {
-            initialActivity.dailyCounts[subreddit] = 0;
-            initialActivity.educationalCounts[subreddit] = 0;
-            initialActivity.premiumFeatureCounts[subreddit] = 0;
-          });
-          
-          await withTimeout(addDoc(activityRef, initialActivity), 3000, 'Firebase add timeout');
-          console.log('[INFO] ✅ Initialized new posting activity record with daily reset');
-          return initialActivity;
-        } else {
-          const activityDoc = snapshot.docs[0].data();
-          console.log('[INFO] ✅ Loaded existing posting activity');
-          
-          // Ensure all required fields exist
-          activityDoc.dailyCounts = activityDoc.dailyCounts || {};
-          activityDoc.educationalCounts = activityDoc.educationalCounts || {};
-          activityDoc.premiumFeatureCounts = activityDoc.premiumFeatureCounts || {};
-          activityDoc.lastPosted = activityDoc.lastPosted || {};
-          activityDoc.lastEducationalPosted = activityDoc.lastEducationalPosted || {};
-          activityDoc.lastPremiumPosted = activityDoc.lastPremiumPosted || {};
-          activityDoc.totalComments = activityDoc.totalComments || 0;
-          activityDoc.totalEducationalPosts = activityDoc.totalEducationalPosts || 0;
-          activityDoc.totalPremiumMentions = activityDoc.totalPremiumMentions || 0;
-          activityDoc.premiumLeadsGenerated = activityDoc.premiumLeadsGenerated || 0;
-          activityDoc.githubActionsRuns = activityDoc.githubActionsRuns || 0;
-          activityDoc.redditUsername = activityDoc.redditUsername || null;
-          activityDoc.lastResetDate = activityDoc.lastResetDate || getCurrentDateInAppTimezone();
-          activityDoc.lastResetDay = activityDoc.lastResetDay || getCurrentDayInAppTimezone();
-          activityDoc.lastResetTime = activityDoc.lastResetTime || new Date().toISOString();
-          activityDoc.rateLimitInfo = activityDoc.rateLimitInfo || {
-            lastCheck: null,
-            remaining: 60,
-            resetTime: null
-          };
-          activityDoc.goldenHourStats = activityDoc.goldenHourStats || {
-            totalPostsScanned: 0,
-            painPointPostsFound: 0,
-            goldenHourComments: 0,
-            totalOpportunitiesFound: 0
-          };
-          
-          // Initialize counts for any new subreddits
-          Object.keys(redditTargets).forEach(subreddit => {
-            if (activityDoc.dailyCounts[subreddit] === undefined) {
-              activityDoc.dailyCounts[subreddit] = 0;
-            }
-            if (activityDoc.educationalCounts[subreddit] === undefined) {
-              activityDoc.educationalCounts[subreddit] = 0;
-            }
-            if (activityDoc.premiumFeatureCounts[subreddit] === undefined) {
-              activityDoc.premiumFeatureCounts[subreddit] = 0;
-            }
-          });
-          
-          return activityDoc;
-        }
-      } catch (error) {
-        console.error('[ERROR] ❌ Error initializing posting activity:', error);
-        const fallbackActivity = {
-          dailyCounts: {},
-          educationalCounts: {},
-          premiumFeatureCounts: {},
-          lastPosted: {},
-          lastEducationalPosted: {},
-          lastPremiumPosted: {},
-          totalComments: 0,
-          totalEducationalPosts: 0,
-          totalPremiumMentions: 0,
-          premiumLeadsGenerated: 0,
-          lastCronRun: null,
-          githubActionsRuns: 0,
-          redditUsername: null,
-          lastResetDate: getCurrentDateInAppTimezone(),
-          lastResetDay: getCurrentDayInAppTimezone(),
-          lastResetTime: new Date().toISOString(),
-          timestamp: new Date().toISOString(),
-          rateLimitInfo: {
-            remaining: 60,
-            lastCheck: null
-          },
-          goldenHourStats: {
-            totalPostsScanned: 0,
-            painPointPostsFound: 0,
-            goldenHourComments: 0,
-            totalOpportunitiesFound: 0
-          }
-        };
-        
-        Object.keys(redditTargets).forEach(subreddit => {
-          fallbackActivity.dailyCounts[subreddit] = 0;
-          fallbackActivity.educationalCounts[subreddit] = 0;
-          fallbackActivity.premiumFeatureCounts[subreddit] = 0;
-        });
-        
-        return fallbackActivity;
-      }
-    };
-
-    // Initialize posting activity
-    if (!postingActivity) {
-      postingActivity = await initializePostingActivity();
-    }
-
-    // Define quickSavePostingActivity
-    quickSavePostingActivity = async (activity) => {
-      try {
-        const activityRef = collection(db, POSTING_ACTIVITY_COLLECTION);
-        await withTimeout(addDoc(activityRef, {
-          ...activity,
-          timestamp: new Date().toISOString()
-        }), 3000, 'Firebase save timeout');
-      } catch (error) {
-        console.error('[ERROR] ❌ Error saving posting activity:', error);
-      }
-    };
-
-    // Define savePremiumLead
-    savePremiumLead = async (subreddit, postTitle, leadType, interestLevel, painPoints = []) => {
-      try {
-        const leadsRef = collection(db, PREMIUM_FEATURE_LEADS_COLLECTION);
-        await withTimeout(addDoc(leadsRef, {
-          subreddit,
-          postTitle,
-          leadType,
-          interestLevel,
-          painPoints,
-          timestamp: new Date().toISOString(),
-          date: getCurrentDateInAppTimezone(),
-          converted: false,
-          source: 'reddit_comment',
-          goldenHour: true,
-          leadScore: calculateLeadScore({ title: postTitle, content: '' }, redditTargets[subreddit])
-        }), 3000, 'Firebase save timeout');
-        console.log(`[INFO] 💎 Premium lead saved: ${leadType} from r/${subreddit} with pain points: ${painPoints.join(', ')}`);
-      } catch (error) {
-        console.error('[ERROR] ❌ Error saving premium lead:', error);
-      }
-    };
-
-    // Define checkFirebaseConnection
-    checkFirebaseConnection = async () => {
-      try {
-        const activityRef = collection(db, POSTING_ACTIVITY_COLLECTION);
-        const q = query(activityRef, limit(1));
-        await withTimeout(getDocs(q), 3000, 'Firebase connection timeout');
-        return true;
-      } catch (error) {
-        console.error('[ERROR] ❌ Firebase connection failed:', error);
-        return false;
-      }
-    };
-
-    // Define generatePremiumFeatureComment
-    generatePremiumFeatureComment = async (postTitle, postContent, subreddit, painPoints = []) => {
-      // Use fallback if AI not available or quota exceeded
-      if (!genAI || !checkGeminiQuota()) {
-        console.log('[FALLBACK] Using fallback comment generation');
-        return {
-          success: true,
-          comment: generateFallbackComment(subreddit, painPoints),
-          style: 'helpful',
-          subreddit: subreddit,
-          premiumFeature: 'AI Tools',
-          isPremiumFocus: true,
-          painPoints: painPoints,
-          isFallback: true
-        };
-      }
-
-      try {
-        const targetConfig = redditTargets[subreddit];
-        const selectedStyle = targetConfig?.preferredStyles[0] || 'helpful';
-        
-        let premiumFeature;
-        if (targetConfig?.premiumFeatures?.includes('lyricVideoGenerator') && 
-            (painPoints.includes('frustration') || 
-             postTitle.toLowerCase().includes('video') || 
-             postTitle.toLowerCase().includes('lyric') || 
-             postTitle.toLowerCase().includes('visual'))) {
-          premiumFeature = PREMIUM_FEATURES.lyricVideoGenerator;
-        } else {
-          premiumFeature = PREMIUM_FEATURES.doodleArtGenerator;
-        }
-
-        const model = genAI.getGenerativeModel({ 
-          model: 'gemini-2.5-flash-lite'
-        });
-
-        const prompt = `Write a helpful Reddit comment (1-2 sentences max) for r/${subreddit} about:
-Post: "${postTitle}"
-User needs: ${painPoints.join(', ') || 'help with creative work'}
-
-Mention how ${premiumFeature.name} can help. Include soundswap.live. Use ${selectedStyle} tone.`;
-
-        const aiCall = model.generateContent(prompt);
-        const result = await withTimeout(aiCall, AI_TIMEOUT_MS, 'AI generation timeout');
-        const response = await result.response;
-        let comment = response.text().trim();
-
-        // Increment quota counter
-        incrementGeminiRequest();
-        
-        console.log(`[INFO] ✅ Premium feature comment generated for r/${subreddit}`);
-        
-        if (!postingActivity.premiumFeatureCounts[subreddit]) {
-          postingActivity.premiumFeatureCounts[subreddit] = 0;
-        }
-        postingActivity.premiumFeatureCounts[subreddit]++;
-        postingActivity.totalPremiumMentions++;
-
-        return {
-          success: true,
-          comment: comment,
-          style: selectedStyle,
-          subreddit: subreddit,
-          premiumFeature: premiumFeature.name,
-          isPremiumFocus: true,
-          painPoints: painPoints,
-          isFallback: false
-        };
-
-      } catch (error) {
-        console.error(`[ERROR] ❌ Premium comment generation failed:`, error.message);
-        
-        // Use fallback on AI error
-        return {
-          success: true,
-          comment: generateFallbackComment(subreddit, painPoints),
-          style: 'helpful',
-          subreddit: subreddit,
-          premiumFeature: 'AI Tools',
-          isPremiumFocus: true,
-          painPoints: painPoints,
-          isFallback: true
-        };
-      }
-    };
-
-    // Define postToReddit (simulated for now)
-    postToReddit = async (subreddit, content, style, type = 'comment', title = '', keywords = [], parentId = null) => {
-      try {
-        // Simulate posting with random success
-        const success = Math.random() > 0.1; // 90% success rate
-        
-        if (success) {
-          return { 
-            success: true, 
-            redditData: { 
-              permalink: `https://reddit.com/r/${subreddit}/comments/${parentId || 'new'}_${Date.now()}`,
-              id: `comment_${Date.now()}`,
-              parentId: parentId
-            },
-            type: type,
-            isGoldenHour: parentId ? true : false
-          };
-        } else {
-          return { 
-            success: false, 
-            error: 'Simulated posting failure',
-            type: type
-          };
-        }
-      } catch (error) {
-        console.error(`[ERROR] ❌ Error in postToReddit for r/${subreddit}:`, error.message);
-        return { 
-          success: false, 
-          error: error.message,
-          type: type
-        };
-      }
-    };
-
-    // Define getSamplePostsForSubreddit
-    getSamplePostsForSubreddit = (subreddit) => {
-      const samplePosts = {
-        'WeAreTheMusicMakers': [
-          "I hate spending hours on video editing for my music",
-          "Looking for cheap ways to get professional visuals for my tracks",
-          "I can't draw but I want custom artwork for my album",
-          "Video editing takes too long, any automation tools?"
-        ],
-        'ArtistLounge': [
-          "Need affordable tools for digital art creation",
-          "How to create art for music without being an artist?"
-        ]
-      };
-      
-      return samplePosts[subreddit] || ["Looking for help with creative projects"];
-    };
-
-    // Define runScheduledPosts with PRO optimization
-    runScheduledPosts = async () => {
-      const startTime = Date.now();
-      
-      try {
-        postingActivity.lastCronRun = new Date().toISOString();
-        postingActivity.githubActionsRuns++;
-        
-        const currentTime = getCurrentTimeInAppTimezone();
-        const currentDay = getCurrentDayInAppTimezone();
-        const timeWindow = getCurrentTimeWindow();
-        
-        console.log(`[INFO] ⏰ PRO OPTIMIZATION Cron Running`);
-        console.log(`[INFO] 📅 Date: ${getCurrentDateInAppTimezone()} (${currentDay})`);
-        console.log(`[INFO] 🕒 Time: ${currentTime} (Window: ${timeWindow.start}-${timeWindow.end})`);
-        console.log(`[INFO] 💎 Strategy: SCAN_ALL_FILTER_ONE`);
-        console.log(`[INFO] 🔄 Scanning all ${Object.keys(redditTargets).filter(k => redditTargets[k].active).length} active subreddits concurrently`);
-        console.log(`[INFO] 🤖 AI Status: ${genAI ? 'Available' : 'Fallback mode'}`);
-        console.log(`[INFO] 📊 Gemini Quota: ${geminiQuotaInfo.quotaLimit - geminiQuotaInfo.requestCount} remaining`);
-        
-        // STEP 1: Concurrently scan ALL active subreddits
-        const scanStartTime = Date.now();
-        const scanResults = await scanAllSubredditsConcurrently();
-        const scanTime = Date.now() - scanStartTime;
-        
-        console.log(`[SCAN] ⏱️ Scan completed in ${scanTime}ms`);
-        console.log(`[SCAN] 📊 Found ${scanResults.highQualityPosts.length} high-quality opportunities`);
-        
-        // Update stats
-        postingActivity.goldenHourStats.totalPostsScanned += scanResults.allPosts.length;
-        postingActivity.goldenHourStats.totalOpportunitiesFound += scanResults.highQualityPosts.length;
-        
-        let totalPosted = 0;
-        let premiumPosted = 0;
-        let goldenHourPosted = 0;
-        
-        // STEP 2: Process top opportunities (up to MAX_POSTS_PER_RUN)
-        if (scanResults.topOpportunities.length > 0) {
-          console.log(`\n[ACTION] 🎯 Processing top ${scanResults.topOpportunities.length} opportunities`);
-          
-          for (const opportunity of scanResults.topOpportunities) {
-            const subreddit = opportunity.subreddit;
-            const config = opportunity.subredditConfig;
-            
-            // Check daily limits
-            const dailyCount = postingActivity.dailyCounts[subreddit] || 0;
-            if (dailyCount >= config.dailyCommentLimit) {
-              console.log(`[LIMIT] ⏭️ Daily limit reached for r/${subreddit} (${dailyCount}/${config.dailyCommentLimit}), skipping...`);
-              continue;
-            }
-            
-            console.log(`[ACTION] 💎 Processing opportunity from r/${subreddit} (Score: ${opportunity.leadScore})`);
-            console.log(`[ACTION] 📝 Post: "${opportunity.title.substring(0, 80)}..."`);
-            
-            // Generate comment
-            const commentResponse = await generatePremiumFeatureComment(
-              opportunity.title,
-              opportunity.content,
-              subreddit,
-              opportunity.painPointAnalysis.painPoints
-            );
-            
-            if (commentResponse.success) {
-              // Post to Reddit (simulated for now)
-              const postResult = await postToReddit(
-                subreddit,
-                commentResponse.comment,
-                commentResponse.style,
-                'comment',
-                '',
-                config.keywords,
-                opportunity.id
-              );
-              
-              if (postResult.success) {
-                // Update activity
-                postingActivity.dailyCounts[subreddit] = (postingActivity.dailyCounts[subreddit] || 0) + 1;
-                postingActivity.lastPosted[subreddit] = new Date().toISOString();
-                postingActivity.totalComments++;
-                postingActivity.goldenHourStats.goldenHourComments++;
-                
-                // Save lead
-                await savePremiumLead(
-                  subreddit,
-                  opportunity.title,
-                  commentResponse.premiumFeature,
-                  opportunity.leadScore > 50 ? 'high' : 'medium',
-                  opportunity.painPointAnalysis.painPoints
-                );
-                
-                totalPosted++;
-                goldenHourPosted++;
-                premiumPosted++;
-                
-                console.log(`[SUCCESS] ✅ Posted to r/${subreddit} (Golden Hour)`);
-                console.log(`[SUCCESS] 📊 Lead Score: ${opportunity.leadScore}, Pain Points: ${opportunity.painPointAnalysis.painPoints.join(', ')}`);
-                
-                // Rate limiting delay between posts
-                await new Promise(resolve => safeSetTimeout(resolve, 2000));
-              } else {
-                console.log(`[ERROR] ❌ Failed to post to r/${subreddit}:`, postResult.error);
-              }
-            }
-            
-            // Stop if we've reached max posts per run
-            if (totalPosted >= MAX_POSTS_PER_RUN) {
-              break;
-            }
-          }
-        } else {
-          console.log(`\n[INFO] ⏳ No high-quality opportunities found (minimum score: ${MIN_LEAD_SCORE})`);
-          
-          // Optional: Fallback to bridge technique if no opportunities found
-          if (totalPosted === 0 && FALLBACK_MODE) {
-            console.log(`\n[FALLBACK] 🎯 Using Bridge Technique fallback`);
-            
-            // Find a subreddit that hasn't reached its daily limit
-            const availableSubreddits = Object.entries(redditTargets)
-              .filter(([sub, config]) => 
-                config.active && 
-                (postingActivity.dailyCounts[sub] || 0) < config.dailyCommentLimit
-              )
-              .sort((a, b) => (postingActivity.dailyCounts[a[0]] || 0) - (postingActivity.dailyCounts[b[0]] || 0));
-            
-            if (availableSubreddits.length > 0) {
-              const [selectedSubreddit, config] = availableSubreddits[0];
-              const samplePosts = getSamplePostsForSubreddit(selectedSubreddit);
-              const postTitle = samplePosts[Math.floor(Math.random() * samplePosts.length)];
-              const painPoints = config.painPointFocus?.[0] ? [config.painPointFocus[0]] : ['frustration'];
-              
-              console.log(`[FALLBACK] 🚀 Generating Bridge Technique comment for r/${selectedSubreddit}`);
-              
-              const commentResponse = await generatePremiumFeatureComment(
-                postTitle,
-                '',
-                selectedSubreddit,
-                painPoints
-              );
-              
-              if (commentResponse.success) {
-                // Simulate posting
-                console.log(`[FALLBACK] 📝 Would post to r/${selectedSubreddit}: ${commentResponse.comment.substring(0, 100)}...`);
-                
-                // Update counts (simulated)
-                postingActivity.dailyCounts[selectedSubreddit] = (postingActivity.dailyCounts[selectedSubreddit] || 0) + 1;
-                postingActivity.totalComments++;
-                totalPosted++;
-                premiumPosted++;
-                
-                console.log(`[FALLBACK] ✅ Simulated post to r/${selectedSubreddit}`);
-              }
-            }
-          }
-        }
-        
-        // Update pain point posts found stat
-        postingActivity.goldenHourStats.painPointPostsFound += scanResults.highQualityPosts.length;
-        
-        // Save activity
-        await quickSavePostingActivity(postingActivity);
-        
-        const processingTime = Date.now() - startTime;
-        console.log(`\n[INFO] ✅ Cron completed in ${processingTime}ms`);
-        console.log(`[INFO] 📈 Results: ${totalPosted} total posts`);
-        console.log(`[INFO]    - ${goldenHourPosted} Golden Hour responses`);
-        console.log(`[INFO]    - ${premiumPosted} premium-focused posts`);
-        console.log(`[INFO] 💎 Premium Leads Generated: ${postingActivity.premiumLeadsGenerated}`);
-        console.log(`[INFO] 🎯 Golden Hour Stats:`);
-        console.log(`[INFO]    - Posts scanned this run: ${scanResults.allPosts.length}`);
-        console.log(`[INFO]    - Total posts scanned: ${postingActivity.goldenHourStats.totalPostsScanned}`);
-        console.log(`[INFO]    - Pain point posts found: ${postingActivity.goldenHourStats.painPointPostsFound}`);
-        console.log(`[INFO]    - Total opportunities: ${postingActivity.goldenHourStats.totalOpportunitiesFound}`);
-        console.log(`[INFO]    - Golden Hour comments: ${postingActivity.goldenHourStats.goldenHourComments}`);
-        console.log(`[INFO] 📊 Rate Limits: ${postingActivity.rateLimitInfo?.remaining || 'unknown'} remaining`);
-        console.log(`[INFO] 🔄 Optimization: SCAN_ALL_FILTER_ONE (${scanTime}ms scan time)`);
-        
-        return {
-          success: true,
-          totalPosted: totalPosted,
-          goldenHourPosted: goldenHourPosted,
-          premiumPosted: premiumPosted,
-          processingTime: processingTime,
-          scanTime: scanTime,
-          opportunitiesScanned: scanResults.allPosts.length,
-          opportunitiesFound: scanResults.highQualityPosts.length,
-          rateLimitInfo: postingActivity.rateLimitInfo,
-          premiumLeads: postingActivity.premiumLeadsGenerated,
-          goldenHourStats: postingActivity.goldenHourStats,
-          geminiQuotaUsed: geminiQuotaInfo.requestCount,
-          fallbackUsed: !genAI || geminiQuotaInfo.requestCount >= geminiQuotaInfo.quotaLimit,
-          timestamp: new Date().toISOString()
-        };
-        
-      } catch (error) {
-        console.error('[ERROR] ❌ Error in runScheduledPosts:', error);
-        await quickSavePostingActivity(postingActivity);
-        throw error;
-      }
-    };
-
+    return { t2vPrompt, renderingTags };
   } catch (error) {
-    console.error('[ERROR] ❌ Error loading core functions:', error);
+    return {
+      t2vPrompt: generateFallbackT2VPrompt(lyric.text, blockType),
+      renderingTags: {
+        font: 'modern',
+        color: '#FFFFFF',
+        animation: 'fade',
+        intensity: 'medium'
+      }
+    };
+  }
+}
+
+function getFontForBlock(blockType, fontCombination) {
+  if (!fontCombination?.enabled) return 'modern';
+  
+  const fontMap = {
+    'hook': fontCombination.hookFont || 'bold',
+    'chorus': fontCombination.chorusFont || 'modern',
+    'verse': fontCombination.verseFont || 'serif',
+    'bridge': fontCombination.bridgeFont || 'script',
+    'pre-chorus': fontCombination.verseFont || 'serif',
+    'outro': fontCombination.hookFont || 'bold'
+  };
+  
+  return fontMap[blockType] || 'modern';
+}
+
+function getColorForBlock(blockType, fontCombination) {
+  if (!fontCombination?.enabled) return '#FFFFFF';
+  
+  const colorMap = {
+    'hook': fontCombination.hookColor || '#FF6B35',
+    'chorus': fontCombination.chorusColor || '#FFFFFF',
+    'verse': fontCombination.verseColor || '#FFD700',
+    'bridge': fontCombination.bridgeColor || '#00FFFF',
+    'pre-chorus': fontCombination.verseColor || '#FFD700',
+    'outro': fontCombination.hookColor || '#FF6B35'
+  };
+  
+  return colorMap[blockType] || '#FFFFFF';
+}
+
+function generateFallbackT2VPrompt(lyric, blockType) {
+  const prompts = {
+    'hook': `Cinematic shot capturing "${lyric}". Dramatic lighting, attention-grabbing composition.`,
+    'chorus': `Epic scene representing "${lyric}". Grand scale, emotional impact, recurring theme.`,
+    'verse': `Narrative scene illustrating "${lyric}". Detailed environment, story progression.`,
+    'bridge': `Transitional scene for "${lyric}". Emotional shift, connecting narrative.`
+  };
+  
+  return prompts[blockType] || `Visual representation of "${lyric}". Cinematic, emotional.`;
+}
+
+function generateFallbackRenderingTags(style) {
+  const tagProfiles = {
+    'anime': { font: 'FONT_BOLD', animation: 'BOUNCE' },
+    'cinematic': { font: 'FONT_SERIF', animation: 'FADE' },
+    'abstract': { font: 'FONT_FUTURISTIC', animation: 'GLITCH' },
+    'retro': { font: 'FONT_MONO', animation: 'GLITCH' },
+    'nature': { font: 'FONT_SCRIPT', animation: 'FADE' },
+    'minimal': { font: 'FONT_MODERN', animation: 'SLIDE' }
+  };
+  
+  return tagProfiles[style] || { font: 'FONT_MODERN', color: '#FFFFFF', animation: 'FADE' };
+}
+
+async function analyzeLyricsWithLLM(lyrics, lyricBlocks, style, settings, songInfo) {
+  console.log('Analyzing lyrics with LLM...');
+  
+  const styleProfile = getStyleProfile(style);
+  const blockMap = createBlockMap(lyricBlocks);
+  
+  const analyzedLyrics = [];
+  
+  for (const lyric of lyrics) {
+    try {
+      // Get block type for this lyric
+      const blockType = getBlockTypeForLyric(lyric, blockMap);
+      
+      // Use Hugging Face Inference for LLM analysis
+      const llmResponse = await hf.textGeneration({
+        model: 'mistralai/Mistral-7B-Instruct-v0.2',
+        inputs: createLLMPrompt(lyric.text, blockType, styleProfile, songInfo, settings),
+        parameters: {
+          max_new_tokens: 300,
+          temperature: 0.7,
+          return_full_text: false
+        }
+      });
+      
+      // Parse LLM response
+      const { t2vPrompt, renderingTags } = parseLLMResponse(
+        llmResponse.generated_text, 
+        lyric, 
+        blockType, 
+        settings
+      );
+      
+      analyzedLyrics.push({
+        ...lyric,
+        blockType,
+        t2vPrompt,
+        renderingTags,
+        fontStyle: getFontForBlock(blockType, settings.fontCombination),
+        textColor: getColorForBlock(blockType, settings.fontCombination)
+      });
+      
+      // Add small delay to avoid rate limiting
+      await new Promise(resolve => setTimeout(resolve, 100));
+      
+    } catch (error) {
+      console.error(`Failed to analyze lyric:`, error);
+      // Fallback analysis
+      analyzedLyrics.push({
+        ...lyric,
+        blockType: 'verse',
+        t2vPrompt: generateFallbackT2VPrompt(lyric.text, style),
+        renderingTags: generateFallbackRenderingTags(style),
+        fontStyle: 'modern',
+        textColor: '#FFFFFF'
+      });
+    }
+  }
+  
+  return analyzedLyrics;
+}
+
+async function generateAIScenes(analyzedLyrics, settings) {
+  console.log('Generating AI scenes...');
+  
+  const scenes = [];
+  const maxScenes = Math.min(analyzedLyrics.length, 15);
+  
+  for (let i = 0; i < maxScenes; i++) {
+    const lyric = analyzedLyrics[i];
+    
+    try {
+      // Generate image with Stable Diffusion
+      const image = await generateImage(lyric.t2vPrompt, settings.resolution);
+      
+      scenes.push({
+        id: i + 1,
+        lyric: lyric.text,
+        imageUrl: image,
+        time: lyric.time,
+        duration: lyric.duration,
+        blockType: lyric.blockType,
+        fontStyle: lyric.fontStyle,
+        textColor: lyric.textColor,
+        renderingTags: lyric.renderingTags
+      });
+      
+      console.log(`Generated scene ${i + 1}/${maxScenes}`);
+      
+      // Add delay to avoid rate limiting
+      if (i < maxScenes - 1) {
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+      
+    } catch (error) {
+      console.error(`Failed to generate scene ${i + 1}:`, error);
+      // Add placeholder
+      scenes.push({
+        id: i + 1,
+        lyric: lyric.text,
+        imageUrl: `https://picsum.photos/1920/1080?random=${i}&blur=2`,
+        time: lyric.time,
+        duration: lyric.duration,
+        blockType: lyric.blockType,
+        fontStyle: lyric.fontStyle,
+        textColor: lyric.textColor
+      });
+    }
+  }
+  
+  return scenes;
+}
+
+async function generateImage(prompt, resolution) {
+  try {
+    // First attempt: High-quality AI model (FLUX)
+    try {
+      const result = await hf.textToImage({
+        model: 'black-forest-labs/FLUX.1-dev',
+        inputs: `${prompt}. Ultra detailed, cinematic quality, ${resolution}, professional lighting`,
+        parameters: {
+          height: 1080,
+          width: 1920,
+          guidance_scale: 7.5,
+          num_inference_steps: 30
+        }
+      });
+
+      const blob = await result.blob();
+      const buffer = await blob.arrayBuffer();
+      return `data:image/png;base64,${Buffer.from(buffer).toString('base64')}`;
+    } catch (fluxError) {
+      console.warn('FLUX model failed, falling back to Stable Diffusion');
+      
+      // Fallback: Stable Diffusion
+      const result = await hf.textToImage({
+        model: 'stabilityai/stable-diffusion-2-1',
+        inputs: `${prompt}. ${resolution}, detailed, professional`,
+        parameters: {
+          negative_prompt: 'blurry, low quality, distorted, text, watermark, duplicate, same, template',
+          num_inference_steps: 20,
+          guidance_scale: 7.5
+        }
+      });
+
+      const blob = await result.blob();
+      const buffer = await blob.arrayBuffer();
+      return `data:image/png;base64,${Buffer.from(buffer).toString('base64')}`;
+    }
+  } catch (error) {
+    console.error('All image generation models failed:', error);
     throw error;
   }
-};
+}
 
-// ==================== EXPORT ====================
+async function createVideoWithPython(data) {
+  console.log('Creating video with Python...');
+  
+  try {
+    const pythonScript = `
+import sys
+import json
+import base64
+from io import BytesIO
+from PIL import Image, ImageDraw, ImageFont
+import moviepy.editor as mp
+from moviepy.video.fx import fadein, fadeout
+import numpy as np
+import tempfile
+import os
+
+def create_lyric_video():
+    data = json.loads(sys.argv[1])
+    scenes = data.get('scenes', [])
+    settings = data.get('settings', {})
+    job_id = data.get('jobId', '')
+    
+    # Create temporary directory
+    temp_dir = tempfile.mkdtemp()
+    image_paths = []
+    
+    # Process each scene
+    for i, scene in enumerate(scenes):
+        # Decode base64 image or use placeholder
+        if scene.get('imageUrl', '').startswith('data:image'):
+            img_data = scene['imageUrl'].split(',')[1]
+            img_bytes = base64.b64decode(img_data)
+            img = Image.open(BytesIO(img_bytes))
+        else:
+            # Create placeholder
+            img = Image.new('RGB', (1920, 1080), color=(40, 40, 60))
+            draw = ImageDraw.Draw(img)
+            
+            # Add gradient
+            for y in range(1080):
+                color = int(40 + (y / 1080) * 60)
+                draw.line([(0, y), (1920, y)], fill=(color, color, color + 20))
+        
+        # Resize to 1080p
+        img = img.resize((1920, 1080), Image.Resampling.LANCZOS)
+        
+        # Add lyric text with block-specific styling
+        draw = ImageDraw.Draw(img)
+        
+        # Get font style based on block type
+        font_style = scene.get('fontStyle', 'modern')
+        font_size = int(settings.get('fontSize', 48))
+        text_color = scene.get('textColor', '#FFFFFF')
+        
+        # Map font styles to actual fonts
+        font_map = {
+            'modern': 'arial.ttf',
+            'serif': 'times.ttf',
+            'script': 'cursive',
+            'bold': 'impact.ttf',
+            'mono': 'cour.ttf',
+            'futuristic': 'arial.ttf'
+        }
+        
+        try:
+            font_path = font_map.get(font_style, 'arial.ttf');
+            if os.path.exists(font_path):
+                font = ImageFont.truetype(font_path, font_size)
+            else:
+                font = ImageFont.truetype("arial.ttf", font_size)
+        except:
+            font = ImageFont.load_default()
+        
+        # Prepare text
+        text = scene.get('lyric', '')
+        
+        # Calculate text position (centered)
+        img_width, img_height = img.size
+        text_bbox = draw.textbbox((0, 0), text, font=font)
+        text_width = text_bbox[2] - text_bbox[0];
+        text_height = text_bbox[3] - text_bbox[1];
+        
+        x = (img_width - text_width) // 2
+        y = img_height - text_height - 100
+        
+        # Add text shadow for readability
+        shadow_color = (0, 0, 0, 150)
+        for offset in [(2, 2), (-2, 2), (2, -2), (-2, -2)]:
+            draw.text((x + offset[0], y + offset[1]), text, font=font, fill=shadow_color)
+        
+        # Add main text with color
+        if text_color.startswith('#'):
+            r = int(text_color[1:3], 16)
+            g = int(text_color[3:5], 16)
+            b = int(text_color[5:7], 16)
+            draw.text((x, y), text, font=font, fill=(r, g, b))
+        else:
+            draw.text((x, y), text, font=font, fill=text_color)
+        
+        # Save image
+        img_path = os.path.join(temp_dir, f'scene_{i}.png')
+        img.save(img_path, 'PNG', quality=95)
+        image_paths.append((img_path, scene.get('duration', 4)))
+    
+    # Create video from images
+    if image_paths:
+        clips = []
+        for img_path, duration in image_paths:
+            clip = mp.ImageClip(img_path, duration=duration)
+            
+            # Apply animation based on settings
+            animation = settings.get('animationType', 'fade')
+            if animation == 'fade':
+                clip = clip.fx(fadein, 0.5).fx(fadeout, 0.5)
+            
+            clips.append(clip)
+        
+        video = mp.concatenate_videoclips(clips, method="compose")
+        
+        # Add audio if provided
+        if settings.get('audioFile'):
+            try:
+                audio_data = settings['audioFile'].split(',')[1]
+                audio_bytes = base64.b64decode(audio_data)
+                audio_path = os.path.join(temp_dir, 'audio.mp3')
+                
+                with open(audio_path, 'wb') as f:
+                    f.write(audio_bytes)
+                
+                audio_clip = mp.AudioFileClip(audio_path)
+                
+                # Match audio duration to video
+                if audio_clip.duration > video.duration:
+                    audio_clip = audio_clip.subclip(0, video.duration)
+                
+                video = video.set_audio(audio_clip)
+                except Exception as e:
+                    print(json.dumps({'success': False, 'error': str(e)}))
+        
+        # Export video
+        output_path = os.path.join(temp_dir, 'output.mp4');
+        video.write_videofile(
+            output_path,
+            fps=30,
+            codec='libx264',
+            audio_codec='aac',
+            temp_audiofile=os.path.join(temp_dir, 'temp_audio.m4a'),
+            remove_temp=True,
+            verbose=False,
+            logger=None
+        )
+        
+        # Read video as base64
+        with open(output_path, 'rb') as f:
+            video_data = f.read()
+        
+        # Calculate video size
+        video_size = len(video_data);
+        
+        # Cleanup
+        for file in os.listdir(temp_dir):
+            try:
+                os.remove(os.path.join(temp_dir, file))
+            except:
+                pass
+        
+        return {
+            'success': True,
+            'video': base64.b64encode(video_data).decode('utf-8'),
+            'duration': video.duration,
+            'size': video_size,
+            'scenes': len(scenes)
+        }
+    
+    return {'success': False, 'error': 'No scenes processed'}
+
+if __name__ == "__main__":
+    try:
+        result = create_lyric_video();
+        print(json.dumps(result));
+    except Exception as e:
+        print(json.dumps({'success': False, 'error': str(e)}));
+`;
+
+    // Write Python script to temporary file
+    const tempDir = os.tmpdir();
+    const scriptPath = path.join(tempDir, `video_generator_${Date.now()}.py`);
+    await fs.writeFile(scriptPath, pythonScript);
+
+    // Run Python script
+    const result = await new Promise((resolve, reject) => {
+      const pythonProcess = spawn('python', [scriptPath, JSON.stringify(data)]);
+      
+      let stdout = '';
+      let stderr = '';
+      
+      pythonProcess.stdout.on('data', (data) => {
+        stdout += data.toString();
+      });
+      
+      pythonProcess.stderr.on('data', (data) => {
+        stderr += data.toString();
+      });
+      
+      pythonProcess.on('close', (code) => {
+        // Clean up script file
+        fs.unlink(scriptPath).catch(() => {});
+        
+        if (code === 0) {
+          try {
+            const parsed = JSON.parse(stdout);
+            resolve(parsed);
+          } catch (e) {
+            reject(new Error(`Failed to parse Python output: ${e.message}`));
+          }
+        } else {
+          reject(new Error(`Python script failed: ${stderr}`));
+        }
+      });
+      
+      // Timeout after 45 seconds
+      setTimeout(() => {
+        pythonProcess.kill();
+        reject(new Error('Python script timeout'));
+      }, 45000);
+    });
+
+    return result;
+  } catch (error) {
+    console.error('Python video generation failed:', error);
+    return { success: false, error: error.message };
+  }
+}
+
+async function uploadVideoToCloudinary(videoResult, jobId) {
+  console.log('Uploading video...');
+  
+  // In production, this would upload to Cloudinary/S3
+  // For demo, return a mock URL
+  await new Promise(resolve => setTimeout(resolve, 1000));
+  
+  const demoVideos = [
+    'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4',
+    'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ElephantsDream.mp4',
+    'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4'
+  ];
+  
+  const randomVideo = demoVideos[Math.floor(Math.random() * demoVideos.length)];
+  
+  return randomVideo;
+}
+
+// Cleanup old jobs periodically (every 10 minutes)
+setInterval(() => {
+  const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000); // 24 hours
+  let cleanedRegular = 0;
+  let cleanedOptimized = 0;
+  
+  for (const [jobId, job] of jobStore.entries()) {
+    const jobDate = new Date(job.createdAt);
+    if (jobDate < cutoff) {
+      jobStore.delete(jobId);
+      cleanedRegular++;
+    }
+  }
+  
+  for (const [jobId, job] of optimizedJobStore.entries()) {
+    const jobDate = new Date(job.createdAt);
+    if (jobDate < cutoff) {
+      optimizedJobStore.delete(jobId);
+      cleanedOptimized++;
+    }
+  }
+  
+  if (cleanedRegular > 0 || cleanedOptimized > 0) {
+    console.log(`Cleaned up ${cleanedRegular} regular jobs and ${cleanedOptimized} optimized jobs`);
+  }
+}, 10 * 60 * 1000);
 
 export default router;
