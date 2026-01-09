@@ -2,6 +2,9 @@ import express from 'express';
 
 const router = express.Router();
 
+// ==================== DISCORD WEBHOOK CONFIGURATION ====================
+const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL;
+
 // ==================== LAZY LOADING CONFIGURATION ====================
 
 let isRedditLoaded = false;
@@ -19,6 +22,104 @@ let genAI = null;
 let firebaseApp = null;
 let db = null;
 let redditClient = null;
+
+// ==================== DISCORD NOTIFICATION FUNCTION ====================
+
+const sendDiscordLeadNotification = async (leadData) => {
+  try {
+    if (!DISCORD_WEBHOOK_URL) {
+      console.warn('[WARN] Discord webhook URL not configured');
+      return false;
+    }
+
+    // Format the Discord embed
+    const embed = {
+      title: '🎯 **NEW LEAD GENERATED**',
+      color: 0x00ff00,
+      thumbnail: {
+        url: 'https://cdn-icons-png.flaticon.com/512/2702/2702602.png'
+      },
+      fields: [
+        {
+          name: '📌 Subreddit',
+          value: `r/${leadData.subreddit}`,
+          inline: true
+        },
+        {
+          name: '🏷️ Lead Type',
+          value: leadData.leadType || 'Premium Feature Interest',
+          inline: true
+        },
+        {
+          name: '🔥 Interest Level',
+          value: leadData.interestLevel || 'Medium',
+          inline: true
+        },
+        {
+          name: '📊 Lead Score',
+          value: leadData.leadScore?.toString() || 'N/A',
+          inline: true
+        },
+        {
+          name: '🎯 Pain Points Detected',
+          value: leadData.painPoints?.join(', ') || 'None identified',
+          inline: false
+        },
+        {
+          name: '📝 Original Post Title',
+          value: `\`\`\`${leadData.postTitle.substring(0, 200)}${leadData.postTitle.length > 200 ? '...' : ''}\`\`\``,
+          inline: false
+        },
+        {
+          name: '🔗 Reddit Post',
+          value: leadData.redditUrl ? `[View on Reddit](${leadData.redditUrl})` : 'N/A',
+          inline: true
+        },
+        {
+          name: '⏰ Generated At',
+          value: new Date().toLocaleTimeString('en-US', { timeZone: 'America/New_York' }),
+          inline: true
+        },
+        {
+          name: '📈 Total Premium Leads Today',
+          value: `**${leadData.totalLeadsToday || 0}** leads`,
+          inline: true
+        }
+      ],
+      footer: {
+        text: 'SoundSwap Reddit Automation • Lead Generation',
+        icon_url: 'https://cdn-icons-png.flaticon.com/512/2702/2702602.png'
+      },
+      timestamp: new Date().toISOString()
+    };
+
+    // Send to Discord
+    const response = await fetch(DISCORD_WEBHOOK_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        content: `🎯 **New premium lead detected!** <@&1153832361951674478>`,
+        embeds: [embed],
+        username: 'SoundSwap Lead Bot',
+        avatar_url: 'https://cdn-icons-png.flaticon.com/512/2702/2702602.png'
+      })
+    });
+
+    if (response.ok) {
+      console.log('[DISCORD] ✅ Lead notification sent successfully');
+      return true;
+    } else {
+      const errorText = await response.text();
+      console.warn('[WARN] Failed to send Discord notification:', response.status, errorText);
+      return false;
+    }
+  } catch (error) {
+    console.error('[ERROR] ❌ Error sending Discord notification:', error.message);
+    return false;
+  }
+};
 
 // ==================== QUOTA AND TIMEOUT MANAGEMENT ====================
 
@@ -843,6 +944,10 @@ router.get('/cron-status', async (req, res) => {
           painPointPostsFound: 0,
           goldenHourComments: 0,
           totalOpportunitiesFound: 0
+        },
+        discordWebhook: {
+          configured: !!DISCORD_WEBHOOK_URL,
+          notificationsEnabled: true
         }
       },
       premiumFeatures: PREMIUM_FEATURES,
@@ -900,6 +1005,7 @@ router.post('/cron', async (req, res) => {
       processingTime: processingTime,
       geminiQuotaUsed: geminiQuotaInfo.requestCount,
       fallbackMode: FALLBACK_MODE,
+      discordNotifications: result.discordNotifications || { sent: 0, failed: 0 },
       timestamp: new Date().toISOString()
     });
   } catch (error) {
@@ -972,6 +1078,11 @@ router.get('/schedule/today', (req, res) => {
       lastResetDate: postingActivity?.lastResetDate || currentDate,
       needsReset: postingActivity?.lastResetDate !== currentDate
     },
+    discordWebhook: {
+      configured: !!DISCORD_WEBHOOK_URL,
+      notificationsEnabled: true,
+      url: DISCORD_WEBHOOK_URL ? 'Configured' : 'Not configured'
+    },
     schedule: schedule,
     educationalSchedule: educationalSchedule,
     activity: {
@@ -1019,6 +1130,10 @@ router.get('/targets', (req, res) => {
       postsPerSubreddit: POSTS_PER_SUBREDDIT,
       minLeadScore: MIN_LEAD_SCORE,
       maxPostsPerRun: MAX_POSTS_PER_RUN
+    },
+    discordNotifications: {
+      enabled: true,
+      webhookConfigured: !!DISCORD_WEBHOOK_URL
     },
     timestamp: new Date().toISOString()
   });
@@ -1284,6 +1399,48 @@ router.get('/test-gemini', async (req, res) => {
   }
 });
 
+// Test Discord webhook endpoint
+router.post('/test-discord-webhook', async (req, res) => {
+  try {
+    const testLeadData = {
+      subreddit: 'WeAreTheMusicMakers',
+      postTitle: 'I hate spending hours on video editing for my music!',
+      leadType: 'AI Lyric Video Generator',
+      interestLevel: 'High',
+      leadScore: 85,
+      painPoints: ['frustration', 'time-consuming'],
+      redditUrl: 'https://reddit.com/r/WeAreTheMusicMakers/comments/test',
+      totalLeadsToday: postingActivity?.premiumLeadsGenerated || 5
+    };
+
+    const result = await sendDiscordLeadNotification(testLeadData);
+    
+    if (result) {
+      res.json({
+        success: true,
+        message: 'Discord test notification sent successfully',
+        webhookUrl: DISCORD_WEBHOOK_URL ? 'Configured' : 'Using provided URL',
+        testData: testLeadData,
+        timestamp: new Date().toISOString()
+      });
+    } else {
+      res.status(500).json({
+        success: false,
+        message: 'Failed to send Discord test notification',
+        webhookUrl: DISCORD_WEBHOOK_URL ? 'Configured' : 'Using provided URL'
+      });
+    }
+  } catch (error) {
+    console.error('[ERROR] ❌ Discord webhook test failed:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Discord webhook test failed',
+      error: error.message,
+      webhookUrl: DISCORD_WEBHOOK_URL ? 'Configured' : 'Using provided URL'
+    });
+  }
+});
+
 // Admin endpoint
 router.get('/admin', (req, res) => {
   const currentTime = getCurrentTimeInAppTimezone();
@@ -1342,7 +1499,8 @@ router.get('/admin', (req, res) => {
       safe_timeouts: 'ENABLED',
       fallback_mode: FALLBACK_MODE ? 'ACTIVE' : 'INACTIVE',
       batch_processing: 'ENABLED',
-      concurrency_control: 'ACTIVE'
+      concurrency_control: 'ACTIVE',
+      discord_notifications: DISCORD_WEBHOOK_URL ? 'ENABLED' : 'DISABLED'
     },
     stats: {
       total_targets: Object.keys(redditTargets).length,
@@ -1371,6 +1529,11 @@ router.get('/admin', (req, res) => {
           premium: v.premiumFeatureLimit || 2
         }])
       )
+    },
+    discord: {
+      webhook_configured: !!DISCORD_WEBHOOK_URL,
+      notifications_enabled: true,
+      test_endpoint: '/api/reddit-admin/test-discord-webhook'
     },
     lazy_loading_status: {
       firebase: isFirebaseLoaded ? 'LOADED' : 'NOT LOADED',
@@ -1444,6 +1607,10 @@ const loadCoreFunctions = async () => {
               painPointPostsFound: 0,
               goldenHourComments: 0,
               totalOpportunitiesFound: 0
+            },
+            discordNotifications: {
+              totalSent: 0,
+              lastSent: null
             }
           };
           
@@ -1486,6 +1653,10 @@ const loadCoreFunctions = async () => {
             painPointPostsFound: 0,
             goldenHourComments: 0,
             totalOpportunitiesFound: 0
+          };
+          activityDoc.discordNotifications = activityDoc.discordNotifications || {
+            totalSent: 0,
+            lastSent: null
           };
           
           // Initialize counts for any new subreddits
@@ -1532,6 +1703,10 @@ const loadCoreFunctions = async () => {
             painPointPostsFound: 0,
             goldenHourComments: 0,
             totalOpportunitiesFound: 0
+          },
+          discordNotifications: {
+            totalSent: 0,
+            lastSent: null
           }
         };
         
@@ -1563,8 +1738,8 @@ const loadCoreFunctions = async () => {
       }
     };
 
-    // Define savePremiumLead
-    savePremiumLead = async (subreddit, postTitle, leadType, interestLevel, painPoints = []) => {
+    // Define savePremiumLead with Discord notification
+    savePremiumLead = async (subreddit, postTitle, leadType, interestLevel, painPoints = [], leadScore, redditUrl = null) => {
       try {
         const leadsRef = collection(db, PREMIUM_FEATURE_LEADS_COLLECTION);
         await withTimeout(addDoc(leadsRef, {
@@ -1578,11 +1753,37 @@ const loadCoreFunctions = async () => {
           converted: false,
           source: 'reddit_comment',
           goldenHour: true,
-          leadScore: calculateLeadScore({ title: postTitle, content: '' }, redditTargets[subreddit])
+          leadScore: leadScore
         }), 3000, 'Firebase save timeout');
+        
         console.log(`[INFO] 💎 Premium lead saved: ${leadType} from r/${subreddit} with pain points: ${painPoints.join(', ')}`);
+        
+        // Increment lead count
+        postingActivity.premiumLeadsGenerated = (postingActivity.premiumLeadsGenerated || 0) + 1;
+        
+        // Send Discord notification
+        const leadData = {
+          subreddit,
+          postTitle,
+          leadType,
+          interestLevel,
+          painPoints,
+          leadScore,
+          redditUrl,
+          totalLeadsToday: postingActivity.premiumLeadsGenerated
+        };
+        
+        const discordSent = await sendDiscordLeadNotification(leadData);
+        
+        if (discordSent) {
+          postingActivity.discordNotifications.totalSent = (postingActivity.discordNotifications.totalSent || 0) + 1;
+          postingActivity.discordNotifications.lastSent = new Date().toISOString();
+        }
+        
+        return discordSent;
       } catch (error) {
         console.error('[ERROR] ❌ Error saving premium lead:', error);
+        return false;
       }
     };
 
@@ -1692,15 +1893,17 @@ Mention how ${premiumFeature.name} can help. Include soundswap.live. Use ${selec
         const success = Math.random() > 0.1; // 90% success rate
         
         if (success) {
+          const redditUrl = `https://reddit.com/r/${subreddit}/comments/${parentId || 'new'}_${Date.now()}`;
           return { 
             success: true, 
             redditData: { 
-              permalink: `https://reddit.com/r/${subreddit}/comments/${parentId || 'new'}_${Date.now()}`,
+              permalink: redditUrl,
               id: `comment_${Date.now()}`,
               parentId: parentId
             },
             type: type,
-            isGoldenHour: parentId ? true : false
+            isGoldenHour: parentId ? true : false,
+            redditUrl: redditUrl
           };
         } else {
           return { 
@@ -1756,6 +1959,7 @@ Mention how ${premiumFeature.name} can help. Include soundswap.live. Use ${selec
         console.log(`[INFO] 🔄 Scanning all ${Object.keys(redditTargets).filter(k => redditTargets[k].active).length} active subreddits concurrently`);
         console.log(`[INFO] 🤖 AI Status: ${genAI ? 'Available' : 'Fallback mode'}`);
         console.log(`[INFO] 📊 Gemini Quota: ${geminiQuotaInfo.quotaLimit - geminiQuotaInfo.requestCount} remaining`);
+        console.log(`[INFO] 💬 Discord Webhook: ${DISCORD_WEBHOOK_URL ? 'Configured' : 'Not configured'}`);
         
         // STEP 1: Concurrently scan ALL active subreddits
         const scanStartTime = Date.now();
@@ -1772,6 +1976,8 @@ Mention how ${premiumFeature.name} can help. Include soundswap.live. Use ${selec
         let totalPosted = 0;
         let premiumPosted = 0;
         let goldenHourPosted = 0;
+        let discordNotificationsSent = 0;
+        let discordNotificationsFailed = 0;
         
         // STEP 2: Process top opportunities (up to MAX_POSTS_PER_RUN)
         if (scanResults.topOpportunities.length > 0) {
@@ -1818,14 +2024,24 @@ Mention how ${premiumFeature.name} can help. Include soundswap.live. Use ${selec
                 postingActivity.totalComments++;
                 postingActivity.goldenHourStats.goldenHourComments++;
                 
-                // Save lead
-                await savePremiumLead(
+                // Save lead with Discord notification
+                const discordResult = await savePremiumLead(
                   subreddit,
                   opportunity.title,
                   commentResponse.premiumFeature,
                   opportunity.leadScore > 50 ? 'high' : 'medium',
-                  opportunity.painPointAnalysis.painPoints
+                  opportunity.painPointAnalysis.painPoints,
+                  opportunity.leadScore,
+                  postResult.redditUrl
                 );
+                
+                if (discordResult) {
+                  discordNotificationsSent++;
+                  console.log(`[DISCORD] ✅ Notification sent for lead from r/${subreddit}`);
+                } else {
+                  discordNotificationsFailed++;
+                  console.log(`[DISCORD] ❌ Failed to send notification for lead from r/${subreddit}`);
+                }
                 
                 totalPosted++;
                 goldenHourPosted++;
@@ -1886,6 +2102,26 @@ Mention how ${premiumFeature.name} can help. Include soundswap.live. Use ${selec
                 totalPosted++;
                 premiumPosted++;
                 
+                // Simulate Discord notification for fallback
+                if (DISCORD_WEBHOOK_URL) {
+                  const fallbackLeadData = {
+                    subreddit: selectedSubreddit,
+                    postTitle: postTitle,
+                    leadType: commentResponse.premiumFeature,
+                    interestLevel: 'Medium',
+                    leadScore: 30,
+                    painPoints: painPoints,
+                    totalLeadsToday: postingActivity.premiumLeadsGenerated + 1
+                  };
+                  
+                  const discordResult = await sendDiscordLeadNotification(fallbackLeadData);
+                  if (discordResult) {
+                    discordNotificationsSent++;
+                    postingActivity.premiumLeadsGenerated = (postingActivity.premiumLeadsGenerated || 0) + 1;
+                    console.log(`[FALLBACK] 💬 Discord notification sent for fallback lead`);
+                  }
+                }
+                
                 console.log(`[FALLBACK] ✅ Simulated post to r/${selectedSubreddit}`);
               }
             }
@@ -1904,6 +2140,7 @@ Mention how ${premiumFeature.name} can help. Include soundswap.live. Use ${selec
         console.log(`[INFO]    - ${goldenHourPosted} Golden Hour responses`);
         console.log(`[INFO]    - ${premiumPosted} premium-focused posts`);
         console.log(`[INFO] 💎 Premium Leads Generated: ${postingActivity.premiumLeadsGenerated}`);
+        console.log(`[INFO] 💬 Discord Notifications: ${discordNotificationsSent} sent, ${discordNotificationsFailed} failed`);
         console.log(`[INFO] 🎯 Golden Hour Stats:`);
         console.log(`[INFO]    - Posts scanned this run: ${scanResults.allPosts.length}`);
         console.log(`[INFO]    - Total posts scanned: ${postingActivity.goldenHourStats.totalPostsScanned}`);
@@ -1927,6 +2164,11 @@ Mention how ${premiumFeature.name} can help. Include soundswap.live. Use ${selec
           goldenHourStats: postingActivity.goldenHourStats,
           geminiQuotaUsed: geminiQuotaInfo.requestCount,
           fallbackUsed: !genAI || geminiQuotaInfo.requestCount >= geminiQuotaInfo.quotaLimit,
+          discordNotifications: {
+            sent: discordNotificationsSent,
+            failed: discordNotificationsFailed,
+            totalSent: postingActivity.discordNotifications.totalSent || 0
+          },
           timestamp: new Date().toISOString()
         };
         

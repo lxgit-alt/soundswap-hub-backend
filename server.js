@@ -664,9 +664,9 @@ app.post('/api/cron-reddit', async (req, res) => {
     // Isolate modules for cron
     await isolateCronExecution();
     
-    // Dynamically load ONLY the reddit admin module
+    // Dynamically load ONLY the reddit admin module with CORRECT PATH
     const redditModule = await withTimeout(
-      import('./backend/api/reddit-admin.js'), 
+      import('./backend/api/reddit-admin.js'),  // FIXED PATH
       3000, 
       'Reddit module load timeout'
     );

@@ -126,8 +126,35 @@ const loadFirebaseAuth = async () => {
     console.log('[INFO] 🔥 Firebase: Lazy loading Firebase Admin auth');
     try {
       // Dynamically import Firebase Admin
-      const { auth: importedAuth } = await import('../firebaseAdmin.js');
-      auth = importedAuth;
+      const adminModule = await import('firebase-admin');
+      const admin = adminModule.default;
+      
+      // Check if Firebase is already initialized (by server.js)
+      if (admin.apps.length > 0) {
+        auth = admin.auth();
+        console.log('[INFO] 🔥 Firebase: Using existing Firebase Admin instance');
+      } else {
+        // Initialize Firebase if not already initialized
+        console.log('[INFO] 🔥 Firebase: Initializing Firebase Admin');
+        const serviceAccount = {
+          projectId: process.env.FIREBASE_PROJECT_ID,
+          clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+          privateKey: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n'),
+        };
+        
+        if (serviceAccount.projectId && serviceAccount.clientEmail && serviceAccount.privateKey) {
+          admin.initializeApp({
+            credential: admin.credential.cert(serviceAccount),
+            databaseURL: process.env.FIREBASE_DATABASE_URL
+          });
+          auth = admin.auth();
+          console.log('[INFO] 🔥 Firebase: Initialized successfully');
+        } else {
+          console.error('[ERROR] ❌ Firebase credentials incomplete');
+          auth = null;
+        }
+      }
+      
       isFirebaseLoaded = true;
       console.log('[INFO] 🔥 Firebase: Admin auth loaded successfully');
     } catch (error) {
