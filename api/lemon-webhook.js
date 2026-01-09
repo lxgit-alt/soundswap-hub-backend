@@ -10,14 +10,6 @@ console.log('[INFO] 🚀 Dodo Payments Webhook Handler Initialized');
 let isFirebaseLoaded = false;
 let db = null;
 
-// Collections
-const PENDING_CREDIT_TRANSACTIONS_COLLECTION = 'pending_credit_transactions';
-const CREDIT_TRANSACTIONS_COLLECTION = 'credit_transactions';
-const PURCHASES_COLLECTION = 'purchases';
-const SUBSCRIPTION_TRANSACTIONS_COLLECTION = 'subscription_transactions';
-const PENDING_SUBSCRIPTIONS_COLLECTION = 'pending_subscriptions';
-const USERS_COLLECTION = 'users';
-
 // ==================== LAZY LOAD HELPER ====================
 
 const loadFirebaseModules = async () => {
@@ -25,7 +17,7 @@ const loadFirebaseModules = async () => {
     console.log('[INFO] 🔥 Firebase: Lazy loading modules');
     
     try {
-      // Check if Firebase Admin is already initialized globally
+      // Dynamic import of firebase-admin (lazy loading)
       const adminModule = await import('firebase-admin');
       const admin = adminModule.default;
       
@@ -112,12 +104,21 @@ function getCreditsForVariant(productId) {
 const addCreditsToUser = async function(email, coverArtCredits, lyricVideoCredits, orderId, userIdFromMeta) {
   try {
     if (!db) {
-      console.error('[ERROR] ❌ Firebase not available for adding credits');
-      return;
+      await loadFirebaseModules();
+      if (!db) {
+        console.error('[ERROR] ❌ Firebase not available for adding credits');
+        return;
+      }
     }
 
     let userDocId = userIdFromMeta;
     let userEmail = email;
+
+    // Collections
+    const USERS_COLLECTION = 'users';
+    const CREDIT_TRANSACTIONS_COLLECTION = 'credit_transactions';
+    const PURCHASES_COLLECTION = 'purchases';
+    const PENDING_CREDIT_TRANSACTIONS_COLLECTION = 'pending_credit_transactions';
 
     if (!userDocId) {
       const usersRef = db.collection(USERS_COLLECTION);
@@ -238,12 +239,19 @@ const addCreditsToUser = async function(email, coverArtCredits, lyricVideoCredit
 const updateUserSubscription = async function(email, productId, coverArtCredits, lyricVideoCredits, subscriptionId, userIdFromMeta) {
   try {
     if (!db) {
-      console.error('[ERROR] ❌ Firebase not available for updating subscription');
-      return;
+      await loadFirebaseModules();
+      if (!db) {
+        console.error('[ERROR] ❌ Firebase not available for updating subscription');
+        return;
+      }
     }
 
     let userDocId = userIdFromMeta;
     let userEmail = email;
+
+    const USERS_COLLECTION = 'users';
+    const SUBSCRIPTION_TRANSACTIONS_COLLECTION = 'subscription_transactions';
+    const PENDING_SUBSCRIPTIONS_COLLECTION = 'pending_subscriptions';
 
     if (!userDocId) {
       const usersRef = db.collection(USERS_COLLECTION);
@@ -398,6 +406,15 @@ const handleSubscriptionCancelled = async function(data) {
   console.log(`[INFO] 📅 Subscription cancelled - ID: ${subscriptionId}, Email: ${customerEmail}`);
   
   try {
+    if (!db) {
+      await loadFirebaseModules();
+      if (!db) {
+        console.error('[ERROR] ❌ Firebase not available for subscription cancellation');
+        return;
+      }
+    }
+
+    const USERS_COLLECTION = 'users';
     let userDocId = userId;
     
     if (!userDocId && customerEmail) {
@@ -431,6 +448,14 @@ const handlePaymentFailed = async function(data) {
   console.log(`[ERROR] ❌ Payment failed - Transaction: ${transactionId}, Email: ${customerEmail}`);
   
   try {
+    if (!db) {
+      await loadFirebaseModules();
+      if (!db) {
+        console.error('[ERROR] ❌ Firebase not available for recording failed payment');
+        return;
+      }
+    }
+    
     const failedRef = db.collection('failed_payments').doc();
     await failedRef.set({
       transactionId,
@@ -452,6 +477,14 @@ const handleSubscriptionPaymentFailed = async function(data) {
   console.log(`[ERROR] ❌ Subscription payment failed - ID: ${subscriptionId}, Email: ${customerEmail}`);
   
   try {
+    if (!db) {
+      await loadFirebaseModules();
+      if (!db) {
+        console.error('[ERROR] ❌ Firebase not available for recording failed subscription payment');
+        return;
+      }
+    }
+    
     const failedRef = db.collection('failed_subscription_payments').doc();
     await failedRef.set({
       subscriptionId,
@@ -575,13 +608,7 @@ router.post('/', rawBodyMiddleware, async (req, res) => {
     const eventType = event.type;
     console.log(`[INFO] 🔄 Dodo webhook event: ${eventType}`);
 
-    // 4. Lazy load Firebase if needed
-    if (!isFirebaseLoaded) {
-      console.log('[INFO] 🔄 Lazy loading Firebase for event processing');
-      await loadFirebaseModules();
-    }
-
-    // 5. Process event and respond immediately
+    // 4. Process event and respond immediately
     const processEvent = async () => {
       try {
         switch (eventType) {
@@ -724,14 +751,5 @@ router.post('/simulate', async (req, res) => {
     });
   }
 });
-
-console.log('[INFO] ✅ Dodo Webhook Key:', process.env.DODO_PAYMENTS_WEBHOOK_KEY ? 'Configured' : 'Missing');
-console.log('[INFO] 📊 Collections configured:');
-console.log('[INFO]    - users');
-console.log('[INFO]    - credit_transactions');
-console.log('[INFO]    - purchases');
-console.log('[INFO]    - subscription_transactions');
-console.log('[INFO] ✅ Ready to process webhooks at /api/lemon-webhook');
-console.log('[INFO] 🔄 Lazy loading enabled: Firebase will load only when needed');
 
 export default router;
