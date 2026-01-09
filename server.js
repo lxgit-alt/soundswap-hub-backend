@@ -59,36 +59,46 @@ const withTimeout = async (promise, timeoutMs, timeoutMessage = 'Operation timed
 };
 
 // ==================== FIREBASE ADMIN INITIALIZATION ====================
-let db;
-if (!admin.apps.length) {
+let db = null;
+
+// Initialize Firebase in the background to avoid blocking cold-start.
+// Endpoints already check for `db` and will return 500 if Firebase
+// isn't ready yet — this reduces startup latency in serverless envs.
+const initFirebase = async () => {
+  if (admin.apps.length) {
+    db = admin.firestore();
+    loadedModules.firebase = true;
+    console.log('🔥 Firebase Admin already initialized');
+    return;
+  }
+
   try {
     const firebaseConfig = {
       projectId: process.env.FIREBASE_PROJECT_ID,
       clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
       privateKey: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n'),
     };
-    
+
     if (firebaseConfig.projectId && firebaseConfig.clientEmail && firebaseConfig.privateKey) {
       admin.initializeApp({
         credential: admin.credential.cert(firebaseConfig),
         databaseURL: process.env.FIREBASE_DATABASE_URL
       });
-      console.log('🔥 Firebase Admin initialized');
       db = admin.firestore();
       loadedModules.firebase = true;
+      console.log('🔥 Firebase Admin initialized (background)');
     } else {
       console.warn('⚠️ Firebase config incomplete, Firebase Admin not initialized');
       db = null;
     }
   } catch (error) {
-    console.error('❌ Firebase Admin initialization error:', error.message);
+    console.error('❌ Firebase Admin initialization error (background):', error.message);
     db = null;
   }
-} else {
-  db = admin.firestore();
-  console.log('🔥 Firebase Admin already initialized');
-  loadedModules.firebase = true;
-}
+};
+
+// Kick off background initialization (non-blocking)
+initFirebase().catch(err => console.error('Firebase background init failed:', err));
 
 const app = express();
 
@@ -218,10 +228,9 @@ app.use('/api/email', createLazyRouter('./routes/send-welcome-email.js', 'email'
 // Mount create-checkout with raw parser to match webhook handling (helps signature/raw-body needs)
 app.use('/api/create-checkout', bodyParser.raw({ type: '*/*', limit: '20mb' }), createLazyRouter('./routes/create-checkout.js', 'payments'));
 
-// Lyric Video API - load immediately (not in the issue)
-import lyricVideoRoutes from './routes/generate-video.js';
-app.use('/api/lyric-video', lyricVideoRoutes);
-app.use('/api/generate-video', lyricVideoRoutes);
+// Lyric Video API - lazy loaded to improve cold start
+app.use('/api/lyric-video', createLazyRouter('./routes/generate-video.js', 'lyricVideo'));
+app.use('/api/generate-video', createLazyRouter('./routes/generate-video.js', 'lyricVideo'));
 
 // Doodle-to-Art API - LAZY LOADED
 app.use('/api/doodle-art', createLazyRouter('./routes/doodle-art.js', 'doodleArt'));
