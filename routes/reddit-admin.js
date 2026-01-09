@@ -991,6 +991,7 @@ router.post('/cron', async (req, res) => {
     // no-op if environment prevents setting globals
   }
 
+  
   try {
     const authHeader = req.headers.authorization;
     if (!authHeader || authHeader !== `Bearer ${process.env.CRON_SECRET}`) {

@@ -1,33 +1,45 @@
 {
   "version": 2,
-  "functions": {
-    "backend/server.js": {
-      "maxDuration": 60,
-      "memory": 2048
+  "builds": [
+    {
+      "src": "server.js",
+      "use": "@vercel/node",
+      "config": {
+        "maxDuration": 30,
+        "memory": 2048
+      }
     },
-    "backend/routes/generate-video.js": {
-      "maxDuration": 300,
-      "memory": 4096,
-      "runtime": "nodejs18.x"
+    {
+      "src": "api/generate-video.js",
+      "use": "@vercel/node",
+      "config": {
+        "maxDuration": 300,
+        "memory": 4096,
+        "runtime": "nodejs18.x"
+      }
     }
-  },
+  ],
   "routes": [
     {
       "src": "/api/generate-video/(.*)",
-      "dest": "backend/routes/generate-video.js",
+      "dest": "/api/generate-video.js",
+      "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
       "headers": {
         "Access-Control-Allow-Origin": "*",
         "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
-        "Access-Control-Allow-Headers": "Content-Type, Authorization"
+        "Access-Control-Allow-Headers": "Content-Type, Authorization, X-CSRF-Token, X-Requested-With, Accept, Accept-Version, Content-Length, Content-MD5, Date, X-Api-Version",
+        "Access-Control-Allow-Credentials": "true"
       }
     },
     {
       "src": "/api/(.*)",
-      "dest": "backend/server.js"
+      "dest": "/server.js",
+      "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
     },
     {
       "src": "/(.*)",
-      "dest": "backend/server.js"
+      "dest": "/server.js",
+      "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
     }
   ],
   "regions": ["iad1"]
