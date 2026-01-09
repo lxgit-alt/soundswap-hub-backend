@@ -24,6 +24,7 @@ const loadFirebaseModules = async () => {
       
       if (admin.apps.length > 0) {
         db = admin.firestore();
+        db.settings({ ignoreUndefinedProperties: true });
         console.log('[INFO] 🔥 Firebase: Using existing Firebase Admin instance');
       } else {
         // Initialize Firebase if not already initialized
@@ -40,6 +41,7 @@ const loadFirebaseModules = async () => {
             databaseURL: process.env.FIREBASE_DATABASE_URL
           });
           db = admin.firestore();
+          db.settings({ ignoreUndefinedProperties: true });
           console.log('[INFO] 🔥 Firebase: Initialized successfully');
         } else {
           console.error('[ERROR] ❌ Firebase credentials incomplete');
