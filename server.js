@@ -140,6 +140,10 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'webhook-id', 'webhook-timestamp', 'webhook-signature']
 }));
 
+// ==================== WEBHOOK ROUTE (BEFORE BODY PARSERS) ====================
+// Mount webhook FIRST before global body parsers to ensure raw body access for signature verification
+app.use('/api/lemon-webhook', createLazyRouter('./routes/lemon-webhook.js', 'payments'));
+
 // Body parsing middleware
 app.use(bodyParser.json({
   limit: '20mb',
@@ -229,10 +233,6 @@ const createLazyRouter = (modulePath, moduleName) => {
 };
 
 // ==================== MOUNT ROUTERS ====================
-
-// Mount webhook first (needs raw body access) - custom middleware handles raw body for signature verification
-// Do NOT use bodyParser.raw() here - it conflicts with the custom rawBodyMiddleware
-app.use('/api/lemon-webhook', createLazyRouter('./routes/lemon-webhook.js', 'payments'));
 
 // Mount other routers with lazy loading
 app.use('/api/reddit-admin', createLazyRouter('./routes/reddit-admin.js', 'reddit'));
