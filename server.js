@@ -168,6 +168,8 @@ const createLazyRouter = (modulePath, moduleName) => {
           modulePath.includes('backend/') ? modulePath : `./backend/${modulePath}`, // Add backend/
           modulePath.includes('backend/') ? modulePath.substring(9) : `backend/${modulePath}`, // Remove/add backend/
           `./${modulePath.replace('./', '')}`, // Ensure starts with ./
+          `./backend/api/${moduleName}.js`, // Try by module name in backend/api
+          `/var/task/backend/api/${moduleName}.js`, // Vercel deployment path
         ];
         
         let importError = null;
@@ -294,8 +296,59 @@ app.use('/api/reddit-admin', createLazyRouter('./backend/api/reddit-admin.js', '
 app.use('/api/email', createLazyRouter('./backend/api/send-welcome-email.js', 'email'));
 app.use('/api/create-checkout', createLazyRouter('./backend/api/create-checkout.js', 'payments'));
 
-// Lyric Video API - load immediately (not in the issue)
-import lyricVideoRoutes from './backend/api/generate-video.js';
+// Lyric Video API - load immediately (but with better error handling)
+let lyricVideoRoutes = null;
+try {
+  // Try multiple import paths for generate-video.js
+  const importPaths = [
+    './backend/api/generate-video.js',
+    '/var/task/backend/api/generate-video.js',
+    './backend/api/generate-video',
+    '/var/task/backend/api/generate-video'
+  ];
+  
+  for (const importPath of importPaths) {
+    try {
+      console.log(`[INIT] 🔄 Trying to import generate-video from ${importPath}`);
+      const module = await import(importPath);
+      lyricVideoRoutes = module.default || module;
+      console.log(`[INIT] ✅ generate-video module loaded from ${importPath}`);
+      break;
+    } catch (error) {
+      console.log(`[INIT] ❌ Failed to import from ${importPath}:`, error.message);
+    }
+  }
+  
+  if (!lyricVideoRoutes) {
+    console.error('[INIT] ❌ Could not load generate-video module, creating fallback router');
+    lyricVideoRoutes = express.Router();
+    lyricVideoRoutes.post('/', (req, res) => {
+      res.status(503).json({
+        error: 'Lyric video service temporarily unavailable',
+        message: 'The lyric video module failed to load',
+        timestamp: new Date().toISOString()
+      });
+    });
+    
+    lyricVideoRoutes.get('/test', (req, res) => {
+      res.json({
+        success: false,
+        message: 'Lyric video module not loaded',
+        timestamp: new Date().toISOString()
+      });
+    });
+  }
+} catch (error) {
+  console.error('[INIT] ❌ Error loading lyric video routes:', error.message);
+  lyricVideoRoutes = express.Router();
+  lyricVideoRoutes.use((req, res) => {
+    res.status(503).json({
+      error: 'Lyric video module failed to load',
+      timestamp: new Date().toISOString()
+    });
+  });
+}
+
 app.use('/api/lyric-video', lyricVideoRoutes);
 app.use('/api/generate-video', lyricVideoRoutes);
 
