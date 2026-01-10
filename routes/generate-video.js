@@ -14,6 +14,162 @@ const __dirname = dirname(__filename);
 const HF_TOKEN = process.env.HF_TOKEN;
 const hf = new HfInference(HF_TOKEN);
 
+// ============================================
+// FIREBASE ADMIN SETUP FOR CREDIT VERIFICATION
+// ============================================
+
+let db = null;
+
+const loadFirebaseAdmin = async () => {
+  if (!db) {
+    try {
+      const adminModule = await import('firebase-admin');
+      const admin = adminModule.default;
+      
+      if (admin.apps.length > 0) {
+        db = admin.firestore();
+        db.settings({ ignoreUndefinedProperties: true });
+        console.log('[INFO] 🔥 Firebase Admin initialized for video generation');
+      } else {
+        const serviceAccount = {
+          projectId: process.env.FIREBASE_PROJECT_ID,
+          clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+          privateKey: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n'),
+        };
+        
+        if (serviceAccount.projectId && serviceAccount.clientEmail && serviceAccount.privateKey) {
+          admin.initializeApp({
+            credential: admin.credential.cert(serviceAccount),
+            databaseURL: process.env.FIREBASE_DATABASE_URL
+          });
+          db = admin.firestore();
+          db.settings({ ignoreUndefinedProperties: true });
+          console.log('[INFO] 🔥 Firebase Admin initialized for video generation');
+        }
+      }
+    } catch (error) {
+      console.error('[ERROR] ❌ Failed to initialize Firebase Admin:', error.message);
+    }
+  }
+  return db;
+};
+
+// ============================================
+// CREDIT VERIFICATION FUNCTION
+// ============================================
+
+const verifyUserCreditsBeforeProcessing = async (userId, creditType = 'lyricVideo', jobId = '') => {
+  try {
+    if (!userId) {
+      console.warn(`[WARN] ⚠️ Job ${jobId}: No user ID provided, skipping credit verification`);
+      return { verified: true, creditsAvailable: -1, message: 'No user ID (test mode)' };
+    }
+
+    const firestore = await loadFirebaseAdmin();
+    if (!firestore) {
+      console.warn(`[WARN] ⚠️ Job ${jobId}: Firebase not available, skipping credit verification`);
+      return { verified: true, creditsAvailable: -1, message: 'Firebase unavailable (test mode)' };
+    }
+
+    // Get user document
+    const userRef = firestore.collection('users').doc(userId);
+    const userDoc = await userRef.get();
+
+    if (!userDoc.exists) {
+      console.error(`[ERROR] ❌ Job ${jobId}: User ${userId} not found in Firestore`);
+      return { 
+        verified: false, 
+        creditsAvailable: 0, 
+        message: 'User not found',
+        error: 'INVALID_USER'
+      };
+    }
+
+    const userData = userDoc.data();
+    
+    // Check credit balance based on type
+    const creditsField = creditType === 'coverArt' ? 'points' : 'lyricVideoCredits';
+    const creditsAvailable = userData[creditsField] || 0;
+
+    if (creditsAvailable < 1) {
+      console.error(`[ERROR] ❌ Job ${jobId}: Insufficient ${creditType} credits. Available: ${creditsAvailable}`);
+      return {
+        verified: false,
+        creditsAvailable,
+        message: `Insufficient ${creditType} credits`,
+        error: 'INSUFFICIENT_CREDITS',
+        requiredCredits: 1,
+        userId
+      };
+    }
+
+    console.log(`[INFO] ✅ Job ${jobId}: Credit verification passed. User ${userId} has ${creditsAvailable} ${creditType} credits`);
+    
+    return {
+      verified: true,
+      creditsAvailable,
+      message: `Verified ${creditsAvailable} ${creditType} credits available`,
+      userId
+    };
+
+  } catch (error) {
+    console.error(`[ERROR] ❌ Job ${jobId}: Credit verification error: ${error.message}`);
+    return {
+      verified: false,
+      creditsAvailable: 0,
+      message: 'Credit verification error',
+      error: 'VERIFICATION_FAILED',
+      details: error.message
+    };
+  }
+};
+
+// ============================================
+// CREDIT REVERSION FUNCTION
+// ============================================
+
+const revertUserCredits = async (userId, creditType = 'lyricVideo', jobId = '') => {
+  try {
+    if (!userId) {
+      console.warn(`[WARN] ⚠️ Job ${jobId}: No user ID provided, skipping credit reversion`);
+      return { success: false, message: 'No user ID' };
+    }
+
+    const firestore = await loadFirebaseAdmin();
+    if (!firestore) {
+      console.warn(`[WARN] ⚠️ Job ${jobId}: Firebase not available, skipping credit reversion`);
+      return { success: false, message: 'Firebase unavailable' };
+    }
+
+    // Get credit field name
+    const creditsField = creditType === 'coverArt' ? 'points' : 'lyricVideoCredits';
+    const userRef = firestore.collection('users').doc(userId);
+
+    // Increment credits by 1 (refund)
+    await userRef.update({
+      [creditsField]: firestore.FieldValue.increment(1)
+    });
+
+    console.log(`[✅ REFUND] ✅ Job ${jobId}: Reverted 1 ${creditType} credit for user ${userId}`);
+    
+    return {
+      success: true,
+      message: `Reverted 1 ${creditType} credit due to system error`,
+      userId,
+      creditType,
+      refunded: 1
+    };
+
+  } catch (error) {
+    console.error(`[ERROR] ❌ Job ${jobId}: Credit reversion failed: ${error.message}`);
+    return {
+      success: false,
+      message: 'Credit reversion failed',
+      error: error.message
+    };
+  }
+};
+
 // In-memory job stores
 const jobStore = new Map();
 const optimizedJobStore = new Map();
@@ -575,6 +731,34 @@ async function processRegularJob(jobId) {
 
     console.log(`Processing regular job ${jobId}: ${lyrics.length} lyrics, style: ${style}`);
 
+    // ============================================
+    // CRITICAL: Verify credits BEFORE GPU processing
+    // ============================================
+    const userId = data.userId || data.uid;
+    const creditVerification = await verifyUserCreditsBeforeProcessing(userId, 'lyricVideo', jobId);
+    
+    if (!creditVerification.verified) {
+      console.error(`[ERROR] ❌ Job ${jobId}: Credit verification failed - ${creditVerification.message}`);
+      job.status = 'failed';
+      job.progress = 0;
+      job.error = creditVerification.message;
+      job.updatedAt = new Date().toISOString();
+      job.logs = [
+        ...job.logs, 
+        `[CRITICAL] Credit verification failed before GPU processing: ${creditVerification.message}`,
+        `Required: ${creditVerification.requiredCredits || 1} credit(s)`,
+        `Available: ${creditVerification.creditsAvailable} credit(s)`
+      ];
+      jobStore.set(jobId, job);
+      return;
+    }
+
+    job.logs = [
+      ...job.logs, 
+      `[VERIFIED] ✅ User credits verified (${creditVerification.creditsAvailable} available)`
+    ];
+    jobStore.set(jobId, job);
+
     // Simulate processing steps
     for (let progress = 20; progress <= 90; progress += 20) {
       await new Promise(resolve => setTimeout(resolve, 1000));
@@ -616,6 +800,20 @@ async function processRegularJob(jobId) {
       job.error = error.message;
       job.updatedAt = new Date().toISOString();
       job.logs = [...job.logs, `Job failed: ${error.message}`];
+
+      // REFUND: Revert credits if failure is NOT due to insufficient credits
+      // (insufficient credits already handled earlier, user was never charged)
+      const userId = job.data.userId || job.data.uid;
+      if (userId && !error.message.includes('Insufficient')) {
+        console.log(`[INFO] 🔄 Attempting to revert credits for failed job ${jobId}...`);
+        const revertResult = await revertUserCredits(userId, 'lyricVideo', jobId);
+        if (revertResult.success) {
+          job.logs = [...job.logs, `[✅ REFUND] Credit reversion successful: ${revertResult.message}`];
+        } else {
+          job.logs = [...job.logs, `[⚠️ REFUND FAILED] Could not revert credits: ${revertResult.message}`];
+        }
+      }
+      
       jobStore.set(jobId, job);
     }
   }
@@ -635,6 +833,34 @@ async function processOptimizedJob(jobId) {
     const { lyrics, style, settings } = data;
 
     console.log(`Processing optimized job ${jobId}: ${lyrics.length} lyrics, style: ${style}`);
+
+    // ============================================
+    // CRITICAL: Verify credits BEFORE GPU processing
+    // ============================================
+    const userId = data.userId || data.uid;
+    const creditVerification = await verifyUserCreditsBeforeProcessing(userId, 'lyricVideo', jobId);
+    
+    if (!creditVerification.verified) {
+      console.error(`[ERROR] ❌ Job ${jobId}: Credit verification failed - ${creditVerification.message}`);
+      job.status = 'failed';
+      job.progress = 0;
+      job.error = creditVerification.message;
+      job.updatedAt = new Date().toISOString();
+      job.logs = [
+        ...job.logs, 
+        `[CRITICAL] Credit verification failed before GPU processing: ${creditVerification.message}`,
+        `Required: ${creditVerification.requiredCredits || 1} credit(s)`,
+        `Available: ${creditVerification.creditsAvailable} credit(s)`
+      ];
+      optimizedJobStore.set(jobId, job);
+      return;
+    }
+
+    job.logs = [
+      ...job.logs, 
+      `[VERIFIED] ✅ User credits verified (${creditVerification.creditsAvailable} available)`
+    ];
+    optimizedJobStore.set(jobId, job);
 
     // Simulate optimized processing (faster)
     for (let progress = 20; progress <= 90; progress += 25) {
@@ -688,6 +914,20 @@ async function processOptimizedJob(jobId) {
       job.error = error.message;
       job.updatedAt = new Date().toISOString();
       job.logs = [...job.logs, `Optimized job failed: ${error.message}`];
+
+      // REFUND: Revert credits if failure is NOT due to insufficient credits
+      // (insufficient credits already handled earlier, user was never charged)
+      const userId = job.data.userId || job.data.uid;
+      if (userId && !error.message.includes('Insufficient')) {
+        console.log(`[INFO] 🔄 Attempting to revert credits for failed job ${jobId}...`);
+        const revertResult = await revertUserCredits(userId, 'lyricVideo', jobId);
+        if (revertResult.success) {
+          job.logs = [...job.logs, `[✅ REFUND] Credit reversion successful: ${revertResult.message}`];
+        } else {
+          job.logs = [...job.logs, `[⚠️ REFUND FAILED] Could not revert credits: ${revertResult.message}`];
+        }
+      }
+      
       optimizedJobStore.set(jobId, job);
     }
   }

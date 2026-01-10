@@ -13,6 +13,162 @@ const replicate = new Replicate({
   auth: process.env.REPLICATE_API_TOKEN,
 });
 
+// ============================================
+// FIREBASE ADMIN SETUP FOR CREDIT VERIFICATION
+// ============================================
+
+let db = null;
+
+const loadFirebaseAdmin = async () => {
+  if (!db) {
+    try {
+      const adminModule = await import('firebase-admin');
+      const admin = adminModule.default;
+      
+      if (admin.apps.length > 0) {
+        db = admin.firestore();
+        db.settings({ ignoreUndefinedProperties: true });
+        console.log('[INFO] 🔥 Firebase Admin initialized for doodle-art generation');
+      } else {
+        const serviceAccount = {
+          projectId: process.env.FIREBASE_PROJECT_ID,
+          clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+          privateKey: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n'),
+        };
+        
+        if (serviceAccount.projectId && serviceAccount.clientEmail && serviceAccount.privateKey) {
+          admin.initializeApp({
+            credential: admin.credential.cert(serviceAccount),
+            databaseURL: process.env.FIREBASE_DATABASE_URL
+          });
+          db = admin.firestore();
+          db.settings({ ignoreUndefinedProperties: true });
+          console.log('[INFO] 🔥 Firebase Admin initialized for doodle-art generation');
+        }
+      }
+    } catch (error) {
+      console.error('[ERROR] ❌ Failed to initialize Firebase Admin:', error.message);
+    }
+  }
+  return db;
+};
+
+// ============================================
+// CREDIT VERIFICATION FUNCTION
+// ============================================
+
+const verifyUserCreditsBeforeProcessing = async (userId, creditType = 'coverArt', generationId = '') => {
+  try {
+    if (!userId) {
+      console.warn(`[WARN] ⚠️ Generation ${generationId}: No user ID provided, skipping credit verification`);
+      return { verified: true, creditsAvailable: -1, message: 'No user ID (test mode)' };
+    }
+
+    const firestore = await loadFirebaseAdmin();
+    if (!firestore) {
+      console.warn(`[WARN] ⚠️ Generation ${generationId}: Firebase not available, skipping credit verification`);
+      return { verified: true, creditsAvailable: -1, message: 'Firebase unavailable (test mode)' };
+    }
+
+    // Get user document
+    const userRef = firestore.collection('users').doc(userId);
+    const userDoc = await userRef.get();
+
+    if (!userDoc.exists) {
+      console.error(`[ERROR] ❌ Generation ${generationId}: User ${userId} not found in Firestore`);
+      return { 
+        verified: false, 
+        creditsAvailable: 0, 
+        message: 'User not found',
+        error: 'INVALID_USER'
+      };
+    }
+
+    const userData = userDoc.data();
+    
+    // Check credit balance based on type
+    const creditsField = creditType === 'coverArt' ? 'points' : 'lyricVideoCredits';
+    const creditsAvailable = userData[creditsField] || 0;
+
+    if (creditsAvailable < 1) {
+      console.error(`[ERROR] ❌ Generation ${generationId}: Insufficient ${creditType} credits. Available: ${creditsAvailable}`);
+      return {
+        verified: false,
+        creditsAvailable,
+        message: `Insufficient ${creditType} credits`,
+        error: 'INSUFFICIENT_CREDITS',
+        requiredCredits: 1,
+        userId
+      };
+    }
+
+    console.log(`[INFO] ✅ Generation ${generationId}: Credit verification passed. User ${userId} has ${creditsAvailable} ${creditType} credits`);
+    
+    return {
+      verified: true,
+      creditsAvailable,
+      message: `Verified ${creditsAvailable} ${creditType} credits available`,
+      userId
+    };
+
+  } catch (error) {
+    console.error(`[ERROR] ❌ Generation ${generationId}: Credit verification error: ${error.message}`);
+    return {
+      verified: false,
+      creditsAvailable: 0,
+      message: 'Credit verification error',
+      error: 'VERIFICATION_FAILED',
+      details: error.message
+    };
+  }
+};
+
+// ============================================
+// CREDIT REVERSION FUNCTION
+// ============================================
+
+const revertUserCredits = async (userId, creditType = 'coverArt', generationId = '') => {
+  try {
+    if (!userId) {
+      console.warn(`[WARN] ⚠️ Generation ${generationId}: No user ID provided, skipping credit reversion`);
+      return { success: false, message: 'No user ID' };
+    }
+
+    const firestore = await loadFirebaseAdmin();
+    if (!firestore) {
+      console.warn(`[WARN] ⚠️ Generation ${generationId}: Firebase not available, skipping credit reversion`);
+      return { success: false, message: 'Firebase unavailable' };
+    }
+
+    // Get credit field name
+    const creditsField = creditType === 'coverArt' ? 'points' : 'lyricVideoCredits';
+    const userRef = firestore.collection('users').doc(userId);
+
+    // Increment credits by 1 (refund)
+    await userRef.update({
+      [creditsField]: firestore.FieldValue.increment(1)
+    });
+
+    console.log(`[✅ REFUND] ✅ Generation ${generationId}: Reverted 1 ${creditType} credit for user ${userId}`);
+    
+    return {
+      success: true,
+      message: `Reverted 1 ${creditType} credit due to system error`,
+      userId,
+      creditType,
+      refunded: 1
+    };
+
+  } catch (error) {
+    console.error(`[ERROR] ❌ Generation ${generationId}: Credit reversion failed: ${error.message}`);
+    return {
+      success: false,
+      message: 'Credit reversion failed',
+      error: error.message
+    };
+  }
+};
+
 // Helper function to download image from URL
 const downloadImage = async (url) => {
   try {
@@ -120,6 +276,26 @@ router.post('/generate', async (req, res) => {
 
     console.log('Calling Replicate ControlNet Scribble API...');
     
+    // ============================================
+    // CRITICAL: Verify credits BEFORE Replicate call
+    // ============================================
+    const userId = req.body.userId || req.body.uid;
+    const generationId = crypto.randomBytes(8).toString('hex');
+    const creditVerification = await verifyUserCreditsBeforeProcessing(userId, 'coverArt', generationId);
+    
+    if (!creditVerification.verified) {
+      console.error(`[ERROR] ❌ Generation ${generationId}: Credit verification failed - ${creditVerification.message}`);
+      return res.status(402).json({
+        success: false,
+        error: creditVerification.error,
+        message: creditVerification.message,
+        requiredCredits: creditVerification.requiredCredits || 1,
+        available: creditVerification.creditsAvailable
+      });
+    }
+    
+    console.log(`[VERIFIED] ✅ User credits verified (${creditVerification.creditsAvailable} available)`);
+    
     // Call Replicate API
     const output = await replicate.run(
       "jagilley/controlnet-scribble:435061a1b5a4c1e26740464bf786efdfa9cb3a3ac488595a2de23e143fdb0117",
@@ -142,9 +318,6 @@ router.post('/generate', async (req, res) => {
       }
     }
 
-    // Generate a unique ID for this generation
-    const generationId = crypto.randomBytes(8).toString('hex');
-
     res.json({
       success: true,
       generationId: generationId,
@@ -163,6 +336,17 @@ router.post('/generate', async (req, res) => {
 
   } catch (error) {
     console.error('Doodle generation error:', error.message);
+    
+    // REFUND: Revert credits if failure is NOT due to insufficient credits
+    const userId = req.body.userId || req.body.uid;
+    const generationId = crypto.randomBytes(8).toString('hex');
+    if (userId && !error.message.includes('Insufficient')) {
+      console.log(`[INFO] 🔄 Attempting to revert credits for failed generation ${generationId}...`);
+      const revertResult = await revertUserCredits(userId, 'coverArt', generationId);
+      if (!revertResult.success) {
+        console.warn(`[⚠️ REFUND FAILED] ${revertResult.message}`);
+      }
+    }
     
     // Handle specific error cases
     if (error.message.includes('NSFW') || error.message.includes('inappropriate')) {
@@ -236,6 +420,26 @@ router.post('/animate', async (req, res) => {
     console.log('Motion strength:', motionStrength);
     console.log('Duration:', duration, 'seconds');
 
+    // ============================================
+    // CRITICAL: Verify credits BEFORE Replicate call
+    // ============================================
+    const userId = req.body.userId || req.body.uid;
+    const generationId = crypto.randomBytes(8).toString('hex');
+    const creditVerification = await verifyUserCreditsBeforeProcessing(userId, 'lyricVideo', generationId);
+    
+    if (!creditVerification.verified) {
+      console.error(`[ERROR] ❌ Generation ${generationId}: Credit verification failed - ${creditVerification.message}`);
+      return res.status(402).json({
+        success: false,
+        error: creditVerification.error,
+        message: creditVerification.message,
+        requiredCredits: creditVerification.requiredCredits || 1,
+        available: creditVerification.creditsAvailable
+      });
+    }
+    
+    console.log(`[VERIFIED] ✅ User credits verified (${creditVerification.creditsAvailable} available)`);
+
     // For Spotify Canvas, we need 8-second videos
     // Using Stability AI's video diffusion model
     const input = {
@@ -282,6 +486,17 @@ router.post('/animate', async (req, res) => {
 
   } catch (error) {
     console.error('Animation generation error:', error.message);
+    
+    // REFUND: Revert credits if failure is NOT due to insufficient credits
+    const userId = req.body.userId || req.body.uid;
+    const generationId = crypto.randomBytes(8).toString('hex');
+    if (userId && !error.message.includes('Insufficient')) {
+      console.log(`[INFO] 🔄 Attempting to revert credits for failed animation ${generationId}...`);
+      const revertResult = await revertUserCredits(userId, 'lyricVideo', generationId);
+      if (!revertResult.success) {
+        console.warn(`[⚠️ REFUND FAILED] ${revertResult.message}`);
+      }
+    }
     
     // Handle specific error cases
     if (error.message.includes('NSFW') || error.message.includes('inappropriate')) {
