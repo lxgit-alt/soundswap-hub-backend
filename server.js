@@ -6,8 +6,6 @@ import dotenv from 'dotenv';
 import admin from 'firebase-admin';
 import bodyParser from 'body-parser';
 
-
-
 // Use the `VERCEL_INCLUDE_ROUTES=1` env var to enable; otherwise this
 // block will not run. Using an env check avoids static "unreachable"
 // warnings from linters that flag `if (false)` blocks.
@@ -132,13 +130,38 @@ app.use(helmet({
   crossOriginEmbedderPolicy: false
 }));
 
-// CORS configuration
+// FIXED: CORS configuration - Allow all origins for local development
 app.use(cors({
-  origin: '*',
+  origin: function (origin, callback) {
+    // Allow requests with no origin (like mobile apps, curl, etc.)
+    if (!origin) return callback(null, true);
+    
+    // List of allowed origins
+    const allowedOrigins = [
+      'http://localhost:3000',
+      'http://127.0.0.1:3000',
+      'http://localhost:3001',
+      'http://127.0.0.1:3001',
+      'https://soundswap.live',
+      'https://www.soundswap.live'
+    ];
+    
+    if (allowedOrigins.indexOf(origin) !== -1 || process.env.NODE_ENV === 'development') {
+      callback(null, true);
+    } else {
+      console.log('⚠️ CORS blocked origin:', origin);
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
   credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'webhook-id', 'webhook-timestamp', 'webhook-signature']
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'webhook-id', 'webhook-timestamp', 'webhook-signature', 'Origin', 'x-client-id'],
+  exposedHeaders: ['Content-Range', 'X-Content-Range'],
+  maxAge: 86400 // 24 hours
 }));
+
+// Handle preflight requests
+app.options('*', cors());
 
 // ==================== LAZY ROUTE LOADERS (DEFINED EARLY FOR WEBHOOK) ====================
 const createLazyRouter = (modulePath, moduleName) => {
@@ -232,6 +255,12 @@ app.use((req, res, next) => {
   next();
 });
 
+// Request logging middleware (for debugging)
+app.use((req, res, next) => {
+  console.log(`🌐 ${req.method} ${req.path} from ${req.headers.origin || 'unknown'}`);
+  next();
+});
+
 // ==================== MOUNT ROUTERS ====================
 
 // Mount other routers with lazy loading
@@ -253,6 +282,7 @@ app.use('/api/ai-art', createLazyRouter('./routes/doodle-art.js', 'doodleArt'));
 // Check user credits
 app.post('/api/check-credits', async (req, res) => {
   try {
+    console.log('🔍 Checking credits for user:', req.body.userId);
     const { userId, type } = req.body;
     
     if (!userId || !type) {
@@ -288,6 +318,8 @@ app.post('/api/check-credits', async (req, res) => {
       credits = userData.lyricVideoCredits || 0;
     }
     
+    console.log(`✅ Credits check: ${credits} ${type} credits for user ${userId}`);
+    
     res.json({
       success: true,
       credits,
@@ -308,86 +340,74 @@ app.post('/api/check-credits', async (req, res) => {
 // Deduct credits
 app.post('/api/deduct-credits', async (req, res) => {
   try {
-    const { userId, type, amount, reason } = req.body;
-    
-    if (!userId || !type || !amount) {
-      return res.status(400).json({ 
-        error: 'Missing required fields',
-        timestamp: new Date().toISOString()
-      });
+    console.log('💳 Deduct credits request received');
+    const authHeader = req.headers.authorization || '';
+    const token = authHeader.startsWith('Bearer ') ? authHeader.split('Bearer ')[1] : null;
+    if (!token) {
+      console.log('❌ No auth token provided');
+      return res.status(401).json({ error: 'Missing auth token' });
     }
+
+    // Verify token and determine uid
+    let uid;
+    try {
+      console.log('🔐 Verifying ID token...');
+      const decoded = await admin.auth().verifyIdToken(token);
+      uid = decoded.uid;
+      console.log(`✅ Token verified for user: ${uid}`);
+    } catch (err) {
+      console.error('❌ Token verification failed:', err.message);
+      return res.status(401).json({ error: 'Invalid auth token' });
+    }
+
+    const { type, amount, reason } = req.body;
+    console.log(`📊 Deducting ${amount} ${type} credits for user ${uid}, reason: ${reason || 'generation'}`);
     
+    if (!type || !amount) {
+      return res.status(400).json({ error: 'Missing required fields' });
+    }
+
     if (!db) {
-      return res.status(500).json({
-        success: false,
-        error: 'Firebase not initialized',
-        timestamp: new Date().toISOString()
-      });
+      return res.status(500).json({ success: false, error: 'Firebase not initialized' });
     }
-    
-    const userRef = db.collection('users').doc(userId);
-    const userDoc = await userRef.get();
-    
-    if (!userDoc.exists) {
-      return res.status(404).json({ 
-        error: 'User not found',
-        timestamp: new Date().toISOString()
+
+    const userRef = db.collection('users').doc(uid);
+
+    // Run transaction to atomically deduct and record transaction
+    const result = await db.runTransaction(async (tx) => {
+      console.log('🔄 Starting Firestore transaction for credit deduction');
+      const snap = await tx.get(userRef);
+      if (!snap.exists) throw new Error('User profile not found');
+      const data = snap.data();
+      const field = type === 'coverArt' ? 'points' : (type === 'lyricVideo' ? 'lyricVideoCredits' : null);
+      if (!field) throw new Error('Invalid credit type');
+      const current = data[field] || 0;
+      console.log(`📊 Current ${type} credits: ${current}, deducting: ${amount}`);
+      if (current < amount) throw new Error('Insufficient credits');
+      const newVal = current - amount;
+      tx.update(userRef, { [field]: newVal, updatedAt: admin.firestore.FieldValue.serverTimestamp() });
+
+      const txRef = db.collection('credit_transactions').doc();
+      tx.set(txRef, {
+        userId: uid,
+        type: 'deduction',
+        creditType: type,
+        amount: -amount,
+        reason: reason || 'generation',
+        remaining: newVal,
+        date: admin.firestore.FieldValue.serverTimestamp()
       });
-    }
-    
-    const userData = userDoc.data();
-    let fieldToUpdate = '';
-    let currentCredits = 0;
-    
-    if (type === 'coverArt') {
-      fieldToUpdate = 'points';
-      currentCredits = userData.points || 0;
-    } else if (type === 'lyricVideo') {
-      fieldToUpdate = 'lyricVideoCredits';
-      currentCredits = userData.lyricVideoCredits || 0;
-    } else {
-      return res.status(400).json({ 
-        error: 'Invalid credit type',
-        timestamp: new Date().toISOString()
-      });
-    }
-    
-    if (currentCredits < amount) {
-      return res.status(400).json({ 
-        success: false,
-        error: 'Insufficient credits',
-        required: amount,
-        available: currentCredits,
-        timestamp: new Date().toISOString()
-      });
-    }
-    
-    const newCredits = currentCredits - amount;
-    
-    await userRef.update({
-      [fieldToUpdate]: newCredits,
-      updatedAt: admin.firestore.FieldValue.serverTimestamp()
+
+      return { remaining: newVal, transactionId: txRef.id };
     });
+
+    console.log(`✅ Successfully deducted ${amount} ${type} credits. New balance: ${result.remaining}`);
     
-    const transactionRef = db.collection('credit_transactions').doc();
-    await transactionRef.set({
-      userId,
-      type: 'deduction',
-      creditType: type,
-      amount: -amount,
-      reason: reason || 'generation',
-      remaining: newCredits,
-      date: admin.firestore.FieldValue.serverTimestamp(),
-      timestamp: Date.now()
-    });
-    
-    res.json({
-      success: true,
-      type,
-      deducted: amount,
-      remaining: newCredits,
-      transactionId: transactionRef.id,
-      timestamp: new Date().toISOString()
+    res.json({ 
+      success: true, 
+      remaining: result.remaining, 
+      transactionId: result.transactionId,
+      message: `Deducted ${amount} ${type} credits successfully`
     });
   } catch (error) {
     console.error('❌ Error deducting credits:', error);
@@ -1089,5 +1109,6 @@ if (process.env.NODE_ENV !== 'production' || process.env.VERCEL !== '1') {
     console.log(`❤️  Health check: http://localhost:${PORT}/api/health`);
     console.log(`🔒 Isolated cron: POST http://localhost:${PORT}/api/cron-reddit`);
     console.log(`📊 Module status: GET http://localhost:${PORT}/api/module-status`);
+    console.log(`🌐 CORS enabled for: localhost:3000, localhost:3001, soundswap.live`);
   });
 }
