@@ -26,12 +26,22 @@ let redditClient = null;
 // ==================== DISCORD NOTIFICATION FUNCTION ====================
 
 const sendDiscordLeadNotification = async (leadData) => {
+  console.log('[DISCORD] 📤 Attempting to send notification...');
+  console.log('[DISCORD] 📊 Lead data:', {
+    subreddit: leadData.subreddit,
+    score: leadData.leadScore,
+    title: leadData.postTitle?.substring(0, 50) + '...'
+  });
+  
   try {
     if (!DISCORD_WEBHOOK_URL) {
-      console.warn('[WARN] Discord webhook URL not configured');
+      console.warn('[WARN] ❌ Discord webhook URL not configured');
+      console.warn('[WARN] Check environment variable: DISCORD_WEBHOOK_URL');
       return false;
     }
 
+    console.log('[DISCORD] ✅ Webhook URL is configured');
+    
     // Format the Discord embed
     const embed = {
       title: '🎯 **NEW LEAD GENERATED**',
@@ -88,12 +98,12 @@ const sendDiscordLeadNotification = async (leadData) => {
       ],
       footer: {
         text: 'SoundSwap Reddit Automation • Lead Generation',
-        icon_url: 'https://cdn-icons-png.flaticon.com/512/2702/2702602.png'
+        icon_url: 'https://cdn-icons-png.flaticon.com/512/2702/2702702.png'
       },
       timestamp: new Date().toISOString()
     };
 
-    // Send to Discord
+    console.log('[DISCORD] 📨 Sending payload to Discord...');
     const response = await fetch(DISCORD_WEBHOOK_URL, {
       method: 'POST',
       headers: {
@@ -103,20 +113,28 @@ const sendDiscordLeadNotification = async (leadData) => {
         content: `🎯 **New premium lead detected!** <@&1153832361951674478>`,
         embeds: [embed],
         username: 'SoundSwap Lead Bot',
-        avatar_url: 'https://cdn-icons-png.flaticon.com/512/2702/2702602.png'
+        avatar_url: 'https://cdn-icons-png.flaticon.com/512/2702/2702702.png'
       })
     });
 
+    console.log(`[DISCORD] 📡 Response status: ${response.status}`);
+    
     if (response.ok) {
       console.log('[DISCORD] ✅ Lead notification sent successfully');
       return true;
     } else {
       const errorText = await response.text();
-      console.warn('[WARN] Failed to send Discord notification:', response.status, errorText);
+      console.warn('[WARN] ❌ Failed to send Discord notification:', {
+        status: response.status,
+        error: errorText.substring(0, 200)
+      });
       return false;
     }
   } catch (error) {
-    console.error('[ERROR] ❌ Error sending Discord notification:', error.message);
+    console.error('[ERROR] ❌ Error sending Discord notification:', {
+      message: error.message,
+      stack: error.stack?.substring(0, 200)
+    });
     return false;
   }
 };
@@ -126,27 +144,35 @@ const sendDiscordLeadNotification = async (leadData) => {
 const safeSetTimeout = (callback, delay) => {
   const DEFAULT_DELAY = 1000;
 
-  // Convert to number and validate explicitly. This avoids pitfalls with
-  // values like -Infinity which are truthy and would bypass `||` fallbacks.
+  // 1. Ensure we have a finite number. 
+  // If 'delay' is -Infinity or NaN, 'parsed' becomes that value.
   const parsed = Number(delay);
 
-  if (!Number.isFinite(parsed) || parsed <= 0) {
-    // Silently use default for timing calculations, only log for actual issues
+  // 2. Validate: must be finite and non-negative.
+  // We use Math.max(0, ...) to ensure we never pass a negative to setTimeout.
+  if (!Number.isFinite(parsed) || parsed < 0) {
     return setTimeout(callback, DEFAULT_DELAY);
   }
 
-  // Clamp to a safe integer range
-  const safeDelay = Math.min(Number.MAX_SAFE_INTEGER, Math.max(1, Math.trunc(parsed)));
+  // 3. Clamp to safe integer range (Node.js max timeout is actually 2,147,483,647ms)
+  const MAX_TIMEOUT = 2147483647; 
+  const safeDelay = Math.min(MAX_TIMEOUT, Math.trunc(parsed));
+  
   return setTimeout(callback, safeDelay);
 };
 
-// Safer timeout calculation to prevent negative values
 const calculateTimeout = (baseMs, subtractMs = 0) => {
-  const result = baseMs - subtractMs;
-  // Ensure result is always at least 100ms and finite
-  if (!Number.isFinite(result) || result < 100) {
+  // Normalize inputs to 0 if they are invalid/infinite/negative before subtracting
+  const base = Number.isFinite(baseMs) ? Math.max(0, baseMs) : 1000;
+  const subtract = Number.isFinite(subtractMs) ? Math.max(0, subtractMs) : 0;
+
+  const result = base - subtract;
+
+  // Ensure result is at least 100ms and not exceeding 32-bit int limit
+  if (result < 100) {
     return 1000;
   }
+  
   return Math.trunc(result);
 };
 
@@ -584,17 +610,21 @@ const generateFallbackComment = (subreddit, painPoints = []) => {
       "As a digital artist, AI tools have really helped speed up my workflow. Tools that turn sketches into finished art can save days of work.",
       "The right creative tools make all the difference. AI art generators can help bring concepts to life quickly."
     ],
-    'videoediting': [
-      "Automating repetitive editing tasks with AI has been a game-changer for my workflow. Saves so much time on animations.",
-      "AI-powered video tools can handle kinetic typography and text animations automatically - perfect for music videos."
+    'aivideo': [
+      "AI video tools can automate the entire video creation process. At SoundSwap, our lyric video generator analyzes BPM and syncs animations automatically.",
+      "Creating professional music videos with AI saves hours of editing. Our tools handle timing, animation, and styling automatically."
     ],
-    'digitalart': [
-      "AI art generation tools are great for speeding up the creative process. They can turn basic sketches into polished artwork.",
-      "Creating animations for music doesn't have to take days. AI assistance can generate professional results in minutes."
+    'musicproduction': [
+      "Integrating AI video tools into music production workflow can save countless hours. Our lyric video generator syncs automatically with your tracks.",
+      "Music producers don't need to be video editors. AI tools like SoundSwap's lyric video generator handle timing, animation, and styling automatically."
     ],
-    'MusicMarketing': [
-      "Professional visuals are key for music promotion. AI tools can create Spotify Canvas art and lyric videos quickly and affordably.",
-      "Standing out on streaming platforms requires great visuals. AI-generated artwork and videos can help artists compete."
+    'musicians': [
+      "AI tools have revolutionized how musicians create visual content. Our lyric video generator turns songs into professional videos in minutes.",
+      "Creating professional videos for your music doesn't require video editing skills. AI tools automate the entire process."
+    ],
+    'aiArt': [
+      "AI art generation combined with music creates stunning visual experiences. SoundSwap tools transform sketches into animated music visuals.",
+      "The combination of AI art and music opens up incredible creative possibilities. Tools like ours automate the animation process."
     ]
   };
   
@@ -621,12 +651,23 @@ const PREMIUM_FEATURES = {
     priceRange: '$15-$50 per video',
     targetKeywords: ['lyric video', 'music video', 'visualizer', 'animated lyrics', 'Spotify Canvas', 'music promotion'],
     valueProposition: 'Save 10+ hours of editing with AI-powered lyric videos',
-    targetSubreddits: ['WeAreTheMusicMakers', 'videoediting', 'AfterEffects', 'MotionDesign', 'MusicMarketing', 'Spotify'],
+    targetSubreddits: ['WeAreTheMusicMakers', 'aivideo', 'musicproduction', 'musicians', 'MusicMarketing', 'Spotify'],
     painPointSolutions: {
       frustration: 'Automates the tedious video editing process',
       budget: 'Professional quality at a fraction of the cost',
       skillGap: 'No design skills needed - AI does the hard work'
-    }
+    },
+    importantFeatures: [
+      'AI-Powered Lyric Video Creation - Transform lyrics into synchronized music videos',
+      'Music Synchronization - Automatic timing of lyrics with audio beats',
+      'Multiple Visual Styles - 10+ predefined visual styles',
+      'BPM-Based Style Recommendations - AI suggests styles based on song tempo',
+      'Real-time Preview - Live preview of lyrics with audio playback',
+      'Physics-Based Animations - Weight drops, kinetic stops, damped impacts',
+      'AI Autopilot Mode - Automatic style and timing optimization',
+      'Motion Interpolation - Smooth animation rendering',
+      'Multiple Resolution Options - Up to 1080p (4K in premium)'
+    ]
   },
   doodleArtGenerator: {
     name: 'Doodle-to-Art AI Generator',
@@ -642,12 +683,23 @@ const PREMIUM_FEATURES = {
     priceRange: '$10-$30 per animation',
     targetKeywords: ['art generation', 'animation', 'Spotify Canvas', 'digital art', 'AI art', 'creative tools'],
     valueProposition: 'Create professional animations in minutes instead of days',
-    targetSubreddits: ['digitalart', 'StableDiffusion', 'ArtistLounge', 'WeAreTheMusicMakers', 'Spotify'],
+    targetSubreddits: ['aiArt', 'ArtistLounge', 'WeAreTheMusicMakers', 'Spotify', 'musicproduction'],
     painPointSolutions: {
       frustration: 'Turns simple sketches into finished art instantly',
       budget: 'Create premium artwork without expensive software',
       skillGap: 'Transform basic drawings into professional animations'
-    }
+    },
+    importantFeatures: [
+      'Sketch-to-Art Transformation - Turn basic drawings into professional artwork',
+      'Spotify Canvas Optimization - Perfect dimensions and formats for Spotify',
+      'AI Style Transfer - Apply artistic styles to your sketches',
+      'Animation Presets - Pre-built animations for quick results',
+      'Custom Style Training - Train AI on your artistic style',
+      'Batch Processing - Generate multiple variations simultaneously',
+      'HD Export Options - Multiple resolution and format options',
+      'Real-time Preview - See transformations as you draw',
+      'Collaboration Tools - Share and collaborate on art projects'
+    ]
   }
 };
 
@@ -683,10 +735,10 @@ const redditTargets = {
     targetAudience: 'musicians needing visual content',
     painPointFocus: ['frustration', 'budget', 'skillGap']
   },
-  'videoediting': {
-    name: 'videoediting',
-    memberCount: 500000,
-    description: 'Video editing community for professionals and hobbyists',
+  'aivideo': {
+    name: 'aivideo',
+    memberCount: 150000,
+    description: 'AI-generated video community',
     active: true,
     priority: 'high',
     postingSchedule: {
@@ -697,20 +749,20 @@ const redditTargets = {
     educationalPostSchedule: {
       wednesday: ['14:00']
     },
-    preferredStyles: ['technical', 'helpful', 'expert'],
+    preferredStyles: ['technical', 'innovative', 'helpful'],
     soundswapMentionRate: 1.0,
     dailyCommentLimit: 3,
     educationalPostLimit: 1,
     premiumFeatureLimit: 2,
-    keywords: ['automation', 'AI video', 'text animation', 'motion graphics', 'After Effects', 'tedious', 'repetitive'],
+    keywords: ['AI video', 'automation', 'text animation', 'music video', 'lyric video', 'generative video', 'AI animation'],
     premiumFeatures: ['lyricVideoGenerator'],
-    targetAudience: 'video editors seeking automation',
+    targetAudience: 'AI video enthusiasts and creators',
     painPointFocus: ['frustration', 'skillGap']
   },
-  'AfterEffects': {
-    name: 'AfterEffects',
-    memberCount: 300000,
-    description: 'Adobe After Effects community',
+  'musicproduction': {
+    name: 'musicproduction',
+    memberCount: 600000,
+    description: 'Music production community',
     active: true,
     priority: 'high',
     postingSchedule: {
@@ -725,15 +777,15 @@ const redditTargets = {
     dailyCommentLimit: 3,
     educationalPostLimit: 1,
     premiumFeatureLimit: 2,
-    keywords: ['motion graphics', 'automation', 'template', 'animation', 'expressions', 'kinetic typography'],
+    keywords: ['visual content', 'music video', 'lyric video', 'promotion', 'Spotify Canvas', 'artist branding'],
     premiumFeatures: ['lyricVideoGenerator'],
-    targetAudience: 'motion graphics designers',
+    targetAudience: 'music producers needing visuals',
     painPointFocus: ['frustration', 'skillGap']
   },
-  'MotionDesign': {
-    name: 'MotionDesign',
-    memberCount: 150000,
-    description: 'Motion design and animation community',
+  'musicians': {
+    name: 'musicians',
+    memberCount: 400000,
+    description: 'Community for musicians of all levels',
     active: true,
     priority: 'medium',
     postingSchedule: {
@@ -741,20 +793,20 @@ const redditTargets = {
       wednesday: ['16:00'],
       friday: ['14:00']
     },
-    preferredStyles: ['creative', 'technical', 'helpful'],
+    preferredStyles: ['supportive', 'practical', 'helpful'],
     soundswapMentionRate: 1.0,
     dailyCommentLimit: 2,
     educationalPostLimit: 0,
     premiumFeatureLimit: 2,
-    keywords: ['animation', 'motion graphics', 'automation', 'text animation', 'kinetic typography', 'time-saving'],
+    keywords: ['music video', 'visual content', 'promotion', 'lyrics', 'animation', 'affordable tools'],
     premiumFeatures: ['lyricVideoGenerator', 'doodleArtGenerator'],
-    targetAudience: 'motion designers',
+    targetAudience: 'musicians seeking promotion tools',
     painPointFocus: ['frustration', 'budget']
   },
-  'digitalart': {
-    name: 'digitalart',
-    memberCount: 800000,
-    description: 'Digital art creation and discussion',
+  'aiArt': {
+    name: 'aiArt',
+    memberCount: 300000,
+    description: 'AI art generation community',
     active: true,
     priority: 'high',
     postingSchedule: {
@@ -765,39 +817,15 @@ const redditTargets = {
     educationalPostSchedule: {
       tuesday: ['16:00']
     },
-    preferredStyles: ['creative', 'supportive', 'enthusiastic'],
+    preferredStyles: ['creative', 'technical', 'innovative'],
     soundswapMentionRate: 1.0,
     dailyCommentLimit: 3,
     educationalPostLimit: 1,
     premiumFeatureLimit: 2,
-    keywords: ['AI art', 'generative art', 'animation', 'Procreate', 'Clip Studio', 'sketch', 'transformation'],
+    keywords: ['AI art', 'generative art', 'animation', 'sketch to art', 'music visuals', 'Spotify Canvas'],
     premiumFeatures: ['doodleArtGenerator'],
-    targetAudience: 'digital artists exploring AI',
+    targetAudience: 'AI artists exploring music applications',
     painPointFocus: ['skillGap', 'budget']
-  },
-  'StableDiffusion': {
-    name: 'StableDiffusion',
-    memberCount: 400000,
-    description: 'AI image generation community',
-    active: true,
-    priority: 'high',
-    postingSchedule: {
-      monday: ['12:00', '20:00'],
-      wednesday: ['13:00', '21:00'],
-      friday: ['14:00', '22:00']
-    },
-    educationalPostSchedule: {
-      wednesday: ['17:00']
-    },
-    preferredStyles: ['technical', 'innovative', 'helpful'],
-    soundswapMentionRate: 1.0,
-    dailyCommentLimit: 3,
-    educationalPostLimit: 1,
-    premiumFeatureLimit: 2,
-    keywords: ['AI generation', 'sketch to image', 'animation', 'workflow', 'automation', 'controlnet'],
-    premiumFeatures: ['doodleArtGenerator'],
-    targetAudience: 'AI art enthusiasts',
-    painPointFocus: ['skillGap', 'frustration']
   },
   'ArtistLounge': {
     name: 'ArtistLounge',
@@ -1482,6 +1510,41 @@ router.post('/test-discord-webhook', async (req, res) => {
   }
 });
 
+// Debug Discord webhook endpoint
+router.post('/debug-discord', async (req, res) => {
+  try {
+    console.log('[DEBUG] Testing Discord webhook directly...');
+    console.log('[DEBUG] Webhook URL exists:', !!DISCORD_WEBHOOK_URL);
+    
+    // Test with minimal data
+    const testData = {
+      subreddit: 'WeAreTheMusicMakers',
+      postTitle: 'Test lead from debug endpoint',
+      leadType: 'AI Lyric Video Generator',
+      interestLevel: 'High',
+      leadScore: 95,
+      painPoints: ['frustration', 'time-consuming'],
+      redditUrl: 'https://reddit.com/r/test',
+      totalLeadsToday: 1
+    };
+    
+    const result = await sendDiscordLeadNotification(testData);
+    
+    res.json({
+      success: true,
+      discordSent: result,
+      webhookConfigured: !!DISCORD_WEBHOOK_URL,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('[ERROR] Debug failed:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
 // Admin endpoint
 router.get('/admin', (req, res) => {
   const currentTime = getCurrentTimeInAppTimezone();
@@ -1574,7 +1637,8 @@ router.get('/admin', (req, res) => {
     discord: {
       webhook_configured: !!DISCORD_WEBHOOK_URL,
       notifications_enabled: true,
-      test_endpoint: '/api/reddit-admin/test-discord-webhook'
+      test_endpoint: '/api/reddit-admin/test-discord-webhook',
+      debug_endpoint: '/api/reddit-admin/debug-discord'
     },
     lazy_loading_status: {
       firebase: isFirebaseLoaded ? 'LOADED' : 'NOT LOADED',
@@ -1802,26 +1866,7 @@ const loadCoreFunctions = async () => {
         // Increment lead count
         postingActivity.premiumLeadsGenerated = (postingActivity.premiumLeadsGenerated || 0) + 1;
         
-        // Send Discord notification
-        const leadData = {
-          subreddit,
-          postTitle,
-          leadType,
-          interestLevel,
-          painPoints,
-          leadScore,
-          redditUrl,
-          totalLeadsToday: postingActivity.premiumLeadsGenerated
-        };
-        
-        const discordSent = await sendDiscordLeadNotification(leadData);
-        
-        if (discordSent) {
-          postingActivity.discordNotifications.totalSent = (postingActivity.discordNotifications.totalSent || 0) + 1;
-          postingActivity.discordNotifications.lastSent = new Date().toISOString();
-        }
-        
-        return discordSent;
+        return true;
       } catch (error) {
         console.error('[ERROR] ❌ Error saving premium lead:', error);
         return false;
@@ -1877,11 +1922,15 @@ const loadCoreFunctions = async () => {
           model: 'gemini-2.5-flash-lite'
         });
 
-        const prompt = `Write a helpful Reddit comment (1-2 sentences max) for r/${subreddit} about:
+        // Updated prompt to act as SoundSwap team member and list important features
+        const prompt = `As a member of the SoundSwap team, write a helpful Reddit comment (1-2 sentences max) for r/${subreddit} about:
 Post: "${postTitle}"
 User needs: ${painPoints.join(', ') || 'help with creative work'}
 
-Mention how ${premiumFeature.name} can help. Include soundswap.live. Use ${selectedStyle} tone.`;
+Our tool ${premiumFeature.name} can help. Important features include:
+${premiumFeature.importantFeatures.slice(0, 3).join(', ')}
+
+Mention soundswap.live. Use ${selectedStyle} tone. Focus on how our features solve their specific pain points.`;
 
         const aiCall = model.generateContent(prompt);
         const result = await withTimeout(aiCall, AI_TIMEOUT_MS, 'AI generation timeout');
@@ -1971,6 +2020,30 @@ Mention how ${premiumFeature.name} can help. Include soundswap.live. Use ${selec
           "Looking for cheap ways to get professional visuals for my tracks",
           "I can't draw but I want custom artwork for my album",
           "Video editing takes too long, any automation tools?"
+        ],
+        'aivideo': [
+          "Looking for AI tools to automate video creation",
+          "How can AI help with music video generation?",
+          "Best AI video generators for lyric videos?",
+          "Automating video editing with AI"
+        ],
+        'musicproduction': [
+          "Need visual content for my music but not a video editor",
+          "How to create professional music videos without skills?",
+          "Looking for tools to sync lyrics with music automatically",
+          "Best ways to create visualizers for tracks"
+        ],
+        'musicians': [
+          "Affordable ways to get professional music videos",
+          "How to promote my music with visual content?",
+          "Tools for musicians to create lyric videos",
+          "Creating Spotify Canvas without design skills"
+        ],
+        'aiArt': [
+          "Using AI art for music visualizations",
+          "Best AI tools for album cover creation",
+          "Turning sketches into animated music visuals",
+          "AI art generation for Spotify Canvas"
         ],
         'ArtistLounge': [
           "Need affordable tools for digital art creation",
@@ -2068,8 +2141,20 @@ Mention how ${premiumFeature.name} can help. Include soundswap.live. Use ${selec
                 postingActivity.totalComments++;
                 postingActivity.goldenHourStats.goldenHourComments++;
                 
-                // Save lead with Discord notification
-                const discordResult = await savePremiumLead(
+                // Create lead data for Discord notification
+                const leadData = {
+                  subreddit,
+                  postTitle: opportunity.title,
+                  leadType: commentResponse.premiumFeature,
+                  interestLevel: opportunity.leadScore > 50 ? 'high' : 'medium',
+                  painPoints: opportunity.painPointAnalysis.painPoints,
+                  leadScore: opportunity.leadScore,
+                  redditUrl: postResult.redditUrl,
+                  totalLeadsToday: (postingActivity.premiumLeadsGenerated || 0) + 1
+                };
+                
+                // Save lead to Firebase
+                const leadSaved = await savePremiumLead(
                   subreddit,
                   opportunity.title,
                   commentResponse.premiumFeature,
@@ -2079,8 +2164,13 @@ Mention how ${premiumFeature.name} can help. Include soundswap.live. Use ${selec
                   postResult.redditUrl
                 );
                 
-                if (discordResult) {
+                // Send Discord notification directly
+                const discordSent = await sendDiscordLeadNotification(leadData);
+                
+                if (discordSent) {
                   discordNotificationsSent++;
+                  postingActivity.discordNotifications.totalSent = (postingActivity.discordNotifications.totalSent || 0) + 1;
+                  postingActivity.discordNotifications.lastSent = new Date().toISOString();
                   console.log(`[DISCORD] ✅ Notification sent for lead from r/${subreddit}`);
                 } else {
                   discordNotificationsFailed++;
@@ -2146,24 +2236,25 @@ Mention how ${premiumFeature.name} can help. Include soundswap.live. Use ${selec
                 totalPosted++;
                 premiumPosted++;
                 
-                // Simulate Discord notification for fallback
-                if (DISCORD_WEBHOOK_URL) {
-                  const fallbackLeadData = {
-                    subreddit: selectedSubreddit,
-                    postTitle: postTitle,
-                    leadType: commentResponse.premiumFeature,
-                    interestLevel: 'Medium',
-                    leadScore: 30,
-                    painPoints: painPoints,
-                    totalLeadsToday: postingActivity.premiumLeadsGenerated + 1
-                  };
-                  
-                  const discordResult = await sendDiscordLeadNotification(fallbackLeadData);
-                  if (discordResult) {
-                    discordNotificationsSent++;
-                    postingActivity.premiumLeadsGenerated = (postingActivity.premiumLeadsGenerated || 0) + 1;
-                    console.log(`[FALLBACK] 💬 Discord notification sent for fallback lead`);
-                  }
+                // Send Discord notification for fallback
+                const fallbackLeadData = {
+                  subreddit: selectedSubreddit,
+                  postTitle: postTitle,
+                  leadType: commentResponse.premiumFeature,
+                  interestLevel: 'Medium',
+                  leadScore: 30,
+                  painPoints: painPoints,
+                  redditUrl: `https://reddit.com/r/${selectedSubreddit}`,
+                  totalLeadsToday: (postingActivity.premiumLeadsGenerated || 0) + 1
+                };
+                
+                const discordSent = await sendDiscordLeadNotification(fallbackLeadData);
+                if (discordSent) {
+                  discordNotificationsSent++;
+                  postingActivity.premiumLeadsGenerated = (postingActivity.premiumLeadsGenerated || 0) + 1;
+                  postingActivity.discordNotifications.totalSent = (postingActivity.discordNotifications.totalSent || 0) + 1;
+                  postingActivity.discordNotifications.lastSent = new Date().toISOString();
+                  console.log(`[FALLBACK] 💬 Discord notification sent for fallback lead`);
                 }
                 
                 console.log(`[FALLBACK] ✅ Simulated post to r/${selectedSubreddit}`);
