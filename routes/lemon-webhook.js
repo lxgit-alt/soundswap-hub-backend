@@ -76,13 +76,8 @@ function getCreditsForVariant(productId) {
     'video_3pack_full': 6,  // 3-pack full videos = 6 credits
     'video_10pack_full': 20, // 10-pack full videos = 20 credits
     
-    // Subscription Plans (monthly)
-    'sub_basic_monthly': 10,    // Basic Monthly - 10 cover art credits/month
-    'sub_creator_monthly': 25,  // Creator Monthly - 25 cover art credits/month
-    'sub_pro_monthly': 100,     // Pro Monthly - 100 cover art credits/month
-    
     // Add more product IDs as needed
-    'price_1': 10,  // Example Stripe price ID format
+    'price_1': 10,  // Example Dodo price ID format
     'price_2': 25,
     'price_3': 100,
   };
@@ -238,100 +233,6 @@ const addCreditsToUser = async function(email, coverArtCredits, lyricVideoCredit
   }
 };
 
-const updateUserSubscription = async function(email, productId, coverArtCredits, lyricVideoCredits, subscriptionId, userIdFromMeta) {
-  try {
-    if (!db) {
-      await loadFirebaseModules();
-      if (!db) {
-        console.error('[ERROR] ❌ Firebase not available for updating subscription');
-        return;
-      }
-    }
-
-    let userDocId = userIdFromMeta;
-    let userEmail = email;
-
-    const USERS_COLLECTION = 'users';
-    const SUBSCRIPTION_TRANSACTIONS_COLLECTION = 'subscription_transactions';
-    const PENDING_SUBSCRIPTIONS_COLLECTION = 'pending_subscriptions';
-
-    if (!userDocId) {
-      const usersRef = db.collection(USERS_COLLECTION);
-      const querySnapshot = await usersRef.where('email', '==', email.toLowerCase()).get();
-      
-      if (querySnapshot.empty) {
-        console.warn(`[WARN] ⚠️ User not found for subscription: ${email}`);
-        
-        const pendingRef = db.collection(PENDING_SUBSCRIPTIONS_COLLECTION).doc();
-        await pendingRef.set({
-          email: email.toLowerCase(),
-          subscriptionId,
-          productId,
-          coverArtCredits,
-          lyricVideoCredits,
-          status: 'pending_user_creation',
-          date: new Date().toISOString(),
-          timestamp: Date.now()
-        });
-        
-        return;
-      }
-      userDocId = querySnapshot.docs[0].id;
-      userEmail = querySnapshot.docs[0].data().email || email;
-    }
-    
-    const userRef = db.collection(USERS_COLLECTION).doc(userDocId);
-    const userDoc = await userRef.get();
-    
-    if (!userDoc.exists) {
-      console.warn(`[WARN] ⚠️ User document not found: ${userDocId}`);
-      return;
-    }
-    
-    const userData = userDoc.data();
-    
-    const updateData = {
-      subscriptionVariant: productId,
-      subscriptionId,
-      subscriptionStatus: 'active',
-      subscriptionUpdatedAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString()
-    };
-    
-    if (coverArtCredits > 0) {
-      updateData.monthlyCoverArtCredits = coverArtCredits;
-      updateData.points = (userData.points || 0) + coverArtCredits;
-      updateData.totalCreditsEarned = (userData.totalCreditsEarned || 0) + coverArtCredits;
-    }
-    
-    if (lyricVideoCredits > 0) {
-      updateData.monthlyLyricVideoCredits = lyricVideoCredits;
-      updateData.lyricVideoCredits = (userData.lyricVideoCredits || 0) + lyricVideoCredits;
-      updateData.totalLyricVideoCredits = (userData.totalLyricVideoCredits || 0) + lyricVideoCredits;
-    }
-    
-    await userRef.update(updateData);
-    
-    const transactionRef = db.collection(SUBSCRIPTION_TRANSACTIONS_COLLECTION).doc();
-    await transactionRef.set({
-      userId: userDocId,
-      userEmail: userEmail.toLowerCase(),
-      subscriptionId,
-      productId,
-      coverArtCredits,
-      lyricVideoCredits,
-      date: new Date().toISOString(),
-      type: 'subscription_renewal',
-      status: 'completed',
-      timestamp: Date.now()
-    });
-    
-    console.log(`[INFO] ✅ Updated subscription for user ${userDocId} (${userEmail}) - Product: ${productId}, Cover Art: ${coverArtCredits}, Lyric Video: ${lyricVideoCredits}`);
-  } catch (error) {
-    console.error('[ERROR] ❌ Error updating subscription:', error.message);
-  }
-};
-
 // ==================== EVENT HANDLERS ====================
 
 const handlePaymentSucceeded = async function(data) {
@@ -373,76 +274,6 @@ const handlePaymentSucceeded = async function(data) {
   }
 };
 
-const handleSubscriptionEvent = async function(data) {
-  const subscriptionId = data.subscription_id;
-  const customerEmail = data.customer?.email;
-  const customerId = data.customer?.id;
-  const status = data.status;
-  const productId = data.product_id;
-  const userId = data.metadata?.user_id;
-  
-  console.log(`[INFO] 📅 Subscription event - ID: ${subscriptionId}, Status: ${status}, Product: ${productId}, Customer: ${customerEmail} (${customerId})`);
-
-  if (status === 'active' || status === 'renewed') {
-    const monthlyCredits = getCreditsForVariant(productId);
-    let coverArtCredits = 0;
-    let lyricVideoCredits = 0;
-    
-    if (productId.startsWith('prod_') || productId.includes('cover') || productId.includes('art')) {
-      coverArtCredits = monthlyCredits;
-    } else if (productId.includes('video')) {
-      lyricVideoCredits = monthlyCredits;
-    }
-    
-    if (customerEmail && monthlyCredits > 0) {
-      await updateUserSubscription(customerEmail, productId, coverArtCredits, lyricVideoCredits, subscriptionId, userId);
-    }
-  }
-};
-
-const handleSubscriptionCancelled = async function(data) {
-  const subscriptionId = data.subscription_id;
-  const customerEmail = data.customer?.email;
-  const userId = data.metadata?.user_id;
-  
-  console.log(`[INFO] 📅 Subscription cancelled - ID: ${subscriptionId}, Email: ${customerEmail}`);
-  
-  try {
-    if (!db) {
-      await loadFirebaseModules();
-      if (!db) {
-        console.error('[ERROR] ❌ Firebase not available for subscription cancellation');
-        return;
-      }
-    }
-
-    const USERS_COLLECTION = 'users';
-    let userDocId = userId;
-    
-    if (!userDocId && customerEmail) {
-      const usersRef = db.collection(USERS_COLLECTION);
-      const querySnapshot = await usersRef.where('email', '==', customerEmail.toLowerCase()).get();
-      
-      if (!querySnapshot.empty) {
-        userDocId = querySnapshot.docs[0].id;
-      }
-    }
-    
-    if (userDocId) {
-      const userRef = db.collection(USERS_COLLECTION).doc(userDocId);
-      await userRef.update({
-        subscriptionStatus: 'cancelled',
-        subscriptionUpdatedAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString()
-      });
-      
-      console.log(`[INFO] ✅ Updated subscription status to cancelled for user ${userDocId}`);
-    }
-  } catch (error) {
-    console.error('[ERROR] ❌ Error handling subscription cancellation:', error.message);
-  }
-};
-
 const handlePaymentFailed = async function(data) {
   const transactionId = data.transaction_id;
   const customerEmail = data.customer?.email;
@@ -469,33 +300,6 @@ const handlePaymentFailed = async function(data) {
     });
   } catch (error) {
     console.error('[ERROR] ❌ Error recording failed payment:', error.message);
-  }
-};
-
-const handleSubscriptionPaymentFailed = async function(data) {
-  const subscriptionId = data.subscription_id;
-  const customerEmail = data.customer?.email;
-  
-  console.log(`[ERROR] ❌ Subscription payment failed - ID: ${subscriptionId}, Email: ${customerEmail}`);
-  
-  try {
-    if (!db) {
-      await loadFirebaseModules();
-      if (!db) {
-        console.error('[ERROR] ❌ Firebase not available for recording failed subscription payment');
-        return;
-      }
-    }
-    
-    const failedRef = db.collection('failed_subscription_payments').doc();
-    await failedRef.set({
-      subscriptionId,
-      customerEmail,
-      date: new Date().toISOString(),
-      timestamp: Date.now()
-    });
-  } catch (error) {
-    console.error('[ERROR] ❌ Error recording failed subscription payment:', error.message);
   }
 };
 
@@ -583,7 +387,6 @@ router.post('/', rawBodyMiddleware, async (req, res) => {
     }
 
     // 2. Verify Dodo Payments Webhook Signature using Standard Webhooks spec
-    // Support either environment variable name used in different deployments
     const secret = process.env.DODO_PAYMENTS_WEBHOOK_SECRET || process.env.DODO_PAYMENTS_WEBHOOK_KEY;
 
     if (!secret) {
@@ -602,7 +405,7 @@ router.post('/', rawBodyMiddleware, async (req, res) => {
         'webhook-timestamp': req.headers['webhook-timestamp'] || '',
       };
 
-      // Verify using the standardwebhooks library (follows Standard Webhooks spec exactly)
+      // Verify using the standardwebhooks library
       await webhook.verify(rawBody, webhookHeaders);
       
       console.log('[INFO] ✅ Signature verified successfully using Standard Webhooks spec');
@@ -636,24 +439,9 @@ router.post('/', rawBodyMiddleware, async (req, res) => {
             await handlePaymentSucceeded(event.data);
             break;
           
-          case 'subscription.created':
-          case 'subscription.renewed':
-            await handleSubscriptionEvent(event.data);
-            break;
-          
-          case 'subscription.cancelled':
-            console.log(`[INFO] 📅 Subscription cancelled: ${event.data.subscription_id}`);
-            await handleSubscriptionCancelled(event.data);
-            break;
-          
           case 'payment.failed':
             console.log(`[ERROR] ❌ Payment failed: ${event.data.transaction_id}`);
             await handlePaymentFailed(event.data);
-            break;
-          
-          case 'subscription.payment_failed':
-            console.log(`[ERROR] ❌ Subscription payment failed: ${event.data.subscription_id}`);
-            await handleSubscriptionPaymentFailed(event.data);
             break;
           
           default:
@@ -724,18 +512,15 @@ router.get('/status', (req, res) => {
       lazy_loading: 'ENABLED'
     },
     endpoints: {
-      POST: '/api/lemon-webhook - Main webhook endpoint',
-      GET: '/api/lemon-webhook/test - Test endpoint',
-      GET: '/api/lemon-webhook/status - Get status info'
+      POST: '/api/dodo-webhook - Main webhook endpoint',
+      GET: '/api/dodo-webhook/test - Test endpoint',
+      GET: '/api/dodo-webhook/status - Get status info'
     },
     handledEvents: [
       'payment.succeeded',
-      'subscription.created',
-      'subscription.renewed',
-      'subscription.cancelled',
-      'payment.failed',
-      'subscription.payment_failed'
+      'payment.failed'
     ],
+    note: 'SUBSCRIPTIONS REMOVED - Only one-time purchases are supported',
     performance: {
       timeout_protection: 'ENABLED (9s timeout)',
       async_processing: 'ENABLED (responds immediately)',

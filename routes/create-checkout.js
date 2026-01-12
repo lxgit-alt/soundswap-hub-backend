@@ -1,4 +1,3 @@
-// create-checkout.js - Dodo Payments Checkout API (Optimized)
 import express from 'express';
 import DodoPayments from 'dodopayments';
 
@@ -11,112 +10,82 @@ console.log('[INFO] 🚀 Dodo Payments Checkout API Initialized');
 let isFirebaseLoaded = false;
 let auth = null;
 
-// Static product catalog - no imports needed
+// Static product catalog - no imports needed (SUBSCRIPTIONS REMOVED)
 const PRODUCT_CATALOG = {
-  // One-time purchases (credits)
+  // One-time purchases (Cover Art Credits)
   'prod_starter': {
-    id: 'prod_starter',
+    id: 'pdt_0NVpYnGqHkTrG1MBpjZDH',
     name: 'Starter Pack',
     description: '10 Cover Art Credits',
     credits: 10,
-    price: 990, // $9.90 in cents
+    price: 499, // $4.99 in cents
     type: 'one_time',
     creditType: 'coverArt'
   },
   'prod_creator': {
-    id: 'prod_creator',
+    id: 'pdt_0NVpYz3UZCFhpDsJRpIkJ',
     name: 'Creator Pack',
     description: '25 Cover Art Credits',
     credits: 25,
-    price: 2490, // $24.90 in cents
+    price: 999, // $9.99 in cents
     type: 'one_time',
     creditType: 'coverArt'
   },
   'prod_pro': {
-    id: 'prod_pro',
+    id: 'pdt_0NVpZ68TtojJFxcvTKFHD',
     name: 'Professional Pack',
     description: '100 Cover Art Credits',
     credits: 100,
-    price: 8990, // $89.90 in cents
+    price: 2999, // $29.99 in cents
     type: 'one_time',
     creditType: 'coverArt'
   },
+  
+  // One-time purchases (Lyric Video Credits)
   'video_30s': {
-    id: 'video_30s',
+    id: 'pdt_0NVpZOxJp5948ZTw1FqGC',
     name: 'Single 30s Lyric Video',
     description: '1 Lyric Video Credit (30 seconds)',
     credits: 1,
-    price: 1490, // $14.90 in cents
+    price: 999, // $9.99 in cents
     type: 'one_time',
     creditType: 'lyricVideo'
   },
   'video_3pack_30s': {
-    id: 'video_3pack_30s',
+    id: 'pdt_0NVpZWTiwQDBitIEfQbwM',
     name: '3-Pack 30s Lyric Videos',
     description: '3 Lyric Video Credits (30 seconds each)',
     credits: 3,
-    price: 3990, // $39.90 in cents
+    price: 2499, // $24.99 in cents
     type: 'one_time',
     creditType: 'lyricVideo'
   },
   'video_full': {
-    id: 'video_full',
+    id: 'pdt_0NVpZewrUSBHJXdJhB2wx',
     name: 'Single Full Lyric Video',
     description: '2 Lyric Video Credits (Full song)',
     credits: 2,
-    price: 2490, // $24.90 in cents
+    price: 19.99, // $19.99 in cents
     type: 'one_time',
     creditType: 'lyricVideo'
   },
   'video_3pack_full': {
-    id: 'video_3pack_full',
+    id: 'pdt_0NVpZnLaWqxH7gst9gtHV',
     name: '3-Pack Full Lyric Videos',
     description: '6 Lyric Video Credits (Full song each)',
     credits: 6,
-    price: 6990, // $69.90 in cents
+    price: 4999, // $49.99 in cents
     type: 'one_time',
     creditType: 'lyricVideo'
   },
   'video_10pack_full': {
-    id: 'video_10pack_full',
+    id: 'pdt_0NVpZv5PRx4s9xNTLxNt7',
     name: '10-Pack Full Lyric Videos',
     description: '20 Lyric Video Credits (Full song each)',
     credits: 20,
-    price: 19900, // $199.00 in cents
+    price: 14999, // $149.99 in cents
     type: 'one_time',
     creditType: 'lyricVideo'
-  },
-  
-  // Subscriptions
-  'sub_basic_monthly': {
-    id: 'sub_basic_monthly',
-    name: 'Basic Monthly',
-    description: '10 Cover Art Credits / Month',
-    credits: 10,
-    price: 990, // $9.90/month in cents
-    type: 'subscription',
-    creditType: 'coverArt',
-    interval: 'monthly'
-  },
-  'sub_creator_monthly': {
-    id: 'sub_creator_monthly',
-    name: 'Creator Monthly',
-    description: '25 Cover Art Credits / Month',
-    credits: 25,
-    price: 2490, // $24.90/month in cents
-    type: 'subscription',
-    creditType: 'coverArt',
-    interval: 'monthly'
-  },
-  'sub_pro_monthly': {
-    id: 'sub_pro_monthly',
-    name: 'Professional Monthly',
-    description: '100 Cover Art Credits / Month',
-    credits: 100,
-    price: 8990, // $89.90/month in cents
-    type: 'subscription',
-    creditType: 'coverArt',
-    interval: 'monthly'
   }
 };
 
@@ -252,7 +221,7 @@ router.post('/', async (req, res) => {
     }
 
     const { uid, email: tokenEmail } = decodedToken;
-    const { variantId, type, successUrl, cancelUrl } = req.body;
+    const { variantId, successUrl, cancelUrl } = req.body;
     
     const { name, email: bodyEmail } = req.body;
     
@@ -301,7 +270,7 @@ router.post('/', async (req, res) => {
       });
     }
     
-    console.log(`[INFO] 🛒 Creating checkout - User: ${uid}, Product: ${variantId}, Type: ${type}`);
+    console.log(`[INFO] 🛒 Creating checkout - User: ${uid}, Product: ${variantId}`);
     
     // Validate product exists in catalog
     if (!PRODUCT_CATALOG[variantId]) {
@@ -318,9 +287,6 @@ router.post('/', async (req, res) => {
     try {
       const client = getDodoClient();
 
-      // Send a unified one-time product to the payment provider while
-      // retaining the requested variant in metadata for internal bookkeeping.
-      // Include explicit amount/currency and allowed payment methods per spec.
       const product = PRODUCT_CATALOG[variantId];
       const defaultCurrency = (process.env.DEFAULT_CURRENCY || 'usd').toLowerCase();
       const allowedMethods = req.body.allowed_payment_method_types || [
@@ -330,13 +296,25 @@ router.post('/', async (req, res) => {
         'google_pay'
       ];
 
+      // IMPORTANT: Replace 'prod_one_time' with your actual Dodo product ID
+      // You should have different product IDs for different products in Dodo dashboard
+      const dodoProductId = `dodo_${variantId}`; // Example: 'dodo_prod_starter'
+      
       const payload = {
         amount: product.price, // cents
         currency: defaultCurrency,
         allowed_payment_method_types: allowedMethods,
-        product_cart: [ { product_id: 'prod_one_time', quantity: 1 } ],
+        product_cart: [ { 
+          product_id: dodoProductId, // Use your actual Dodo product ID here
+          quantity: 1 
+        } ],
         customer: { email: customerEmail, name: name || '' },
-        metadata: { user_id: uid, type: type || 'one_time', firebase_uid: uid, requested_variant: variantId },
+        metadata: { 
+          user_id: uid, 
+          type: 'one_time', // All purchases are one-time (subscriptions removed)
+          firebase_uid: uid, 
+          requested_variant: variantId 
+        },
         return_url: successUrl || `${process.env.NEXT_PUBLIC_APP_URL || 'https://soundswap.live'}/studio?payment=success`,
         cancel_url: cancelUrl || `${process.env.NEXT_PUBLIC_APP_URL || 'https://soundswap.live'}/studio?payment=cancelled`,
         payment_link: true
@@ -409,7 +387,8 @@ router.get('/products', (req, res) => {
       success: true,
       products: products,
       count: products.length,
-      timestamp: new Date().toISOString()
+      timestamp: new Date().toISOString(),
+      note: 'SUBSCRIPTIONS REMOVED - All products are one-time purchases'
     });
   } catch (error) {
     console.error('[ERROR] ❌ Error fetching products:', error.message);
@@ -460,7 +439,8 @@ router.get('/test', (req, res) => {
     dodoApi: process.env.DODO_PAYMENTS_API_KEY ? 'configured' : 'not configured',
     lazy_loading: 'ENABLED - Firebase loads only when needed',
     products_available: Object.keys(PRODUCT_CATALOG).length,
-    timestamp: new Date().toISOString()
+    timestamp: new Date().toISOString(),
+    note: 'SUBSCRIPTIONS REMOVED - Only one-time purchases available'
   });
 });
 
@@ -707,5 +687,6 @@ console.log('[INFO] 📊 Products Available:', Object.keys(PRODUCT_CATALOG).leng
 console.log('[INFO] 🎯 Endpoint: /api/create-checkout');
 console.log('[INFO] 🔄 Lazy loading enabled: Firebase Admin loads only for token verification');
 console.log('[INFO] ⏱️  Timeout protection: 8s request timeout, 5s API timeouts');
+console.log('[INFO] ⚠️  NOTE: Subscriptions have been removed - only one-time purchases available');
 
 export default router;
