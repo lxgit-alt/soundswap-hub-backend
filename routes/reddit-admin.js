@@ -2,8 +2,28 @@ import express from 'express';
 
 const router = express.Router();
 
+// ==================== CRITICAL WATCH ITEM: RATE LIMIT MONITORING ====================
+const RATE_LIMIT_MONITOR = {
+  lastError: null,
+  consecutiveErrors: 0,
+  backoffMultiplier: 1,
+  last429Time: null
+};
+
+// ==================== CRITICAL WATCH ITEM: SHADOW-DELETE DETECTION ====================
+const SHADOW_DELETE_CHECK = {
+  enabled: true,
+  checkProbability: 0.3, // 30% chance to check a posted comment
+  checkDelayMinutes: 30, // Wait 30 minutes before checking
+  loggedOutBrowserCheck: [], // Store URLs for manual checking
+  suspectedDeletions: 0
+};
+
 // ==================== DISCORD WEBHOOK CONFIGURATION ====================
 const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL;
+
+// CRITICAL WATCH ITEM: Discord high-priority threshold
+const DISCORD_HIGH_PRIORITY_THRESHOLD = 85; // Only send Discord for leads with score > 85
 
 // ==================== LAZY LOADING CONFIGURATION ====================
 
@@ -23,14 +43,147 @@ let firebaseApp = null;
 let db = null;
 let redditClient = null;
 
-// ==================== DISCORD NOTIFICATION FUNCTION ====================
+// ==================== CRITICAL WATCH ITEM: ENHANCED DELAY WITH EXPONENTIAL BACKOFF ====================
+
+const getRandomizedDelay = () => {
+  // Add exponential backoff if we're hitting rate limits
+  let baseDelay;
+  
+  if (RATE_LIMIT_MONITOR.consecutiveErrors > 2) {
+    // Exponential backoff: 2^n * random factor
+    const backoffFactor = Math.pow(2, RATE_LIMIT_MONITOR.consecutiveErrors - 2);
+    baseDelay = 60000 * backoffFactor; // Start at 1 minute, double each time
+    console.warn(`[RATE LIMIT] ⚠️ Exponential backoff: ${Math.round(baseDelay/1000)}s delay`);
+  } else {
+    // Normal randomized delay with more "jitter"
+    // Updated to be more random and less rhythmic
+    const delays = [3200, 17800, 41500, 63200, 89100, 24700, 56800, 71400, 38500, 129000];
+    baseDelay = delays[Math.floor(Math.random() * delays.length)];
+  }
+  
+  // Add additional jitter (±15%)
+  const jitter = 0.85 + (Math.random() * 0.3); // 0.85 to 1.15
+  const jitteredDelay = Math.floor(baseDelay * jitter);
+  
+  // Ensure we don't exceed Reddit's timeout limits
+  const safeDelay = Math.min(jitteredDelay, 300000); // Max 5 minutes
+  
+  return safeDelay;
+};
+
+const calculateTimeout = (baseMs, subtractMs = 0) => {
+  // Normalize inputs to 0 if they are invalid/infinite/negative before subtracting
+  const base = Number.isFinite(baseMs) ? Math.max(0, baseMs) : 1000;
+  const subtract = Number.isFinite(subtractMs) ? Math.max(0, subtractMs) : 0;
+
+  const result = base - subtract;
+
+  // Ensure result is at least 100ms and not exceeding 32-bit int limit
+  if (result < 100) {
+    return 1000;
+  }
+  
+  return Math.trunc(result);
+};
+
+// Gemini API quota management - UPDATED FROM 20 TO 100
+let geminiQuotaInfo = {
+  lastRequest: null,
+  requestCount: 0,
+  quotaLimit: 100, // UPDATED: Increased from 20 to 100
+  resetTime: null,
+  lastError: null
+};
+
+const checkGeminiQuota = () => {
+  const now = Date.now();
+  
+  if (geminiQuotaInfo.resetTime && now > geminiQuotaInfo.resetTime) {
+    geminiQuotaInfo.requestCount = 0;
+    geminiQuotaInfo.resetTime = now + (24 * 60 * 60 * 1000);
+  }
+  
+  if (geminiQuotaInfo.requestCount >= geminiQuotaInfo.quotaLimit) {
+    const waitTime = geminiQuotaInfo.resetTime ? geminiQuotaInfo.resetTime - now : 60000;
+    console.warn(`[QUOTA] ⚠️ Gemini quota exceeded. Wait ${Math.ceil(waitTime/1000)}s`);
+    return false;
+  }
+  
+  return true;
+};
+
+const incrementGeminiRequest = () => {
+  geminiQuotaInfo.requestCount++;
+  geminiQuotaInfo.lastRequest = Date.now();
+  
+  if (!geminiQuotaInfo.resetTime) {
+    geminiQuotaInfo.resetTime = Date.now() + (24 * 60 * 60 * 1000);
+  }
+};
+
+const safeSetTimeout = (callback, delay) => {
+  const DEFAULT_DELAY = 1000;
+
+  // 1. Ensure we have a finite number. 
+  // If 'delay' is -Infinity or NaN, 'parsed' becomes that value.
+  const parsed = Number(delay);
+
+  // 2. Validate: must be finite and non-negative.
+  // We use Math.max(0, ...) to ensure we never pass a negative to setTimeout.
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return setTimeout(callback, DEFAULT_DELAY);
+  }
+
+  // 3. Clamp to safe integer range (Node.js max timeout is actually 2,147,483,647ms)
+  const MAX_TIMEOUT = 2147483647; 
+  const safeDelay = Math.min(MAX_TIMEOUT, Math.trunc(parsed));
+  
+  return setTimeout(callback, safeDelay);
+};
+
+const withTimeout = async (promise, timeoutMs, timeoutMessage = 'Operation timed out') => {
+  // Ensure timeoutMs is a safe, positive finite integer.
+  const DEFAULT_TIMEOUT = 3000;
+  let ms = Number(timeoutMs);
+  if (!Number.isFinite(ms) || ms <= 0) {
+    ms = DEFAULT_TIMEOUT;
+  } else {
+    ms = Math.trunc(ms);
+  }
+
+  let timeoutId;
+  const timeoutPromise = new Promise((_, reject) => {
+    timeoutId = safeSetTimeout(() => reject(new Error(timeoutMessage)), ms);
+  });
+
+  try {
+    return await Promise.race([promise, timeoutPromise]);
+  } finally {
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+    }
+  }
+};
+
+// ==================== CRITICAL WATCH ITEM: ENHANCED DISCORD NOTIFICATION WITH FILTER ====================
 
 const sendDiscordLeadNotification = async (leadData) => {
-  console.log('[DISCORD] 📤 Attempting to send notification...');
-  console.log('[DISCORD] 📊 Lead data:', {
+  // HIGH PRIORITY FILTER: Only send Discord for leads with score > 85
+  const HIGH_PRIORITY_THRESHOLD = DISCORD_HIGH_PRIORITY_THRESHOLD;
+  
+  if (leadData.leadScore < HIGH_PRIORITY_THRESHOLD) {
+    console.log(`[DISCORD] ⏭️ Skipping notification for lead score ${leadData.leadScore} (threshold: ${HIGH_PRIORITY_THRESHOLD})`);
+    
+    // Log low-priority leads to console only
+    console.log(`[LEAD-LOG] 📝 Low-priority lead detected: r/${leadData.subreddit} - Score: ${leadData.leadScore} - "${leadData.postTitle.substring(0, 60)}..."`);
+    return false;
+  }
+  
+  console.log('[DISCORD] 📤 Attempting to send HIGH-PRIORITY notification...');
+  console.log('[DISCORD] 🎯 High-priority lead detected:', {
     subreddit: leadData.subreddit,
     score: leadData.leadScore,
-    title: leadData.postTitle?.substring(0, 50) + '...'
+    batch: leadData.batch
   });
   
   try {
@@ -44,7 +197,7 @@ const sendDiscordLeadNotification = async (leadData) => {
     
     // Format the Discord embed
     const embed = {
-      title: '🎯 **NEW LEAD GENERATED**',
+      title: '🎯 **HIGH-PRIORITY LEAD GENERATED**',
       color: 0x00ff00,
       thumbnail: {
         url: 'https://cdn-icons-png.flaticon.com/512/2702/2702602.png'
@@ -56,13 +209,18 @@ const sendDiscordLeadNotification = async (leadData) => {
           inline: true
         },
         {
-          name: '🏷️ Lead Type',
+          name: '🎭 Batch',
+          value: leadData.batch || 'N/A',
+          inline: true
+        },
+        {
+          name: '🔧 Lead Type',
           value: leadData.leadType || 'Premium Feature Interest',
           inline: true
         },
         {
           name: '🔥 Interest Level',
-          value: leadData.interestLevel || 'Medium',
+          value: leadData.interestLevel || 'High',
           inline: true
         },
         {
@@ -94,10 +252,15 @@ const sendDiscordLeadNotification = async (leadData) => {
           name: '📈 Total Premium Leads Today',
           value: `**${leadData.totalLeadsToday || 0}** leads`,
           inline: true
+        },
+        {
+          name: '🔔 Priority',
+          value: '**HIGH PRIORITY** (Score > 85)',
+          inline: false
         }
       ],
       footer: {
-        text: 'SoundSwap Reddit Automation • Lead Generation',
+        text: 'SoundSwap Reddit Automation • High-Priority Lead Generation',
         icon_url: 'https://cdn-icons-png.flaticon.com/512/2702/2702702.png'
       },
       timestamp: new Date().toISOString()
@@ -110,9 +273,9 @@ const sendDiscordLeadNotification = async (leadData) => {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        content: `🎯 **New premium lead detected!** <@&1153832361951674478>`,
+        content: `🎯 **HIGH-PRIORITY LEAD DETECTED!** <@&1153832361951674478>`,
         embeds: [embed],
-        username: 'SoundSwap Lead Bot',
+        username: 'SoundSwap Lead Bot (High-Priority Only)',
         avatar_url: 'https://cdn-icons-png.flaticon.com/512/2702/2702702.png'
       })
     });
@@ -120,7 +283,7 @@ const sendDiscordLeadNotification = async (leadData) => {
     console.log(`[DISCORD] 📡 Response status: ${response.status}`);
     
     if (response.ok) {
-      console.log('[DISCORD] ✅ Lead notification sent successfully');
+      console.log('[DISCORD] ✅ High-priority lead notification sent successfully');
       return true;
     } else {
       const errorText = await response.text();
@@ -139,98 +302,50 @@ const sendDiscordLeadNotification = async (leadData) => {
   }
 };
 
-// ==================== QUOTA AND TIMEOUT MANAGEMENT ====================
+// ==================== CRITICAL WATCH ITEM: CRITICAL ALERT SYSTEM ====================
 
-const safeSetTimeout = (callback, delay) => {
-  const DEFAULT_DELAY = 1000;
-
-  // 1. Ensure we have a finite number. 
-  // If 'delay' is -Infinity or NaN, 'parsed' becomes that value.
-  const parsed = Number(delay);
-
-  // 2. Validate: must be finite and non-negative.
-  // We use Math.max(0, ...) to ensure we never pass a negative to setTimeout.
-  if (!Number.isFinite(parsed) || parsed < 0) {
-    return setTimeout(callback, DEFAULT_DELAY);
-  }
-
-  // 3. Clamp to safe integer range (Node.js max timeout is actually 2,147,483,647ms)
-  const MAX_TIMEOUT = 2147483647; 
-  const safeDelay = Math.min(MAX_TIMEOUT, Math.trunc(parsed));
+const sendCriticalAlert = async (type, data) => {
+  if (!DISCORD_WEBHOOK_URL) return false;
   
-  return setTimeout(callback, safeDelay);
-};
-
-const calculateTimeout = (baseMs, subtractMs = 0) => {
-  // Normalize inputs to 0 if they are invalid/infinite/negative before subtracting
-  const base = Number.isFinite(baseMs) ? Math.max(0, baseMs) : 1000;
-  const subtract = Number.isFinite(subtractMs) ? Math.max(0, subtractMs) : 0;
-
-  const result = base - subtract;
-
-  // Ensure result is at least 100ms and not exceeding 32-bit int limit
-  if (result < 100) {
-    return 1000;
-  }
-  
-  return Math.trunc(result);
-};
-
-// Gemini API quota management
-let geminiQuotaInfo = {
-  lastRequest: null,
-  requestCount:100,
-  resetTime: null,
-  lastError: null
-};
-
-const checkGeminiQuota = () => {
-  const now = Date.now();
-  
-  if (geminiQuotaInfo.resetTime && now > geminiQuotaInfo.resetTime) {
-    geminiQuotaInfo.requestCount = 0;
-    geminiQuotaInfo.resetTime = now + (24 * 60 * 60 * 1000);
-  }
-  
-  if (geminiQuotaInfo.requestCount >= geminiQuotaInfo.quotaLimit) {
-    const waitTime = geminiQuotaInfo.resetTime ? geminiQuotaInfo.resetTime - now : 60000;
-    console.warn(`[QUOTA] ⚠️ Gemini quota exceeded. Wait ${Math.ceil(waitTime/1000)}s`);
-    return false;
-  }
-  
-  return true;
-};
-
-const incrementGeminiRequest = () => {
-  geminiQuotaInfo.requestCount++;
-  geminiQuotaInfo.lastRequest = Date.now();
-  
-  if (!geminiQuotaInfo.resetTime) {
-    geminiQuotaInfo.resetTime = Date.now() + (24 * 60 * 60 * 1000);
-  }
-};
-
-const withTimeout = async (promise, timeoutMs, timeoutMessage = 'Operation timed out') => {
-  // Ensure timeoutMs is a safe, positive finite integer.
-  const DEFAULT_TIMEOUT = 3000;
-  let ms = Number(timeoutMs);
-  if (!Number.isFinite(ms) || ms <= 0) {
-    ms = DEFAULT_TIMEOUT;
-  } else {
-    ms = Math.trunc(ms);
-  }
-
-  let timeoutId;
-  const timeoutPromise = new Promise((_, reject) => {
-    timeoutId = safeSetTimeout(() => reject(new Error(timeoutMessage)), ms);
-  });
-
-  try {
-    return await Promise.race([promise, timeoutPromise]);
-  } finally {
-    if (timeoutId) {
-      clearTimeout(timeoutId);
+  const alerts = {
+    rate_limit_critical: {
+      title: '🚨 CRITICAL: Rate Limit Issues',
+      color: 0xff0000,
+      message: `Engine has hit ${data.consecutiveErrors} consecutive rate limits. Backoff multiplier: ${data.backoffMultiplier}x`
+    },
+    shadow_delete_suspected: {
+      title: '⚠️ SUSPECTED: Shadow Deletions',
+      color: 0xff9900,
+      message: `${data.count} comments may be shadow-deleted. Check manually.`
+    },
+    batch_c_attention: {
+      title: '🎯 ATTENTION: Batch C Comments',
+      color: 0x00ff00,
+      message: `${data.count} Batch C comments need manual verification from logged-out browser.`
     }
+  };
+  
+  const alert = alerts[type];
+  if (!alert) return false;
+  
+  try {
+    await fetch(DISCORD_WEBHOOK_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        content: `<@&1153832361951674478> ${alert.title}`,
+        embeds: [{
+          title: alert.title,
+          description: alert.message,
+          color: alert.color,
+          timestamp: new Date().toISOString()
+        }]
+      })
+    });
+    return true;
+  } catch (error) {
+    console.error('[ALERT] ❌ Failed to send critical alert:', error);
+    return false;
   }
 };
 
@@ -317,7 +432,7 @@ const loadReddit = async () => {
       snoowrap = (await import('snoowrap')).default;
       
       redditClient = new snoowrap({
-        userAgent: 'SoundSwap Reddit Bot v5.0 (Premium Features Focus)',
+        userAgent: 'SoundSwap Reddit Bot v7.0 (Official Team/Developer Persona)',
         clientId: process.env.REDDIT_CLIENT_ID,
         clientSecret: process.env.REDDIT_CLIENT_SECRET,
         refreshToken: process.env.REDDIT_REFRESH_TOKEN,
@@ -344,7 +459,7 @@ const PREMIUM_FEATURE_LEADS_COLLECTION = 'premiumFeatureLeads';
 
 const APP_TIMEZONE = process.env.APP_TIMEZONE || 'America/New_York';
 const POSTING_WINDOW_MINUTES = 10;
-const MAX_POSTS_PER_RUN = 2; // Increased to 2 for top opportunities
+const MAX_POSTS_PER_RUN = 2;
 const MAX_COMMENTS_PER_DAY = 15;
 const MAX_EDUCATIONAL_POSTS_PER_DAY = 3;
 const AI_TIMEOUT_MS = 5000;
@@ -353,12 +468,88 @@ const GOLDEN_HOUR_WINDOW_MINUTES = 60;
 const FALLBACK_MODE = true;
 
 // Performance optimization
-const CONCURRENT_SCAN_LIMIT = 9; // All active subreddits
-const POSTS_PER_SUBREDDIT = 5; // Fetch 5 newest posts per subreddit
-const MIN_LEAD_SCORE = 20; // Minimum score to consider posting
-const MAX_CONCURRENT_REQUESTS = 3; // Limit concurrent Reddit API calls
+const CONCURRENT_SCAN_LIMIT = 20; // All 20 active subreddits
+const POSTS_PER_SUBREDDIT = 5;
+const MIN_LEAD_SCORE = 20;
+const MAX_CONCURRENT_REQUESTS = 4; // Increased for 20 subreddits
+
+// Human Window: Only run during peak hours (12:00 PM – 10:00 PM UTC)
+const HUMAN_WINDOW_START_HOUR = 12; // 12:00 PM UTC
+const HUMAN_WINDOW_END_HOUR = 22; // 10:00 PM UTC
 
 let postingActivity = null;
+
+// ==================== BATCH CONFIGURATION ====================
+
+const BATCHES = {
+  A: {
+    name: 'Feedback Loop',
+    goal: 'Build account "Karma" and community rapport',
+    persona: 'The curious developer',
+    strategy: 'Ask insightful questions about their process or offer genuine feedback',
+    timeWindow: 'Morning (Trust Building)',
+    subreddits: ['IndieMusicFeedback', 'ArtistLounge', 'MusicInTheMaking', 'Songwriters', 'BedroomBands'],
+    style: 'curious, helpful, engaging'
+  },
+  B: {
+    name: 'Visual Showdown',
+    goal: 'Viral reach through high-quality Original Content (OC)',
+    persona: 'The innovative studio',
+    strategy: 'Post Doodle-to-Art transformations or high-end lyric video snippets',
+    timeWindow: 'Mid-Day (High Impact OC)',
+    subreddits: ['digitalart', 'aiArt', 'VaporwaveAesthetics', 'Hyperpop', 'AlbumArtPorn'],
+    style: 'creative, visual, inspiring'
+  },
+  C: {
+    name: 'Problem Solvers',
+    goal: 'Solve specific "Pain Points" and drive conversions',
+    persona: 'The helpful consultant',
+    strategy: 'Scan for keywords like "how to make a video", provide solution first',
+    timeWindow: 'Afternoon (Direct Utility)',
+    subreddits: ['WeAreTheMusicMakers', 'musicproduction', 'musicians', 'makinghiphop', 'edmproduction'],
+    style: 'practical, solution-oriented, expert'
+  },
+  D: {
+    name: 'Growth Hackers',
+    goal: 'Position SoundSwap as a business/growth tool',
+    persona: 'The industry insider',
+    strategy: 'Focus on how visuals drive streams, retention, and algorithm favor',
+    timeWindow: 'Evening (Marketing & ROI)',
+    subreddits: ['MusicMarketing', 'Spotify', 'SocialMediaMarketing', 'PromoteYourMusic', 'AIArtCommunity'],
+    style: 'data-driven, strategic, professional'
+  }
+};
+
+// Helper to get batch for a subreddit
+const getBatchForSubreddit = (subreddit) => {
+  for (const [batchKey, batch] of Object.entries(BATCHES)) {
+    if (batch.subreddits.includes(subreddit)) {
+      return batchKey;
+    }
+  }
+  return null;
+};
+
+// Helper functions for batch rotation
+const getCurrentBatchRotation = () => {
+  const currentUTCHour = getCurrentUTCHour();
+  
+  if (currentUTCHour >= 12 && currentUTCHour < 15) return 'A (Feedback Loop)';
+  if (currentUTCHour >= 15 && currentUTCHour < 18) return 'B (Visual Showdown)';
+  if (currentUTCHour >= 18 && currentUTCHour < 20) return 'C (Problem Solvers)';
+  if (currentUTCHour >= 20 && currentUTCHour <= 22) return 'D (Growth Hackers)';
+  return 'Outside rotation window';
+};
+
+const getNextScheduledBatch = () => {
+  const currentUTCHour = getCurrentUTCHour();
+  
+  if (currentUTCHour < 12) return 'A (12:00 UTC)';
+  if (currentUTCHour < 15) return 'B (15:00 UTC)';
+  if (currentUTCHour < 18) return 'C (18:00 UTC)';
+  if (currentUTCHour < 20) return 'D (20:00 UTC)';
+  return 'A (Tomorrow 12:00 UTC)';
+};
 
 // ==================== TIME HELPER FUNCTIONS ====================
 
@@ -397,6 +588,16 @@ const getCurrentDateInAppTimezone = () => {
     month: '2-digit',
     day: '2-digit'
   });
+};
+
+const getCurrentUTCHour = () => {
+  const now = new Date();
+  return now.getUTCHours();
+};
+
+const isWithinHumanWindow = () => {
+  const currentUTCHour = getCurrentUTCHour();
+  return currentUTCHour >= HUMAN_WINDOW_START_HOUR && currentUTCHour < HUMAN_WINDOW_END_HOUR;
 };
 
 const getCurrentTimeWindow = () => {
@@ -441,7 +642,7 @@ const isWithinGoldenHour = (postTimestamp) => {
 
 // ==================== LEAD SCORING SYSTEM ====================
 
-const calculateLeadScore = (post, subredditConfig) => {
+const calculateLeadScore = (post, subredditConfig, batch) => {
   let score = 0;
   const text = (post.title + ' ' + (post.content || '')).toLowerCase();
   
@@ -470,17 +671,19 @@ const calculateLeadScore = (post, subredditConfig) => {
     score += 10;
   }
   
-  // 5. Subreddit Priority Bonus
-  if (subredditConfig.priority === 'high') {
+  // 5. Batch Priority Bonus
+  if (batch === 'C' || batch === 'D') { // Problem Solvers & Growth Hackers have higher priority
     score += 15;
-  } else if (subredditConfig.priority === 'medium') {
+  } else if (batch === 'B') { // Visual Showdown
     score += 10;
+  } else { // Feedback Loop
+    score += 5;
   }
   
   return Math.round(score);
 };
 
-// ==================== CONCURRENT SCANNING FUNCTIONS ====================
+// ==================== CRITICAL WATCH ITEM: ENHANCED CONCURRENT SCANNING WITH RATE LIMIT PROTECTION ====================
 
 const fetchFreshPostsFromSubreddit = async (subreddit, timeWindowMinutes = 60) => {
   try {
@@ -518,25 +721,70 @@ const fetchFreshPostsFromSubreddit = async (subreddit, timeWindowMinutes = 60) =
     
   } catch (error) {
     console.error(`[ERROR] ❌ Error fetching posts from r/${subreddit}:`, error.message);
+    
+    // Check for rate limit errors
+    if (error.message?.includes('429') || error.message?.includes('rate limit')) {
+      RATE_LIMIT_MONITOR.consecutiveErrors++;
+      RATE_LIMIT_MONITOR.last429Time = Date.now();
+      console.warn(`[RATE LIMIT] 🚨 429 detected! Consecutive errors: ${RATE_LIMIT_MONITOR.consecutiveErrors}`);
+    }
+    
     return [];
   }
 };
 
-// Batch processing with concurrency control
+// Batch processing with enhanced rate limit protection
 const batchProcess = async (items, processor, concurrency = MAX_CONCURRENT_REQUESTS) => {
   const results = [];
+  let errorCount = 0;
+  
   for (let i = 0; i < items.length; i += concurrency) {
     const batch = items.slice(i, i + concurrency);
-    const batchResults = await Promise.all(
-      batch.map(item => processor(item))
-    );
-    results.push(...batchResults);
     
-    // Small delay between batches to avoid rate limiting
-    if (i + concurrency < items.length) {
-      await new Promise(resolve => safeSetTimeout(resolve, 500));
+    try {
+      const batchResults = await Promise.allSettled(
+        batch.map(item => processor(item))
+      );
+      
+      // Process results and track errors
+      batchResults.forEach((result, index) => {
+        if (result.status === 'fulfilled') {
+          results.push(result.value);
+        } else {
+          errorCount++;
+          console.error(`[ERROR] ❌ Batch item failed:`, result.reason.message);
+          
+          // Check for rate limit errors
+          if (result.reason.message?.includes('429') || result.reason.message?.includes('rate limit')) {
+            RATE_LIMIT_MONITOR.consecutiveErrors++;
+            RATE_LIMIT_MONITOR.last429Time = Date.now();
+            console.warn(`[RATE LIMIT] 🚨 429 detected! Consecutive errors: ${RATE_LIMIT_MONITOR.consecutiveErrors}`);
+          }
+        }
+      });
+      
+      // Reset error counter if we've had a successful batch
+      if (errorCount === 0 && RATE_LIMIT_MONITOR.consecutiveErrors > 0) {
+        RATE_LIMIT_MONITOR.consecutiveErrors = Math.max(0, RATE_LIMIT_MONITOR.consecutiveErrors - 1);
+      }
+      
+      // Larger, more variable delay between batches
+      if (i + concurrency < items.length) {
+        const delay = getRandomizedDelay();
+        await new Promise(resolve => safeSetTimeout(resolve, delay));
+      }
+      
+    } catch (batchError) {
+      errorCount++;
+      console.error(`[ERROR] ❌ Batch processing failed:`, batchError);
     }
   }
+  
+  // Log rate limit status
+  if (RATE_LIMIT_MONITOR.consecutiveErrors > 0) {
+    console.warn(`[RATE LIMIT] ⚠️ Status: ${RATE_LIMIT_MONITOR.consecutiveErrors} consecutive errors`);
+  }
+  
   return results;
 };
 
@@ -561,8 +809,9 @@ const scanAllSubredditsConcurrently = async () => {
         return posts.map(post => ({
           ...post,
           subredditConfig: redditTargets[subreddit],
+          batch: getBatchForSubreddit(subreddit),
           painPointAnalysis: analyzePostForPainPoints(post.title, post.content),
-          leadScore: calculateLeadScore(post, redditTargets[subreddit])
+          leadScore: calculateLeadScore(post, redditTargets[subreddit], getBatchForSubreddit(subreddit))
         }));
       } catch (error) {
         console.error(`[ERROR] ❌ Failed to scan r/${subreddit}:`, error.message);
@@ -586,7 +835,8 @@ const scanAllSubredditsConcurrently = async () => {
   console.log(`[SCAN]   - High-quality posts (score ≥ ${MIN_LEAD_SCORE}): ${highQualityPosts.length}`);
   console.log(`[SCAN]   - Top 5 opportunities:`);
   highQualityPosts.slice(0, 5).forEach((post, index) => {
-    console.log(`[SCAN]     ${index + 1}. r/${post.subreddit} - "${post.title.substring(0, 50)}..." (Score: ${post.leadScore})`);
+    const priority = post.leadScore >= 85 ? '🔴' : post.leadScore >= 60 ? '🟡' : '🟢';
+    console.log(`[SCAN]     ${index + 1}. ${priority} r/${post.subreddit} (Batch ${post.batch}) - "${post.title.substring(0, 50)}..." (Score: ${post.leadScore})`);
   });
   
   return {
@@ -596,40 +846,184 @@ const scanAllSubredditsConcurrently = async () => {
   };
 };
 
-// ==================== FALLBACK COMMENT GENERATION ====================
+// ==================== CRITICAL WATCH ITEM: INDUSTRY AUTHORITY - 80% NON-PROMOTIONAL EXPERT ADVICE ====================
 
-const generateFallbackComment = (subreddit, painPoints = []) => {
-  const fallbackComments = {
-    'WeAreTheMusicMakers': [
-      "I understand the struggle with video editing! AI tools like soundswap.live can automate lyric video creation and save hours of work.",
-      "Creating professional visuals doesn't have to be expensive or time-consuming. AI-powered tools can handle the technical parts for you.",
-      "I've found that AI video generators can turn lyrics into animated videos in minutes instead of hours. Worth checking out!"
+const generateIndustryExpertComment = async (postTitle, postContent, subreddit, painPoints = [], batch = null) => {
+  const targetConfig = redditTargets[subreddit];
+  const selectedStyle = targetConfig?.preferredStyles[0] || 'expert';
+  const targetBatch = batch || getBatchForSubreddit(subreddit);
+  
+  // Industry-specific advice templates
+  const expertAdviceTemplates = {
+    // Video/Technical advice
+    video: [
+      "For lyric videos, render at 24fps for that cinematic feel or 30fps for social media. Spotify Canvas requires exact 9:16 (1080x1920) at 30fps max.",
+      "Pro tip: Use variable frame rates for text animations - 60fps for fast movements, 24fps for slow reveals. Always export in H.264 for web.",
+      "Color grading for music videos: Lift shadows 5%, add teal to shadows and orange to highlights. Keep saturation at 105-110% for vibrancy."
     ],
-    'ArtistLounge': [
-      "As a digital artist, AI tools have really helped speed up my workflow. Tools that turn sketches into finished art can save days of work.",
-      "The right creative tools make all the difference. AI art generators can help bring concepts to life quickly."
+    
+    // Typography/Design advice
+    typography: [
+      "Font pairing for lyrics: Use a bold sans-serif for emphasis (like Montserrat Bold) with a clean sans-serif for body (Open Sans). Minimum 48pt for mobile.",
+      "Leading (line spacing) should be 1.4x font size. For animated text, use ease-in-out timing at 0.3s per word for natural reading pace.",
+      "Accessibility: Ensure contrast ratio of at least 4.5:1 for text. Dark text on light background performs better for retention."
     ],
-    'aivideo': [
-      "AI video tools can automate the entire video creation process. At SoundSwap, our lyric video generator analyzes BPM and syncs animations automatically.",
-      "Creating professional music videos with AI saves hours of editing. Our tools handle timing, animation, and styling automatically."
+    
+    // Audio/Video sync advice
+    sync: [
+      "For perfect lyric sync: Align syllables with transients in your waveform. Use a 150ms pre-roll for natural anticipation.",
+      "BPM-based animation: Divide 60,000 by your BPM to get ms per beat. Animate on quarter notes for hip-hop, eighth notes for EDM.",
+      "Spotify Canvas loops: Create seamless 8-second loops by matching end frame to start frame. Use motion blur for smooth transitions."
     ],
-    'musicproduction': [
-      "Integrating AI video tools into music production workflow can save countless hours. Our lyric video generator syncs automatically with your tracks.",
-      "Music producers don't need to be video editors. AI tools like SoundSwap's lyric video generator handle timing, animation, and styling automatically."
-    ],
-    'musicians': [
-      "AI tools have revolutionized how musicians create visual content. Our lyric video generator turns songs into professional videos in minutes.",
-      "Creating professional videos for your music doesn't require video editing skills. AI tools automate the entire process."
-    ],
-    'aiArt': [
-      "AI art generation combined with music creates stunning visual experiences. SoundSwap tools transform sketches into animated music visuals.",
-      "The combination of AI art and music opens up incredible creative possibilities. Tools like ours automate the animation process."
+    
+    // Platform-specific advice
+    platform: [
+      "Instagram Reels: First 3 seconds must hook. Use bold text overlay and trending audio. Export at 1080x1920, 30fps, under 60 seconds.",
+      "YouTube Shorts: Add captions in the top third of screen (safe area). Use #shorts in title and description for algorithm.",
+      "TikTok: Vertical 9:16, loud audio (-6 LUFS), bright colors. Duet sounds perform 3x better than original sounds."
     ]
   };
   
-  const defaultComment = "AI tools have really helped automate creative workflows. Check out soundswap.live if you're looking for automated video or art generation.";
+  // Determine which advice to give based on pain points and subreddit
+  let adviceType = 'video';
+  if (painPoints.includes('design') || painPoints.includes('font') || subreddit.includes('art')) {
+    adviceType = 'typography';
+  } else if (painPoints.includes('sync') || painPoints.includes('timing') || painPoints.includes('bpm')) {
+    adviceType = 'sync';
+  } else if (painPoints.includes('social') || painPoints.includes('platform') || painPoints.includes('instagram')) {
+    adviceType = 'platform';
+  }
   
-  const comments = fallbackComments[subreddit] || [defaultComment];
+  // Select random advice from appropriate category
+  const adviceList = expertAdviceTemplates[adviceType] || expertAdviceTemplates.video;
+  const randomAdvice = adviceList[Math.floor(Math.random() * adviceList.length)];
+  
+  // Build authoritative comment
+  let comment = randomAdvice;
+  
+  // Add batch-specific framing
+  const batchConfig = BATCHES[targetBatch];
+  if (batchConfig) {
+    if (targetBatch === 'A') { // Feedback Loop
+      comment = `From a technical perspective: ${comment} Have you tried this approach in your workflow?`;
+    } else if (targetBatch === 'B') { // Visual Showdown
+      comment = `As a visual artist, I've found: ${comment} This creates more engaging content.`;
+    } else if (targetBatch === 'C') { // Problem Solvers
+      comment = `Here's a technical solution: ${comment} This should help streamline your process.`;
+    } else if (targetBatch === 'D') { // Growth Hackers
+      comment = `Data shows that: ${comment} This improves engagement by 20-30% typically.`;
+    }
+  }
+  
+  return {
+    success: true,
+    comment: comment,
+    style: 'expert',
+    subreddit: subreddit,
+    isPromotional: false,
+    isIndustryExpert: true,
+    adviceType: adviceType,
+    batch: targetBatch
+  };
+};
+
+// ==================== FALLBACK COMMENT GENERATION ====================
+
+const generateFallbackComment = (subreddit, painPoints = [], batch) => {
+  const batchConfig = BATCHES[batch];
+  const persona = batchConfig?.persona || 'The helpful consultant';
+  
+  const fallbackComments = {
+    'WeAreTheMusicMakers': [
+      "As part of the SoundSwap team, I understand the struggle with video editing! We built our AI lyric video generator specifically to automate this process and save creators hours of work.",
+      "Our team at SoundSwap created an AI tool that automates lyric video creation. We focused on solving the exact pain point of time-consuming video editing for musicians.",
+      "We built SoundSwap to address this exact issue - the AI lyric video generator can create professional videos in minutes instead of hours. It's what our development team uses internally."
+    ],
+    'digitalart': [
+      "The SoundSwap team developed a Doodle-to-Art AI that transforms sketches into animated artwork. We wanted to make professional art creation accessible to everyone.",
+      "Our development team created an AI art tool specifically for digital artists. It can turn rough sketches into finished Spotify Canvas animations automatically."
+    ],
+    'MusicMarketing': [
+      "At SoundSwap, we built our tools with ROI in mind. Our data shows lyric videos increase YouTube watch time by 40% on average - that's why we automated the creation process.",
+      "Our team focused on building tools that drive real growth. The AI video generator creates content optimized for social media algorithms and streaming platforms."
+    ],
+    'Spotify': [
+      "We developed SoundSwap's AI tools specifically for Spotify Canvas optimization. Our engine automatically formats visuals to Spotify's exact specifications.",
+      "The SoundSwap team built our Canvas generator to solve the dimension and format challenges artists face with Spotify's visual requirements."
+    ],
+    'ArtistLounge': [
+      "Our team at SoundSwap understands the creative process. We built AI tools that assist rather than replace - helping artists bring their visions to life faster.",
+      "We developed these tools as artists ourselves. The AI assists with technical execution so you can focus on the creative vision."
+    ],
+    'musicproduction': [
+      "SoundSwap's development team integrated our tools directly into music production workflows. The AI syncs animations to BPM automatically for perfect timing.",
+      "We built our lyric video generator to work seamlessly with DAWs and production software, automating the visual side of music releases."
+    ],
+    'musicians': [
+      "Our team created SoundSwap to give musicians practical career tools. The AI handles visual content so you can focus on music and performance.",
+      "We built these tools specifically for working musicians - automating the visual content creation that's essential for modern music promotion."
+    ],
+    'makinghiphop': [
+      "The SoundSwap team developed Type Beat art generation specifically for hip-hop producers. Our AI creates matching visuals for different beat styles automatically.",
+      "We focused on hip-hop's unique visual needs - our tools generate lyric videos with styles that match different Type Beat aesthetics."
+    ],
+    'edmproduction': [
+      "Our development team optimized SoundSwap for high-fidelity EDM visuals. The AI creates motion-heavy lyric videos that match the energy of electronic music.",
+      "We built these tools with EDM producers in mind - the AI generates visuals that sync perfectly with drops and buildups in electronic tracks."
+    ],
+    'BedroomBands': [
+      "SoundSwap's team focused on collaboration tools. Our AI generates quick visual assets that all collaborators can use and customize for joint projects.",
+      "We built these tools for remote music collaboration - generating professional visuals that all band members can access and approve instantly."
+    ],
+    'MusicInTheMaking': [
+      "Our development team created early-stage project tools. SoundSwap generates demo visuals that help communicate your vision during the creative process.",
+      "We built these AI tools to assist in the early creative stages - generating visual concepts that help shape the direction of music projects."
+    ],
+    'Songwriters': [
+      "The SoundSwap team focused on lyric-first creators. Our AI generates visualizers that emphasize and animate lyrics to enhance storytelling.",
+      "We developed tools specifically for songwriters - the AI creates visuals that highlight lyrical content and emotional delivery."
+    ],
+    'aiArt': [
+      "As AI developers ourselves, we built SoundSwap to push the boundaries of generative art for music. Our tools combine AI art with musical synchronization.",
+      "Our team works at the intersection of AI and art. We developed these tools to explore new creative possibilities in music visualization."
+    ],
+    'AIArtCommunity': [
+      "We're part of the AI art community and built SoundSwap to contribute useful tools. Our AI generates music-specific art with full customization control.",
+      "Our development team shares our AI tools openly with the community. We built SoundSwap to empower other AI artists in music visualization."
+    ],
+    'VaporwaveAesthetics': [
+      "The SoundSwap team developed specific aesthetic presets for vaporwave. Our AI can generate retro-futuristic visuals that match the genre's unique style.",
+      "We built aesthetic-focused tools for genres like vaporwave. Our AI applies specific color palettes and effects to match nostalgic visual styles."
+    ],
+    'Hyperpop': [
+      "Our development team created glitch and DIY aesthetic tools for hyperpop. The AI generates visuals with the genre's signature chaotic, colorful style.",
+      "We built SoundSwap with hyperpop's visual language in mind - our tools create the glitchy, maximalist aesthetics the genre demands."
+    ],
+    'AlbumArtPorn': [
+      "The SoundSwap team developed high-end concept art generation. Our AI creates album artwork with professional composition and thematic coherence.",
+      "We built these tools to showcase what AI art can achieve at a professional level - generating cover art that tells visual stories."
+    ],
+    'IndieMusicFeedback': [
+      "Our team uses SoundSwap internally for beta testing. We'd love your feedback on our AI tools as we continue developing features for independent artists.",
+      "We built SoundSwap specifically for the indie community. Your feedback helps us improve our tools for creators at all levels."
+    ],
+    'PromoteYourMusic': [
+      "SoundSwap's team built direct utility tools for music promotion. Our AI generates the visual content you need to stand out on all platforms.",
+      "We developed these tools for self-promoting artists. The AI creates professional visuals that help your music get noticed."
+    ],
+    'SocialMediaMarketing': [
+      "Our development team focused on social media conversion. SoundSwap generates vertical videos and Reels-optimized content that performs well on algorithms.",
+      "We built these tools with social media managers in mind - automating the creation of platform-optimized visual content for music promotion."
+    ]
+  };
+  
+  const defaultComments = [
+    `As part of the SoundSwap development team, we built AI tools to solve this exact problem. Our ${persona.toLowerCase()} approach focuses on automating the tedious parts of creative work so you can focus on what matters.`,
+    `The SoundSwap team developed these AI tools to address common pain points in music creation. We're transparent about being developers who built solutions for our own workflow challenges.`,
+    `We're the SoundSwap team, and we built these AI tools specifically for creators facing these challenges. Our goal was to automate the technical parts so you can focus on creativity.`
+  ];
+  
+  const comments = fallbackComments[subreddit] || defaultComments;
   return comments[Math.floor(Math.random() * comments.length)];
 };
 
@@ -650,7 +1044,7 @@ const PREMIUM_FEATURES = {
     priceRange: '$15-$50 per video',
     targetKeywords: ['lyric video', 'music video', 'visualizer', 'animated lyrics', 'Spotify Canvas', 'music promotion'],
     valueProposition: 'Save 10+ hours of editing with AI-powered lyric videos',
-    targetSubreddits: ['WeAreTheMusicMakers', 'aivideo', 'musicproduction', 'musicians', 'MusicMarketing', 'Spotify'],
+    targetSubreddits: ['WeAreTheMusicMakers', 'musicproduction', 'musicians', 'MusicMarketing', 'Spotify', 'makinghiphop', 'edmproduction', 'Songwriters', 'PromoteYourMusic'],
     painPointSolutions: {
       frustration: 'Automates the tedious video editing process',
       budget: 'Professional quality at a fraction of the cost',
@@ -666,7 +1060,8 @@ const PREMIUM_FEATURES = {
       'AI Autopilot Mode - Automatic style and timing optimization',
       'Motion Interpolation - Smooth animation rendering',
       'Multiple Resolution Options - Up to 1080p (4K in premium)'
-    ]
+    ],
+    batchFocus: ['C', 'D'] // Problem Solvers & Growth Hackers
   },
   doodleArtGenerator: {
     name: 'Doodle-to-Art AI Generator',
@@ -682,7 +1077,7 @@ const PREMIUM_FEATURES = {
     priceRange: '$10-$30 per animation',
     targetKeywords: ['art generation', 'animation', 'Spotify Canvas', 'digital art', 'AI art', 'creative tools'],
     valueProposition: 'Create professional animations in minutes instead of days',
-    targetSubreddits: ['aiArt', 'ArtistLounge', 'WeAreTheMusicMakers', 'Spotify', 'musicproduction'],
+    targetSubreddits: ['digitalart', 'aiArt', 'ArtistLounge', 'Spotify', 'AIArtCommunity', 'VaporwaveAesthetics', 'Hyperpop', 'AlbumArtPorn'],
     painPointSolutions: {
       frustration: 'Turns simple sketches into finished art instantly',
       budget: 'Create premium artwork without expensive software',
@@ -698,116 +1093,309 @@ const PREMIUM_FEATURES = {
       'HD Export Options - Multiple resolution and format options',
       'Real-time Preview - See transformations as you draw',
       'Collaboration Tools - Share and collaborate on art projects'
-    ]
+    ],
+    batchFocus: ['B'] // Visual Showdown
   }
 };
 
-// ==================== REDDIT TARGET CONFIGURATION ====================
+// ==================== UPDATED REDDIT TARGET CONFIGURATION ====================
 
 const redditTargets = {
+  // ===== CORE HUBS (Retained & Optimized) =====
   'WeAreTheMusicMakers': {
     name: 'WeAreTheMusicMakers',
     memberCount: 1800000,
-    description: 'Dedicated to musicians, producers, and enthusiasts',
+    description: 'The "Home Base" for creators',
     active: true,
     priority: 'high',
+    batch: 'C',
     postingSchedule: {
-      monday: ['10:00', '18:00'],
-      tuesday: ['11:00', '19:00'],
-      wednesday: ['10:00', '18:00'],
-      thursday: ['11:00', '19:00'],
-      friday: ['10:00', '18:00'],
-      saturday: ['12:00', '20:00'],
-      sunday: ['12:00', '20:00']
+      monday: ['14:00', '19:00'],
+      tuesday: ['15:00', '20:00'],
+      wednesday: ['14:00', '19:00'],
+      thursday: ['15:00', '20:00'],
+      friday: ['14:00', '19:00'],
+      saturday: ['13:00', '18:00'],
+      sunday: ['13:00', '18:00']
     },
     educationalPostSchedule: {
       tuesday: ['15:00'],
       friday: ['16:00']
     },
     preferredStyles: ['helpful', 'expert', 'thoughtful'],
-    soundswapMentionRate: 1.0,
+    soundswapMentionRate: 0.2, // 80/20 split
     dailyCommentLimit: 4,
     educationalPostLimit: 1,
     premiumFeatureLimit: 2,
-    keywords: ['lyric video', 'music video', 'visualizer', 'Spotify Canvas', 'animation', 'editing', 'frustrated', 'time-consuming'],
+    keywords: ['lyric video', 'music video', 'visualizer', 'Spotify Canvas', 'animation', 'editing', 'frustrated', 'time-consuming', 'how to make', 'video editor'],
     premiumFeatures: ['lyricVideoGenerator', 'doodleArtGenerator'],
     targetAudience: 'musicians needing visual content',
     painPointFocus: ['frustration', 'budget', 'skillGap']
   },
-  'aivideo': {
-    name: 'aivideo',
-    memberCount: 150000,
-    description: 'AI-generated video community',
+  'digitalart': {
+    name: 'digitalart',
+    memberCount: 3500000,
+    description: 'Primary target for Doodle-to-Art hooks',
     active: true,
     priority: 'high',
+    batch: 'B',
     postingSchedule: {
-      monday: ['09:00', '17:00'],
-      wednesday: ['10:00', '18:00'],
-      friday: ['11:00', '19:00']
+      monday: ['11:00', '17:00'],
+      wednesday: ['12:00', '18:00'],
+      friday: ['13:00', '19:00']
     },
     educationalPostSchedule: {
-      wednesday: ['14:00']
+      wednesday: ['16:00']
     },
-    preferredStyles: ['technical', 'innovative', 'helpful'],
-    soundswapMentionRate: 1.0,
+    preferredStyles: ['creative', 'technical', 'inspirational'],
+    soundswapMentionRate: 0.2, // 80/20 split
     dailyCommentLimit: 3,
     educationalPostLimit: 1,
     premiumFeatureLimit: 2,
-    keywords: ['AI video', 'automation', 'text animation', 'music video', 'lyric video', 'generative video', 'AI animation'],
-    premiumFeatures: ['lyricVideoGenerator'],
-    targetAudience: 'AI video enthusiasts and creators',
-    painPointFocus: ['frustration', 'skillGap']
+    keywords: ['sketch', 'drawing', 'animation', 'AI art', 'transform', 'process', 'tutorial', 'learn', 'beginner'],
+    premiumFeatures: ['doodleArtGenerator'],
+    targetAudience: 'digital artists exploring AI tools',
+    painPointFocus: ['skillGap', 'time']
   },
+  'MusicMarketing': {
+    name: 'MusicMarketing',
+    memberCount: 50000,
+    description: 'Direct pain point targeting',
+    active: true,
+    priority: 'high',
+    batch: 'D',
+    postingSchedule: {
+      monday: ['10:00', '18:00'],
+      wednesday: ['15:00', '21:00'],
+      friday: ['12:00', '20:00']
+    },
+    educationalPostSchedule: {
+      friday: ['14:00']
+    },
+    preferredStyles: ['strategic', 'helpful', 'professional'],
+    soundswapMentionRate: 0.2, // 80/20 split
+    dailyCommentLimit: 2,
+    educationalPostLimit: 1,
+    premiumFeatureLimit: 2,
+    keywords: ['Spotify promotion', 'visual content', 'music videos', 'artist growth', 'Canvas', 'visualizer', 'ROI', 'conversion'],
+    premiumFeatures: ['lyricVideoGenerator'],
+    targetAudience: 'artists focused on promotion',
+    painPointFocus: ['budget', 'frustration']
+  },
+  'Spotify': {
+    name: 'Spotify',
+    memberCount: 10000000,
+    description: 'Visual branding for artists',
+    active: true,
+    priority: 'high',
+    batch: 'D',
+    postingSchedule: {
+      tuesday: ['11:00', '19:00'],
+      thursday: ['12:00', '20:00'],
+      saturday: ['13:00', '21:00']
+    },
+    educationalPostSchedule: {
+      thursday: ['14:00']
+    },
+    preferredStyles: ['enthusiastic', 'helpful', 'casual'],
+    soundswapMentionRate: 0.2, // 80/20 split
+    dailyCommentLimit: 2,
+    educationalPostLimit: 1,
+    premiumFeatureLimit: 2,
+    keywords: ['Spotify Canvas', 'animated artwork', 'visualizers', 'music visual', 'album art', 'animated', '8-second', 'looping'],
+    premiumFeatures: ['doodleArtGenerator', 'lyricVideoGenerator'],
+    targetAudience: 'Spotify users and artists',
+    painPointFocus: ['skillGap', 'budget']
+  },
+  'ArtistLounge': {
+    name: 'ArtistLounge',
+    memberCount: 200000,
+    description: 'Creative process discussion',
+    active: true,
+    priority: 'medium',
+    batch: 'A',
+    postingSchedule: {
+      tuesday: ['10:00', '16:00'],
+      thursday: ['11:00', '17:00'],
+      sunday: ['12:00', '18:00']
+    },
+    preferredStyles: ['supportive', 'creative', 'casual'],
+    soundswapMentionRate: 0.1, // 90/10 split - more authority building
+    dailyCommentLimit: 2,
+    educationalPostLimit: 0,
+    premiumFeatureLimit: 1,
+    keywords: ['art tools', 'animation', 'digital art', 'creative process', 'affordable', 'beginner', 'workflow'],
+    premiumFeatures: ['doodleArtGenerator'],
+    targetAudience: 'artists seeking new tools',
+    painPointFocus: ['budget', 'skillGap']
+  },
+  
+  // ===== NEW PRODUCTION & GENRE TARGETS =====
   'musicproduction': {
     name: 'musicproduction',
     memberCount: 600000,
-    description: 'Music production community',
+    description: 'Workflow efficiency focus',
     active: true,
     priority: 'high',
+    batch: 'C',
     postingSchedule: {
-      tuesday: ['10:00', '18:00'],
-      thursday: ['11:00', '19:00']
+      tuesday: ['14:00', '20:00'],
+      thursday: ['15:00', '21:00'],
+      saturday: ['13:00', '19:00']
     },
     educationalPostSchedule: {
       thursday: ['15:00']
     },
     preferredStyles: ['technical', 'creative', 'expert'],
-    soundswapMentionRate: 1.0,
+    soundswapMentionRate: 0.2, // 80/20 split
     dailyCommentLimit: 3,
     educationalPostLimit: 1,
     premiumFeatureLimit: 2,
-    keywords: ['visual content', 'music video', 'lyric video', 'promotion', 'Spotify Canvas', 'artist branding'],
+    keywords: ['visual content', 'music video', 'lyric video', 'promotion', 'Spotify Canvas', 'artist branding', 'workflow', 'efficiency'],
     premiumFeatures: ['lyricVideoGenerator'],
     targetAudience: 'music producers needing visuals',
-    painPointFocus: ['frustration', 'skillGap']
+    painPointFocus: ['frustration', 'skillGap', 'time']
   },
   'musicians': {
     name: 'musicians',
     memberCount: 400000,
-    description: 'Community for musicians of all levels',
+    description: 'Practical career tools',
     active: true,
     priority: 'medium',
+    batch: 'C',
     postingSchedule: {
-      monday: ['11:00'],
-      wednesday: ['16:00'],
-      friday: ['14:00']
+      monday: ['11:00', '17:00'],
+      wednesday: ['16:00', '22:00'],
+      friday: ['14:00', '20:00']
     },
     preferredStyles: ['supportive', 'practical', 'helpful'],
-    soundswapMentionRate: 1.0,
+    soundswapMentionRate: 0.2, // 80/20 split
     dailyCommentLimit: 2,
     educationalPostLimit: 0,
     premiumFeatureLimit: 2,
-    keywords: ['music video', 'visual content', 'promotion', 'lyrics', 'animation', 'affordable tools'],
+    keywords: ['music video', 'visual content', 'promotion', 'lyrics', 'animation', 'affordable tools', 'career', 'tools'],
     premiumFeatures: ['lyricVideoGenerator', 'doodleArtGenerator'],
     targetAudience: 'musicians seeking promotion tools',
     painPointFocus: ['frustration', 'budget']
   },
+  'makinghiphop': {
+    name: 'makinghiphop',
+    memberCount: 350000,
+    description: 'Type Beat art & lyric video demand',
+    active: true,
+    priority: 'medium',
+    batch: 'C',
+    postingSchedule: {
+      tuesday: ['13:00', '19:00'],
+      thursday: ['14:00', '20:00'],
+      saturday: ['12:00', '18:00']
+    },
+    preferredStyles: ['urban', 'direct', 'helpful'],
+    soundswapMentionRate: 0.2, // 80/20 split
+    dailyCommentLimit: 2,
+    educationalPostLimit: 1,
+    premiumFeatureLimit: 2,
+    keywords: ['type beat', 'hip hop', 'rap', 'lyric video', 'visuals', 'YouTube', 'TikTok', 'cover art'],
+    premiumFeatures: ['lyricVideoGenerator'],
+    targetAudience: 'hip-hop producers needing visuals',
+    painPointFocus: ['frustration', 'time']
+  },
+  'edmproduction': {
+    name: 'edmproduction',
+    memberCount: 300000,
+    description: 'High-fidelity visual focus',
+    active: true,
+    priority: 'medium',
+    batch: 'C',
+    postingSchedule: {
+      monday: ['12:00', '18:00'],
+      wednesday: ['13:00', '19:00'],
+      friday: ['14:00', '20:00']
+    },
+    preferredStyles: ['technical', 'energetic', 'creative'],
+    soundswapMentionRate: 0.2, // 80/20 split
+    dailyCommentLimit: 2,
+    educationalPostLimit: 1,
+    premiumFeatureLimit: 2,
+    keywords: ['visualizer', 'music video', 'animation', 'EDM', 'drops', 'energy', 'visuals', 'VJ'],
+    premiumFeatures: ['lyricVideoGenerator'],
+    targetAudience: 'EDM producers needing energetic visuals',
+    painPointFocus: ['skillGap', 'time']
+  },
+  'BedroomBands': {
+    name: 'BedroomBands',
+    memberCount: 120000,
+    description: 'Collaboration & quick asset needs',
+    active: true,
+    priority: 'medium',
+    batch: 'A',
+    postingSchedule: {
+      tuesday: ['10:00', '16:00'],
+      thursday: ['11:00', '17:00'],
+      sunday: ['12:00', '18:00']
+    },
+    preferredStyles: ['collaborative', 'friendly', 'helpful'],
+    soundswapMentionRate: 0.1, // 90/10 split
+    dailyCommentLimit: 2,
+    educationalPostLimit: 0,
+    premiumFeatureLimit: 1,
+    keywords: ['collaboration', 'remote', 'assets', 'quick', 'visuals', 'band', 'group'],
+    premiumFeatures: ['doodleArtGenerator', 'lyricVideoGenerator'],
+    targetAudience: 'collaborative music projects',
+    painPointFocus: ['time', 'coordination']
+  },
+  'MusicInTheMaking': {
+    name: 'MusicInTheMaking',
+    memberCount: 80000,
+    description: 'Early-stage project visuals',
+    active: true,
+    priority: 'low',
+    batch: 'A',
+    postingSchedule: {
+      wednesday: ['11:00', '17:00'],
+      friday: ['12:00', '18:00']
+    },
+    preferredStyles: ['supportive', 'creative', 'casual'],
+    soundswapMentionRate: 0.1, // 90/10 split
+    dailyCommentLimit: 1,
+    educationalPostLimit: 0,
+    premiumFeatureLimit: 1,
+    keywords: ['demo', 'early', 'project', 'visuals', 'concept', 'feedback'],
+    premiumFeatures: ['doodleArtGenerator'],
+    targetAudience: 'early-stage music projects',
+    painPointFocus: ['skillGap', 'budget']
+  },
+  'Songwriters': {
+    name: 'Songwriters',
+    memberCount: 150000,
+    description: 'Lyric-focused visualizers',
+    active: true,
+    priority: 'medium',
+    batch: 'A',
+    postingSchedule: {
+      monday: ['10:00', '16:00'],
+      wednesday: ['11:00', '17:00'],
+      friday: ['12:00', '18:00']
+    },
+    preferredStyles: ['thoughtful', 'creative', 'supportive'],
+    soundswapMentionRate: 0.2, // 80/20 split
+    dailyCommentLimit: 2,
+    educationalPostLimit: 0,
+    premiumFeatureLimit: 1,
+    keywords: ['lyrics', 'storytelling', 'visualizer', 'words', 'meaning', 'emotion'],
+    premiumFeatures: ['lyricVideoGenerator'],
+    targetAudience: 'songwriters focusing on lyrics',
+    painPointFocus: ['skillGap', 'expression']
+  },
+  
+  // ===== NEW VISUAL & AI AESTHETICS TARGETS =====
   'aiArt': {
     name: 'aiArt',
     memberCount: 300000,
-    description: 'AI art generation community',
+    description: 'Broader AI art appreciation',
     active: true,
     priority: 'high',
+    batch: 'B',
     postingSchedule: {
       tuesday: ['10:00', '18:00'],
       thursday: ['11:00', '19:00'],
@@ -817,82 +1405,171 @@ const redditTargets = {
       tuesday: ['16:00']
     },
     preferredStyles: ['creative', 'technical', 'innovative'],
-    soundswapMentionRate: 1.0,
+    soundswapMentionRate: 0.2, // 80/20 split
     dailyCommentLimit: 3,
     educationalPostLimit: 1,
     premiumFeatureLimit: 2,
-    keywords: ['AI art', 'generative art', 'animation', 'sketch to art', 'music visuals', 'Spotify Canvas'],
+    keywords: ['AI art', 'generative art', 'animation', 'sketch to art', 'music visuals', 'Spotify Canvas', 'neural networks'],
     premiumFeatures: ['doodleArtGenerator'],
     targetAudience: 'AI artists exploring music applications',
     painPointFocus: ['skillGap', 'budget']
   },
-  'ArtistLounge': {
-    name: 'ArtistLounge',
-    memberCount: 200000,
-    description: 'Community for artists to discuss their work',
+  'AIArtCommunity': {
+    name: 'AIArtCommunity',
+    memberCount: 80000,
+    description: 'High-tolerance AI hub',
     active: true,
     priority: 'medium',
+    batch: 'D',
     postingSchedule: {
-      tuesday: ['14:00'],
-      thursday: ['16:00'],
-      sunday: ['15:00']
+      wednesday: ['13:00', '19:00'],
+      friday: ['14:00', '20:00'],
+      sunday: ['15:00', '21:00']
     },
-    preferredStyles: ['supportive', 'creative', 'casual'],
-    soundswapMentionRate: 1.0,
+    preferredStyles: ['technical', 'community', 'innovative'],
+    soundswapMentionRate: 0.2, // 80/20 split
     dailyCommentLimit: 2,
+    educationalPostLimit: 1,
+    premiumFeatureLimit: 2,
+    keywords: ['AI tools', 'community', 'generative', 'music', 'visuals', 'automation'],
+    premiumFeatures: ['doodleArtGenerator'],
+    targetAudience: 'AI-Curious creators',
+    painPointFocus: ['skillGap', 'learning']
+  },
+  'VaporwaveAesthetics': {
+    name: 'VaporwaveAesthetics',
+    memberCount: 60000,
+    description: 'Stylized cover art hooks',
+    active: true,
+    priority: 'medium',
+    batch: 'B',
+    postingSchedule: {
+      tuesday: ['12:00', '18:00'],
+      thursday: ['13:00', '19:00'],
+      saturday: ['14:00', '20:00']
+    },
+    preferredStyles: ['aesthetic', 'stylish', 'creative'],
+    soundswapMentionRate: 0.2, // 80/20 split
+    dailyCommentLimit: 2,
+    educationalPostLimit: 1,
+    premiumFeatureLimit: 2,
+    keywords: ['vaporwave', 'aesthetic', 'retro', 'style', 'visual', 'art', 'nostalgia'],
+    premiumFeatures: ['doodleArtGenerator'],
+    targetAudience: 'Aesthetic-focused creators',
+    painPointFocus: ['style', 'execution']
+  },
+  'Hyperpop': {
+    name: 'Hyperpop',
+    memberCount: 40000,
+    description: 'DIY/Glitch aesthetic target',
+    active: true,
+    priority: 'medium',
+    batch: 'B',
+    postingSchedule: {
+      monday: ['13:00', '19:00'],
+      wednesday: ['14:00', '20:00'],
+      friday: ['15:00', '21:00']
+    },
+    preferredStyles: ['edgy', 'creative', 'DIY'],
+    soundswapMentionRate: 0.2, // 80/20 split
+    dailyCommentLimit: 2,
+    educationalPostLimit: 1,
+    premiumFeatureLimit: 2,
+    keywords: ['hyperpop', 'glitch', 'DIY', 'aesthetic', 'visuals', 'experimental'],
+    premiumFeatures: ['doodleArtGenerator'],
+    targetAudience: 'Experimental music creators',
+    painPointFocus: ['style', 'originality']
+  },
+  'AlbumArtPorn': {
+    name: 'AlbumArtPorn',
+    memberCount: 250000,
+    description: 'High-end concept showcases',
+    active: true,
+    priority: 'medium',
+    batch: 'B',
+    postingSchedule: {
+      tuesday: ['11:00', '17:00'],
+      thursday: ['12:00', '18:00'],
+      saturday: ['13:00', '19:00']
+    },
+    preferredStyles: ['professional', 'artistic', 'inspiring'],
+    soundswapMentionRate: 0.1, // 90/10 split
+    dailyCommentLimit: 2,
+    educationalPostLimit: 1,
+    premiumFeatureLimit: 2,
+    keywords: ['album art', 'cover art', 'concept', 'professional', 'design', 'visual'],
+    premiumFeatures: ['doodleArtGenerator'],
+    targetAudience: 'Art directors and designers',
+    painPointFocus: ['quality', 'concept']
+  },
+  
+  // ===== NEW STRATEGIC GROWTH TARGETS =====
+  'IndieMusicFeedback': {
+    name: 'IndieMusicFeedback',
+    memberCount: 90000,
+    description: 'High engagement & beta testing',
+    active: true,
+    priority: 'high',
+    batch: 'A',
+    postingSchedule: {
+      monday: ['10:00', '16:00'],
+      wednesday: ['11:00', '17:00'],
+      friday: ['12:00', '18:00'],
+      sunday: ['13:00', '19:00']
+    },
+    preferredStyles: ['supportive', 'constructive', 'friendly'],
+    soundswapMentionRate: 0.1, // 90/10 split - more value first
+    dailyCommentLimit: 3,
     educationalPostLimit: 0,
     premiumFeatureLimit: 1,
-    keywords: ['art tools', 'animation', 'digital art', 'creative process', 'affordable', 'beginner'],
+    keywords: ['feedback', 'indie', 'help', 'improve', 'visuals', 'art', 'video'],
     premiumFeatures: ['doodleArtGenerator'],
-    targetAudience: 'artists seeking new tools',
-    painPointFocus: ['budget', 'skillGap']
+    targetAudience: 'Indie artists seeking feedback',
+    painPointFocus: ['improvement', 'community']
   },
-  'MusicMarketing': {
-    name: 'MusicMarketing',
-    memberCount: 50000,
-    description: 'Music promotion and marketing strategies',
+  'PromoteYourMusic': {
+    name: 'PromoteYourMusic',
+    memberCount: 120000,
+    description: 'Direct utility pitching',
     active: true,
     priority: 'medium',
+    batch: 'D',
     postingSchedule: {
-      monday: ['10:00'],
-      wednesday: ['15:00'],
-      friday: ['12:00']
+      tuesday: ['14:00', '20:00'],
+      thursday: ['15:00', '21:00'],
+      saturday: ['16:00', '22:00']
     },
-    educationalPostSchedule: {
-      friday: ['14:00']
-    },
-    preferredStyles: ['strategic', 'helpful', 'professional'],
-    soundswapMentionRate: 1.0,
+    preferredStyles: ['direct', 'helpful', 'practical'],
+    soundswapMentionRate: 0.3, // 70/30 split - more promotional
     dailyCommentLimit: 2,
-    educationalPostLimit: 1,
+    educationalPostLimit: 0,
     premiumFeatureLimit: 2,
-    keywords: ['Spotify promotion', 'visual content', 'music videos', 'artist growth', 'Canvas', 'visualizer'],
+    keywords: ['promote', 'music', 'tools', 'help', 'visuals', 'marketing', 'growth'],
     premiumFeatures: ['lyricVideoGenerator'],
-    targetAudience: 'artists focused on promotion',
-    painPointFocus: ['budget', 'frustration']
+    targetAudience: 'Self-promoting artists',
+    painPointFocus: ['visibility', 'tools']
   },
-  'Spotify': {
-    name: 'Spotify',
-    memberCount: 10000000,
-    description: 'General Spotify community (including Canvas discussions)',
+  'SocialMediaMarketing': {
+    name: 'SocialMediaMarketing',
+    memberCount: 500000,
+    description: 'Vertical video/Reels conversion',
     active: true,
     priority: 'medium',
+    batch: 'D',
     postingSchedule: {
-      tuesday: ['11:00', '19:00'],
-      thursday: ['12:00', '20:00']
+      monday: ['13:00', '19:00'],
+      wednesday: ['14:00', '20:00'],
+      friday: ['15:00', '21:00']
     },
-    educationalPostSchedule: {
-      thursday: ['14:00']
-    },
-    preferredStyles: ['enthusiastic', 'helpful', 'casual'],
-    soundswapMentionRate: 1.0,
+    preferredStyles: ['strategic', 'data-driven', 'professional'],
+    soundswapMentionRate: 0.2, // 80/20 split
     dailyCommentLimit: 2,
     educationalPostLimit: 1,
     premiumFeatureLimit: 2,
-    keywords: ['Spotify Canvas', 'animated artwork', 'visualizers', 'music visual', 'album art', 'animated'],
-    premiumFeatures: ['doodleArtGenerator', 'lyricVideoGenerator'],
-    targetAudience: 'Spotify users and artists',
-    painPointFocus: ['skillGap', 'budget']
+    keywords: ['social media', 'Reels', 'TikTok', 'vertical video', 'conversion', 'algorithm', 'engagement'],
+    premiumFeatures: ['lyricVideoGenerator'],
+    targetAudience: 'Social media managers',
+    painPointFocus: ['engagement', 'conversion']
   }
 };
 
@@ -904,9 +1581,11 @@ const analyzePostForPainPoints = (postTitle, postContent = '') => {
   
   // Enhanced pain point detection with more keywords
   const painPointKeywords = {
-    frustration: ['frustrated', 'annoying', 'tedious', 'time-consuming', 'waste time', 'too much work', 'exhausting', 'painful', 'hate'],
-    budget: ['expensive', 'cheap', 'budget', 'cost', 'price', 'affordable', 'inexpensive', 'free', 'low cost'],
-    skillGap: ['beginner', 'new', 'learn', 'how to', 'tutorial', 'no experience', 'simple', 'easy', 'basic', 'not technical']
+    frustration: ['frustrated', 'annoying', 'tedious', 'time-consuming', 'waste time', 'too much work', 'exhausting', 'painful', 'hate', 'sick of', 'tired of'],
+    budget: ['expensive', 'cheap', 'budget', 'cost', 'price', 'affordable', 'inexpensive', 'free', 'low cost', 'cant afford', 'money', 'expensive'],
+    skillGap: ['beginner', 'new', 'learn', 'how to', 'tutorial', 'no experience', 'simple', 'easy', 'basic', 'not technical', 'dont know', 'struggling'],
+    time: ['quick', 'fast', 'minutes', 'hours', 'days', 'weeks', 'time', 'speedy', 'instant', 'rapid'],
+    quality: ['professional', 'quality', 'good looking', 'polished', 'slick', 'high-end', 'premium']
   };
   
   // Check each pain point category
@@ -918,7 +1597,7 @@ const analyzePostForPainPoints = (postTitle, postContent = '') => {
   
   // General need detection
   if (textToAnalyze.includes('help') || textToAnalyze.includes('struggle') || textToAnalyze.includes('problem') || 
-      textToAnalyze.includes('advice') || textToAnalyze.includes('suggestion')) {
+      textToAnalyze.includes('advice') || textToAnalyze.includes('suggestion') || textToAnalyze.includes('recommend')) {
     detectedPainPoints.push('general_need');
   }
   
@@ -927,6 +1606,46 @@ const analyzePostForPainPoints = (postTitle, postContent = '') => {
     painPoints: detectedPainPoints,
     score: detectedPainPoints.length * 10
   };
+};
+
+// ==================== CRITICAL WATCH ITEM: LEAD SUMMARY LOGGING ====================
+
+const logLeadSummary = (scanResults, postedComments) => {
+  console.log('\n📊 LEAD SUMMARY (Console Only)');
+  console.log('════════════════════════════════');
+  
+  // Group by batch
+  const batchLeads = {};
+  scanResults.highQualityPosts.forEach(post => {
+    const batch = post.batch || getBatchForSubreddit(post.subreddit);
+    if (!batchLeads[batch]) batchLeads[batch] = [];
+    batchLeads[batch].push({
+      subreddit: post.subreddit,
+      score: post.leadScore,
+      title: post.title.substring(0, 80) + '...',
+      priority: post.leadScore >= 85 ? '🔴 HIGH' : 
+                post.leadScore >= 60 ? '🟡 MEDIUM' : '🟢 LOW'
+    });
+  });
+  
+  // Display by batch
+  Object.entries(batchLeads).forEach(([batch, leads]) => {
+    console.log(`\n🎭 Batch ${batch} (${BATCHES[batch]?.name || 'Unknown'}):`);
+    leads.forEach((lead, index) => {
+      console.log(`  ${index + 1}. ${lead.priority} r/${lead.subreddit} - Score: ${lead.score}`);
+      console.log(`     "${lead.title}"`);
+    });
+  });
+  
+  // Show Discord notification summary
+  const highPriorityLeads = scanResults.highQualityPosts.filter(p => p.leadScore >= DISCORD_HIGH_PRIORITY_THRESHOLD);
+  const postedHighPriority = postedComments.filter(c => c.leadScore >= DISCORD_HIGH_PRIORITY_THRESHOLD);
+  
+  console.log(`\n💬 Discord Notifications Summary:`);
+  console.log(`  - High-priority leads found: ${highPriorityLeads.length}`);
+  console.log(`  - High-priority leads posted: ${postedHighPriority.length}`);
+  console.log(`  - Discord threshold: Score ≥ ${DISCORD_HIGH_PRIORITY_THRESHOLD}`);
+  console.log(`  - Filter: Only high-priority leads sent to Discord`);
 };
 
 // ==================== LAZY LOADED CORE FUNCTIONS ====================
@@ -950,6 +1669,8 @@ router.get('/cron-status', async (req, res) => {
     const currentDate = getCurrentDateInAppTimezone();
     const timeWindow = getCurrentTimeWindow();
     const currentHour = getCurrentHourInAppTimezone();
+    const currentUTCHour = getCurrentUTCHour();
+    const withinHumanWindow = isWithinHumanWindow();
     
     res.json({
       success: true,
@@ -961,6 +1682,12 @@ router.get('/cron-status', async (req, res) => {
         currentDate: currentDate,
         timeWindow: timeWindow,
         goldenHourWindow: `${GOLDEN_HOUR_WINDOW_MINUTES} minutes`,
+        humanWindow: {
+          active: withinHumanWindow,
+          start: `${HUMAN_WINDOW_START_HOUR}:00 UTC`,
+          end: `${HUMAN_WINDOW_END_HOUR}:00 UTC`,
+          currentUTC: `${currentUTCHour}:00 UTC`
+        },
         totalComments: postingActivity?.totalComments || 0,
         totalEducationalPosts: postingActivity?.totalEducationalPosts || 0,
         totalPremiumMentions: postingActivity?.totalPremiumMentions || 0,
@@ -970,7 +1697,7 @@ router.get('/cron-status', async (req, res) => {
         reddit: {
           connected: isRedditLoaded,
           username: postingActivity?.redditUsername || null,
-          posting: 'PRO_OPTIMIZATION_SCAN_ALL_FILTER_ONE'
+          posting: 'BATCHED_ORCHESTRATION'
         },
         dailyReset: {
           lastResetDate: postingActivity?.lastResetDate || currentDate,
@@ -982,7 +1709,7 @@ router.get('/cron-status', async (req, res) => {
           aiTimeout: AI_TIMEOUT_MS,
           postingWindow: POSTING_WINDOW_MINUTES,
           goldenHourWindow: GOLDEN_HOUR_WINDOW_MINUTES,
-          optimization: 'SCAN_ALL_FILTER_ONE',
+          optimization: 'BATCHED_ORCHESTRATION',
           concurrentScanLimit: CONCURRENT_SCAN_LIMIT,
           minLeadScore: MIN_LEAD_SCORE,
           geminiQuota: {
@@ -997,9 +1724,11 @@ router.get('/cron-status', async (req, res) => {
           goldenHourComments: 0,
           totalOpportunitiesFound: 0
         },
+        batches: BATCHES,
         discordWebhook: {
           configured: !!DISCORD_WEBHOOK_URL,
-          notificationsEnabled: true
+          notificationsEnabled: true,
+          highPriorityThreshold: DISCORD_HIGH_PRIORITY_THRESHOLD
         }
       },
       premiumFeatures: PREMIUM_FEATURES,
@@ -1043,6 +1772,22 @@ router.post('/cron', async (req, res) => {
     
     if (isIsolated) {
       console.log('[ISOLATED] 🚀 Running in isolated mode');
+    }
+    
+    // Check if within human window (12:00 PM – 10:00 PM UTC)
+    if (!isWithinHumanWindow()) {
+      console.log(`[INFO] ⏳ Outside human window (${HUMAN_WINDOW_START_HOUR}:00-${HUMAN_WINDOW_END_HOUR}:00 UTC). Skipping run.`);
+      return res.json({
+        success: true,
+        message: 'Outside human window - run skipped',
+        humanWindow: {
+          active: false,
+          currentUTC: `${getCurrentUTCHour()}:00 UTC`,
+          window: `${HUMAN_WINDOW_START_HOUR}:00-${HUMAN_WINDOW_END_HOUR}:00 UTC`
+        },
+        totalPosted: 0,
+        timestamp: new Date().toISOString()
+      });
     }
     
     // Load core functions with timeout
@@ -1092,6 +1837,117 @@ router.post('/cron', async (req, res) => {
   }
 });
 
+// ==================== CRITICAL WATCH ITEM: SHADOW-DELETE CHECK ENDPOINT ====================
+
+router.get('/shadow-check-list', (req, res) => {
+  const pendingChecks = SHADOW_DELETE_CHECK.loggedOutBrowserCheck.filter(
+    check => new Date(check.checkAfter) > new Date()
+  );
+  
+  const readyChecks = SHADOW_DELETE_CHECK.loggedOutBrowserCheck.filter(
+    check => new Date(check.checkAfter) <= new Date()
+  );
+  
+  // Focus on Batch C first (Problem Solvers - highest conversion potential)
+  const batchCChecks = readyChecks.filter(check => check.batch === 'C');
+  const otherChecks = readyChecks.filter(check => check.batch !== 'C');
+  
+  res.json({
+    success: true,
+    stats: {
+      totalChecks: SHADOW_DELETE_CHECK.loggedOutBrowserCheck.length,
+      pendingChecks: pendingChecks.length,
+      readyChecks: readyChecks.length,
+      batchCChecks: batchCChecks.length,
+      suspectedDeletions: SHADOW_DELETE_CHECK.suspectedDeletions,
+      lastChecked: RATE_LIMIT_MONITOR.last429Time ? new Date(RATE_LIMIT_MONITOR.last429Time).toISOString() : null
+    },
+    // Priority: Batch C first, then others
+    readyForManualCheck: [...batchCChecks, ...otherChecks].slice(0, 5), // Top 5 ready for manual check
+    pendingChecks: pendingChecks.slice(0, 3),
+    instructions: [
+      '1. Open an incognito/private browser window',
+      '2. Navigate to the URL above (logged out)',
+      '3. Check if the comment is visible',
+      '4. If not visible, it may be shadow-deleted',
+      '5. Focus on Batch C (Problem Solvers) comments first',
+      '6. Check weekly to detect shadow-ban patterns'
+    ],
+    highPriorityBatches: ['C', 'D'], // Problem Solvers & Growth Hackers
+    timestamp: new Date().toISOString()
+  });
+});
+
+// ==================== CRITICAL WATCH ITEM: HEALTH MONITOR ENDPOINT ====================
+
+router.get('/health-monitor', (req, res) => {
+  const currentUTCHour = getCurrentUTCHour();
+  const withinHumanWindow = isWithinHumanWindow();
+  
+  // Check for Batch C comments needing verification
+  const batchCChecks = SHADOW_DELETE_CHECK.loggedOutBrowserCheck.filter(
+    check => check.batch === 'C' && new Date(check.checkAfter) <= new Date()
+  );
+  
+  res.json({
+    success: true,
+    monitor: {
+      timestamp: new Date().toISOString(),
+      rateLimit: {
+        consecutiveErrors: RATE_LIMIT_MONITOR.consecutiveErrors,
+        last429Time: RATE_LIMIT_MONITOR.last429Time ? new Date(RATE_LIMIT_MONITOR.last429Time).toISOString() : null,
+        backoffMultiplier: RATE_LIMIT_MONITOR.backoffMultiplier,
+        status: RATE_LIMIT_MONITOR.consecutiveErrors > 0 ? '⚠️ THROTTLED' : '✅ NORMAL'
+      },
+      shadowDelete: {
+        pendingChecks: SHADOW_DELETE_CHECK.loggedOutBrowserCheck.length,
+        batchCChecksNeedingAttention: batchCChecks.length,
+        suspectedDeletions: SHADOW_DELETE_CHECK.suspectedDeletions,
+        checkProbability: SHADOW_DELETE_CHECK.checkProbability,
+        status: SHADOW_DELETE_CHECK.suspectedDeletions > 0 ? '⚠️ MONITOR' : '✅ CLEAR'
+      },
+      discordSignal: {
+        highPriorityThreshold: DISCORD_HIGH_PRIORITY_THRESHOLD,
+        totalLeadsToday: postingActivity?.premiumLeadsGenerated || 0,
+        discordNotificationsSent: postingActivity?.discordNotifications?.totalSent || 0,
+        status: '🔴 HIGH-PRIORITY ONLY'
+      },
+      industryAuthority: {
+        promotionRate: '20%',
+        expertAdviceRate: '80%',
+        status: '🎓 EXPERT MODE'
+      },
+      humanWindow: {
+        active: withinHumanWindow,
+        currentUTC: `${currentUTCHour}:00`,
+        window: '12:00-22:00 UTC',
+        status: withinHumanWindow ? '✅ ACTIVE' : '⏸️ PAUSED'
+      },
+      batches: {
+        currentRotation: getCurrentBatchRotation(),
+        nextScheduledBatch: getNextScheduledBatch(),
+        status: '🔄 ACTIVE ROTATION'
+      }
+    },
+    recommendations: [
+      RATE_LIMIT_MONITOR.consecutiveErrors > 2 ? '⚠️ Reduce scanning frequency temporarily' : '✅ Rate limits normal',
+      batchCChecks.length >= 3 ? '⚠️ Check Batch C shadow-delete URLs' : '✅ No Batch C checks pending',
+      withinHumanWindow ? '✅ Operating within safe window' : '⏸️ Outside human window - safe',
+      '🎓 Industry authority mode: 80% expert advice, 20% promotion'
+    ],
+    actionItems: [
+      'Check /api/reddit-admin/shadow-check-list weekly',
+      'Monitor Discord for high-priority leads only (score > 85)',
+      'Verify Batch C comments from logged-out browser',
+      'Adjust promotion rate if conversion drops'
+    ],
+    criticalAlerts: [
+      RATE_LIMIT_MONITOR.consecutiveErrors >= 3 ? '🚨 Rate limit critical - check immediately' : null,
+      batchCChecks.length >= 5 ? '⚠️ Multiple Batch C comments need verification' : null
+    ].filter(alert => alert !== null)
+  });
+});
+
 // Get posting schedule for today
 router.get('/schedule/today', (req, res) => {
   const today = getCurrentDayInAppTimezone();
@@ -1099,6 +1955,8 @@ router.get('/schedule/today', (req, res) => {
   const currentDate = getCurrentDateInAppTimezone();
   const timeWindow = getCurrentTimeWindow();
   const currentHour = getCurrentHourInAppTimezone();
+  const currentUTCHour = getCurrentUTCHour();
+  const withinHumanWindow = isWithinHumanWindow();
   
   const schedule = {};
   const educationalSchedule = {};
@@ -1115,7 +1973,10 @@ router.get('/schedule/today', (req, res) => {
         inCurrentWindow: config.postingSchedule[today].some(time => time >= timeWindow.start && time <= timeWindow.end),
         premiumFeatures: config.premiumFeatures,
         targetAudience: config.targetAudience,
-        painPointFocus: config.painPointFocus
+        painPointFocus: config.painPointFocus,
+        batch: config.batch,
+        batchName: BATCHES[config.batch]?.name || 'Unknown',
+        promotionRate: `${Math.round((1 - config.soundswapMentionRate) * 100)}% expert / ${Math.round(config.soundswapMentionRate * 100)}% promotional`
       };
     }
     if (config.active && config.educationalPostSchedule && config.educationalPostSchedule[today]) {
@@ -1136,9 +1997,15 @@ router.get('/schedule/today', (req, res) => {
     timezone: APP_TIMEZONE,
     timeWindow: timeWindow,
     goldenHourWindow: `${GOLDEN_HOUR_WINDOW_MINUTES} minutes`,
+    humanWindow: {
+      active: withinHumanWindow,
+      start: `${HUMAN_WINDOW_START_HOUR}:00 UTC`,
+      end: `${HUMAN_WINDOW_END_HOUR}:00 UTC`,
+      currentUTC: `${currentUTCHour}:00 UTC`
+    },
     optimization: {
       active: true,
-      strategy: 'SCAN_ALL_FILTER_ONE',
+      strategy: 'BATCHED_ORCHESTRATION',
       concurrentScanLimit: CONCURRENT_SCAN_LIMIT,
       minLeadScore: MIN_LEAD_SCORE
     },
@@ -1149,6 +2016,7 @@ router.get('/schedule/today', (req, res) => {
     discordWebhook: {
       configured: !!DISCORD_WEBHOOK_URL,
       notificationsEnabled: true,
+      highPriorityThreshold: DISCORD_HIGH_PRIORITY_THRESHOLD,
       url: DISCORD_WEBHOOK_URL ? 'Configured' : 'Not configured'
     },
     schedule: schedule,
@@ -1164,12 +2032,26 @@ router.get('/schedule/today', (req, res) => {
       goldenHourComments: 0,
       totalOpportunitiesFound: 0
     },
+    batches: BATCHES,
     timestamp: new Date().toISOString()
   });
 });
 
 // Get all configured Reddit targets
 router.get('/targets', (req, res) => {
+  // Group by batch
+  const targetsByBatch = {};
+  Object.entries(redditTargets).forEach(([sub, config]) => {
+    const batch = config.batch || 'Unknown';
+    if (!targetsByBatch[batch]) {
+      targetsByBatch[batch] = [];
+    }
+    targetsByBatch[batch].push({
+      subreddit: sub,
+      ...config
+    });
+  });
+  
   res.json({
     success: true,
     data: redditTargets,
@@ -1192,16 +2074,21 @@ router.get('/targets', (req, res) => {
       }
       return acc;
     }, {}),
+    batches: BATCHES,
+    targetsByBatch: targetsByBatch,
     optimization: {
-      strategy: 'SCAN_ALL_FILTER_ONE',
+      strategy: 'BATCHED_ORCHESTRATION',
       concurrentRequests: MAX_CONCURRENT_REQUESTS,
       postsPerSubreddit: POSTS_PER_SUBREDDIT,
       minLeadScore: MIN_LEAD_SCORE,
-      maxPostsPerRun: MAX_POSTS_PER_RUN
+      maxPostsPerRun: MAX_POSTS_PER_RUN,
+      humanWindow: `${HUMAN_WINDOW_START_HOUR}:00-${HUMAN_WINDOW_END_HOUR}:00 UTC`,
+      discordThreshold: `Score > ${DISCORD_HIGH_PRIORITY_THRESHOLD}`
     },
     discordNotifications: {
       enabled: true,
-      webhookConfigured: !!DISCORD_WEBHOOK_URL
+      webhookConfigured: !!DISCORD_WEBHOOK_URL,
+      highPriorityOnly: true
     },
     timestamp: new Date().toISOString()
   });
@@ -1315,7 +2202,7 @@ router.get('/test-reddit', async (req, res) => {
 // Generate AI-powered comment
 router.post('/generate-comment', async (req, res) => {
   try {
-    const { postTitle, postContent, subreddit, painPoints } = req.body;
+    const { postTitle, postContent, subreddit, painPoints, batch } = req.body;
 
     if (!postTitle) {
       return res.status(400).json({
@@ -1328,7 +2215,18 @@ router.post('/generate-comment', async (req, res) => {
       await loadCoreFunctions();
     }
 
-    const result = await generatePremiumFeatureComment(postTitle, postContent, subreddit, painPoints || []);
+    // Determine if this should be promotional or expert advice (80/20 split)
+    const targetConfig = redditTargets[subreddit];
+    const shouldPromote = Math.random() <= (targetConfig?.soundswapMentionRate || 0.2);
+    
+    let result;
+    if (shouldPromote) {
+      result = await generatePremiumFeatureComment(postTitle, postContent, subreddit, painPoints || [], batch);
+      result.isPromotional = true;
+    } else {
+      result = await generateIndustryExpertComment(postTitle, postContent, subreddit, painPoints || [], batch);
+      result.isPromotional = false;
+    }
     
     if (result.success) {
       res.json({
@@ -1340,10 +2238,14 @@ router.post('/generate-comment', async (req, res) => {
         painPoints: result.painPoints,
         isPremiumFocus: result.isPremiumFocus,
         isFallback: result.isFallback || false,
+        batch: result.batch || getBatchForSubreddit(subreddit),
+        isPromotional: result.isPromotional,
+        isIndustryExpert: result.isIndustryExpert || false,
         config: redditTargets[subreddit] ? {
           dailyLimit: redditTargets[subreddit].dailyCommentLimit,
           premiumLimit: redditTargets[subreddit].premiumFeatureLimit,
-          painPointFocus: redditTargets[subreddit].painPointFocus
+          painPointFocus: redditTargets[subreddit].painPointFocus,
+          promotionRate: `${Math.round((1 - redditTargets[subreddit].soundswapMentionRate) * 100)}% expert / ${Math.round(redditTargets[subreddit].soundswapMentionRate * 100)}% promotional`
         } : null,
         timestamp: new Date().toISOString()
       });
@@ -1375,6 +2277,7 @@ router.post('/analyze-post', async (req, res) => {
 
     const analysis = analyzePostForPainPoints(postTitle, postContent);
     const targetConfig = redditTargets[subreddit];
+    const batch = getBatchForSubreddit(subreddit);
     
     let premiumFeature;
     if (targetConfig?.premiumFeatures?.includes('lyricVideoGenerator')) {
@@ -1386,6 +2289,9 @@ router.post('/analyze-post', async (req, res) => {
     res.json({
       success: true,
       analysis: analysis,
+      batch: batch,
+      batchConfig: BATCHES[batch],
+      discordPriority: analysis.score >= DISCORD_HIGH_PRIORITY_THRESHOLD ? '🔴 HIGH' : '🟡 MEDIUM',
       recommendations: {
         hasPainPoints: analysis.hasPainPoints,
         painPoints: analysis.painPoints,
@@ -1394,7 +2300,8 @@ router.post('/analyze-post', async (req, res) => {
         premiumFeature: premiumFeature.name,
         featuresToHighlight: premiumFeature.premiumFeatures.slice(0, 2),
         shouldComment: analysis.hasPainPoints && analysis.score >= 10,
-        commentPriority: analysis.score >= 20 ? 'high' : analysis.score >= 10 ? 'medium' : 'low'
+        commentPriority: analysis.score >= 20 ? 'high' : analysis.score >= 10 ? 'medium' : 'low',
+        discordNotification: analysis.score >= DISCORD_HIGH_PRIORITY_THRESHOLD ? 'YES' : 'NO'
       },
       premiumFeature: premiumFeature,
       timestamp: new Date().toISOString()
@@ -1451,7 +2358,8 @@ router.get('/test-gemini', async (req, res) => {
       quotaInfo: {
         used: geminiQuotaInfo.requestCount,
         limit: geminiQuotaInfo.quotaLimit,
-        remaining: geminiQuotaInfo.quotaLimit - geminiQuotaInfo.requestCount
+        remaining: geminiQuotaInfo.quotaLimit - geminiQuotaInfo.requestCount,
+        resetTime: geminiQuotaInfo.resetTime ? new Date(geminiQuotaInfo.resetTime).toISOString() : null
       },
       timestamp: new Date().toISOString()
     });
@@ -1475,12 +2383,15 @@ router.post('/test-discord-webhook', async (req, res) => {
       postTitle: 'I hate spending hours on video editing for my music!',
       leadType: 'AI Lyric Video Generator',
       interestLevel: 'High',
-      leadScore: 85,
+      leadScore: 95, // High score to test Discord notification
       painPoints: ['frustration', 'time-consuming'],
       redditUrl: 'https://reddit.com/r/WeAreTheMusicMakers/comments/test',
-      totalLeadsToday: postingActivity?.premiumLeadsGenerated || 5
+      totalLeadsToday: postingActivity?.premiumLeadsGenerated || 5,
+      batch: 'C'
     };
 
+    console.log(`[TEST] Testing Discord notification with score ${testLeadData.leadScore} (threshold: ${DISCORD_HIGH_PRIORITY_THRESHOLD})`);
+    
     const result = await sendDiscordLeadNotification(testLeadData);
     
     if (result) {
@@ -1489,13 +2400,15 @@ router.post('/test-discord-webhook', async (req, res) => {
         message: 'Discord test notification sent successfully',
         webhookUrl: DISCORD_WEBHOOK_URL ? 'Configured' : 'Using provided URL',
         testData: testLeadData,
+        thresholdInfo: `Only scores > ${DISCORD_HIGH_PRIORITY_THRESHOLD} trigger Discord`,
         timestamp: new Date().toISOString()
       });
     } else {
       res.status(500).json({
         success: false,
         message: 'Failed to send Discord test notification',
-        webhookUrl: DISCORD_WEBHOOK_URL ? 'Configured' : 'Using provided URL'
+        webhookUrl: DISCORD_WEBHOOK_URL ? 'Configured' : 'Using provided URL',
+        note: 'Check if score is below threshold or webhook is misconfigured'
       });
     }
   } catch (error) {
@@ -1521,10 +2434,11 @@ router.post('/debug-discord', async (req, res) => {
       postTitle: 'Test lead from debug endpoint',
       leadType: 'AI Lyric Video Generator',
       interestLevel: 'High',
-      leadScore: 95,
+      leadScore: 95, // High score to ensure Discord notification
       painPoints: ['frustration', 'time-consuming'],
       redditUrl: 'https://reddit.com/r/test',
-      totalLeadsToday: 1
+      totalLeadsToday: 1,
+      batch: 'C'
     };
     
     const result = await sendDiscordLeadNotification(testData);
@@ -1533,6 +2447,8 @@ router.post('/debug-discord', async (req, res) => {
       success: true,
       discordSent: result,
       webhookConfigured: !!DISCORD_WEBHOOK_URL,
+      highPriorityThreshold: DISCORD_HIGH_PRIORITY_THRESHOLD,
+      testScore: testData.leadScore,
       timestamp: new Date().toISOString()
     });
   } catch (error) {
@@ -1550,12 +2466,14 @@ router.get('/admin', (req, res) => {
   const currentDay = getCurrentDayInAppTimezone();
   const timeWindow = getCurrentTimeWindow();
   const currentHour = getCurrentHourInAppTimezone();
+  const currentUTCHour = getCurrentUTCHour();
+  const withinHumanWindow = isWithinHumanWindow();
   
   res.json({
     success: true,
-    message: 'Enhanced Lead Generation Reddit Admin API',
+    message: 'SoundSwap Batched Orchestration Reddit Automation Engine',
     service: 'reddit-admin',
-    version: '6.0.0',
+    version: '8.0.0',
     timestamp: new Date().toISOString(),
     environment: process.env.NODE_ENV || 'development',
     timezone: APP_TIMEZONE,
@@ -1569,19 +2487,30 @@ router.get('/admin', (req, res) => {
       minutes: GOLDEN_HOUR_WINDOW_MINUTES,
       description: 'Scans last 60 minutes for pain point posts'
     },
+    humanWindow: {
+      active: withinHumanWindow,
+      hours: `${HUMAN_WINDOW_START_HOUR}:00-${HUMAN_WINDOW_END_HOUR}:00 UTC`,
+      currentUTC: `${currentUTCHour}:00 UTC`
+    },
     optimization: {
-      strategy: 'SCAN_ALL_FILTER_ONE',
+      strategy: 'BATCHED_ORCHESTRATION',
       concurrentScanLimit: CONCURRENT_SCAN_LIMIT,
       minLeadScore: MIN_LEAD_SCORE,
       maxPostsPerRun: MAX_POSTS_PER_RUN,
       concurrentRequests: MAX_CONCURRENT_REQUESTS,
-      postsPerSubreddit: POSTS_PER_SUBREDDIT
+      postsPerSubreddit: POSTS_PER_SUBREDDIT,
+      randomizedDelays: 'ENABLED',
+      exponentialBackoff: 'ENABLED'
     },
+    batches: BATCHES,
     premiumFeatures: PREMIUM_FEATURES,
     features: {
-      strategy_scan_all_filter_one: 'ACTIVE',
+      batched_orchestration: 'ACTIVE',
+      randomized_intervals: 'ENABLED',
+      exponential_backoff: 'ACTIVE',
+      human_window: 'ACTIVE',
       concurrent_scanning: 'ENABLED',
-      lead_scoring_system: 'ACTIVE',
+      lead_scoring_system: 'ENHANCED',
       pain_point_detection: 'ENHANCED',
       keyword_matching: 'OPTIMIZED',
       freshness_scoring: 'ACTIVE',
@@ -1589,6 +2518,8 @@ router.get('/admin', (req, res) => {
       doodle_art_generator: 'PROMOTED',
       lead_generation: 'ENHANCED',
       rate_limit_management: 'ACTIVE',
+      shadow_delete_monitoring: 'ACTIVE',
+      industry_authority_mode: 'ACTIVE (80/20 split)',
       gemini_ai: process.env.GOOGLE_GEMINI_API_KEY ? 'enabled' : 'disabled',
       firebase_db: 'enabled',
       reddit_api: isRedditLoaded ? 'loaded' : 'not loaded',
@@ -1603,7 +2534,7 @@ router.get('/admin', (req, res) => {
       fallback_mode: FALLBACK_MODE ? 'ACTIVE' : 'INACTIVE',
       batch_processing: 'ENABLED',
       concurrency_control: 'ACTIVE',
-      discord_notifications: DISCORD_WEBHOOK_URL ? 'ENABLED' : 'DISABLED'
+      discord_notifications: DISCORD_WEBHOOK_URL ? 'ENABLED (HIGH-PRIORITY ONLY)' : 'DISABLED'
     },
     stats: {
       total_targets: Object.keys(redditTargets).length,
@@ -1616,6 +2547,10 @@ router.get('/admin', (req, res) => {
         painPointPostsFound: 0,
         goldenHourComments: 0,
         totalOpportunitiesFound: 0
+      },
+      rate_limit_status: {
+        consecutive_errors: RATE_LIMIT_MONITOR.consecutiveErrors,
+        status: RATE_LIMIT_MONITOR.consecutiveErrors > 0 ? '⚠️ THROTTLED' : '✅ NORMAL'
       }
     },
     cron: {
@@ -1636,6 +2571,8 @@ router.get('/admin', (req, res) => {
     discord: {
       webhook_configured: !!DISCORD_WEBHOOK_URL,
       notifications_enabled: true,
+      high_priority_only: true,
+      threshold: `Score > ${DISCORD_HIGH_PRIORITY_THRESHOLD}`,
       test_endpoint: '/api/reddit-admin/test-discord-webhook',
       debug_endpoint: '/api/reddit-admin/debug-discord'
     },
@@ -1652,6 +2589,12 @@ router.get('/admin', (req, res) => {
         remaining: geminiQuotaInfo.quotaLimit - geminiQuotaInfo.requestCount,
         reset_time: geminiQuotaInfo.resetTime ? new Date(geminiQuotaInfo.resetTime).toISOString() : null
       }
+    },
+    critical_endpoints: {
+      health_monitor: '/api/reddit-admin/health-monitor',
+      shadow_check: '/api/reddit-admin/shadow-check-list',
+      today_schedule: '/api/reddit-admin/schedule/today',
+      targets: '/api/reddit-admin/targets'
     }
   });
 });
@@ -1715,6 +2658,12 @@ const loadCoreFunctions = async () => {
             discordNotifications: {
               totalSent: 0,
               lastSent: null
+            },
+            batchStats: {
+              A: { posts: 0, leads: 0 },
+              B: { posts: 0, leads: 0 },
+              C: { posts: 0, leads: 0 },
+              D: { posts: 0, leads: 0 }
             }
           };
           
@@ -1761,6 +2710,12 @@ const loadCoreFunctions = async () => {
           activityDoc.discordNotifications = activityDoc.discordNotifications || {
             totalSent: 0,
             lastSent: null
+          };
+          activityDoc.batchStats = activityDoc.batchStats || {
+            A: { posts: 0, leads: 0 },
+            B: { posts: 0, leads: 0 },
+            C: { posts: 0, leads: 0 },
+            D: { posts: 0, leads: 0 }
           };
           
           // Initialize counts for any new subreddits
@@ -1811,6 +2766,12 @@ const loadCoreFunctions = async () => {
           discordNotifications: {
             totalSent: 0,
             lastSent: null
+          },
+          batchStats: {
+            A: { posts: 0, leads: 0 },
+            B: { posts: 0, leads: 0 },
+            C: { posts: 0, leads: 0 },
+            D: { posts: 0, leads: 0 }
           }
         };
         
@@ -1843,7 +2804,7 @@ const loadCoreFunctions = async () => {
     };
 
     // Define savePremiumLead with Discord notification
-    savePremiumLead = async (subreddit, postTitle, leadType, interestLevel, painPoints = [], leadScore, redditUrl = null) => {
+    savePremiumLead = async (subreddit, postTitle, leadType, interestLevel, painPoints = [], leadScore, redditUrl = null, batch = null) => {
       try {
         const leadsRef = collection(db, PREMIUM_FEATURE_LEADS_COLLECTION);
         await withTimeout(addDoc(leadsRef, {
@@ -1857,13 +2818,22 @@ const loadCoreFunctions = async () => {
           converted: false,
           source: 'reddit_comment',
           goldenHour: true,
-          leadScore: leadScore
+          leadScore: leadScore,
+          batch: batch || getBatchForSubreddit(subreddit),
+          discordSent: leadScore >= DISCORD_HIGH_PRIORITY_THRESHOLD
         }), 3000, 'Firebase save timeout');
         
-        console.log(`[INFO] 💎 Premium lead saved: ${leadType} from r/${subreddit} with pain points: ${painPoints.join(', ')}`);
+        const leadBatch = batch || getBatchForSubreddit(subreddit);
+        console.log(`[INFO] 💎 Premium lead saved: ${leadType} from r/${subreddit} (Batch ${leadBatch}) with pain points: ${painPoints.join(', ')}`);
+        console.log(`[INFO] 📊 Lead Score: ${leadScore} (Discord: ${leadScore >= DISCORD_HIGH_PRIORITY_THRESHOLD ? 'SENT' : 'NOT SENT'})`);
         
         // Increment lead count
         postingActivity.premiumLeadsGenerated = (postingActivity.premiumLeadsGenerated || 0) + 1;
+        
+        // Update batch stats
+        if (leadBatch && postingActivity.batchStats[leadBatch]) {
+          postingActivity.batchStats[leadBatch].leads = (postingActivity.batchStats[leadBatch].leads || 0) + 1;
+        }
         
         return true;
       } catch (error) {
@@ -1885,26 +2855,29 @@ const loadCoreFunctions = async () => {
       }
     };
 
-    // Define generatePremiumFeatureComment
-    generatePremiumFeatureComment = async (postTitle, postContent, subreddit, painPoints = []) => {
+    // Define generatePremiumFeatureComment with Official Team/Developer persona
+    generatePremiumFeatureComment = async (postTitle, postContent, subreddit, painPoints = [], batch = null) => {
       // Use fallback if AI not available or quota exceeded
       if (!genAI || !checkGeminiQuota()) {
         console.log('[FALLBACK] Using fallback comment generation');
         return {
           success: true,
-          comment: generateFallbackComment(subreddit, painPoints),
+          comment: generateFallbackComment(subreddit, painPoints, batch || getBatchForSubreddit(subreddit)),
           style: 'helpful',
           subreddit: subreddit,
           premiumFeature: 'AI Tools',
           isPremiumFocus: true,
           painPoints: painPoints,
-          isFallback: true
+          isFallback: true,
+          batch: batch || getBatchForSubreddit(subreddit)
         };
       }
 
       try {
         const targetConfig = redditTargets[subreddit];
         const selectedStyle = targetConfig?.preferredStyles[0] || 'helpful';
+        const targetBatch = batch || getBatchForSubreddit(subreddit);
+        const batchConfig = BATCHES[targetBatch];
         
         let premiumFeature;
         if (targetConfig?.premiumFeatures?.includes('lyricVideoGenerator') && 
@@ -1921,15 +2894,21 @@ const loadCoreFunctions = async () => {
           model: 'gemini-2.5-flash-lite'
         });
 
-        // Updated prompt to act as SoundSwap team member and list important features
-        const prompt = `As a member of the SoundSwap team, write a helpful Reddit comment (1-2 sentences max) for r/${subreddit} about:
+        // Updated prompt with Official Team/Developer persona
+        const prompt = `As a member of the SoundSwap development team, write a helpful Reddit comment for r/${subreddit}. 
+We're transparent about being developers who built these tools for our own workflow.
+
 Post: "${postTitle}"
 User needs: ${painPoints.join(', ') || 'help with creative work'}
+Batch Strategy: ${batchConfig?.strategy || 'General help'}
+Persona: ${batchConfig?.persona || 'Helpful developer'}
 
-Our tool ${premiumFeature.name} can help. Important features include:
+Our tool ${premiumFeature.name} addresses these needs. Important features include:
 ${premiumFeature.importantFeatures.slice(0, 3).join(', ')}
 
-Mention soundswap.live. Use ${selectedStyle} tone. Focus on how our features solve their specific pain points.`;
+Mention soundswap.live once naturally. Use ${selectedStyle} tone. 
+Focus on how our team built this tool to solve specific pain points for creators like them.
+Keep it 1-2 sentences max, authentic, and helpful.`;
 
         const aiCall = model.generateContent(prompt);
         const result = await withTimeout(aiCall, AI_TIMEOUT_MS, 'AI generation timeout');
@@ -1939,7 +2918,7 @@ Mention soundswap.live. Use ${selectedStyle} tone. Focus on how our features sol
         // Increment quota counter
         incrementGeminiRequest();
         
-        console.log(`[INFO] ✅ Premium feature comment generated for r/${subreddit}`);
+        console.log(`[INFO] ✅ Premium feature comment generated for r/${subreddit} (Batch ${targetBatch})`);
         
         if (!postingActivity.premiumFeatureCounts[subreddit]) {
           postingActivity.premiumFeatureCounts[subreddit] = 0;
@@ -1955,7 +2934,8 @@ Mention soundswap.live. Use ${selectedStyle} tone. Focus on how our features sol
           premiumFeature: premiumFeature.name,
           isPremiumFocus: true,
           painPoints: painPoints,
-          isFallback: false
+          isFallback: false,
+          batch: targetBatch
         };
 
       } catch (error) {
@@ -1964,41 +2944,71 @@ Mention soundswap.live. Use ${selectedStyle} tone. Focus on how our features sol
         // Use fallback on AI error
         return {
           success: true,
-          comment: generateFallbackComment(subreddit, painPoints),
+          comment: generateFallbackComment(subreddit, painPoints, batch || getBatchForSubreddit(subreddit)),
           style: 'helpful',
           subreddit: subreddit,
           premiumFeature: 'AI Tools',
           isPremiumFocus: true,
           painPoints: painPoints,
-          isFallback: true
+          isFallback: true,
+          batch: batch || getBatchForSubreddit(subreddit)
         };
       }
     };
 
-    // Define postToReddit (simulated for now)
-    postToReddit = async (subreddit, content, style, type = 'comment', title = '', keywords = [], parentId = null) => {
+    // Define postToReddit with shadow-delete tracking
+    postToReddit = async (subreddit, content, style, type = 'comment', title = '', keywords = [], parentId = null, batch = null) => {
       try {
-        // Simulate posting with random success
-        const success = Math.random() > 0.1; // 90% success rate
+        // Simulate posting with random success (90% success rate)
+        const success = Math.random() > 0.1;
         
         if (success) {
-          const redditUrl = `https://reddit.com/r/${subreddit}/comments/${parentId || 'new'}_${Date.now()}`;
+          const commentId = `t1_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+          const redditUrl = `https://reddit.com/r/${subreddit}/comments/${parentId}/${commentId}/`;
+          
+          // Check for shadow-delete keywords
+          const hasLink = content.includes('soundswap.live') || 
+                          content.includes('SoundSwap') || 
+                          content.toLowerCase().includes('our tool');
+          
+          // Track for shadow-delete checking (only for promotional comments in Batch C & D)
+          const targetBatch = batch || getBatchForSubreddit(subreddit);
+          if (hasLink && (targetBatch === 'C' || targetBatch === 'D') && Math.random() < SHADOW_DELETE_CHECK.checkProbability) {
+            // Schedule a shadow-delete check
+            const checkTime = Date.now() + (SHADOW_DELETE_CHECK.checkDelayMinutes * 60000);
+            SHADOW_DELETE_CHECK.loggedOutBrowserCheck.push({
+              url: redditUrl,
+              checkAfter: new Date(checkTime).toISOString(),
+              subreddit: subreddit,
+              batch: targetBatch,
+              contentPreview: content.substring(0, 100) + '...',
+              isPromotional: true,
+              scheduledCheckTime: new Date(checkTime).toLocaleTimeString()
+            });
+            
+            console.log(`[SHADOW-CHECK] 🔍 Scheduled check for promotional comment in r/${subreddit} (Batch ${targetBatch})`);
+            console.log(`[SHADOW-CHECK] ⏰ Check after: ${new Date(checkTime).toLocaleTimeString()}`);
+          }
+          
           return { 
             success: true, 
             redditData: { 
               permalink: redditUrl,
-              id: `comment_${Date.now()}`,
+              id: commentId,
               parentId: parentId
             },
             type: type,
             isGoldenHour: parentId ? true : false,
-            redditUrl: redditUrl
+            redditUrl: redditUrl,
+            batch: targetBatch,
+            hasLink: hasLink
           };
         } else {
           return { 
             success: false, 
             error: 'Simulated posting failure',
-            type: type
+            type: type,
+            batch: batch
           };
         }
       } catch (error) {
@@ -2006,7 +3016,8 @@ Mention soundswap.live. Use ${selectedStyle} tone. Focus on how our features sol
         return { 
           success: false, 
           error: error.message,
-          type: type
+          type: type,
+          batch: batch
         };
       }
     };
@@ -2020,11 +3031,27 @@ Mention soundswap.live. Use ${selectedStyle} tone. Focus on how our features sol
           "I can't draw but I want custom artwork for my album",
           "Video editing takes too long, any automation tools?"
         ],
-        'aivideo': [
-          "Looking for AI tools to automate video creation",
-          "How can AI help with music video generation?",
-          "Best AI video generators for lyric videos?",
-          "Automating video editing with AI"
+        'digitalart': [
+          "How do I turn my sketches into finished digital art?",
+          "Looking for AI tools that can enhance my artwork",
+          "Best ways to create animated art from drawings",
+          "Need help transforming doodles into professional pieces"
+        ],
+        'MusicMarketing': [
+          "How to get better ROI from my music videos?",
+          "Visual content strategies that actually convert",
+          "Best tools for music promotion visuals",
+          "How to make my music stand out with visuals"
+        ],
+        'Spotify': [
+          "Creating effective Spotify Canvas visuals",
+          "How to make looping artwork for my tracks",
+          "Best dimensions for Spotify Canvas",
+          "Tools for creating animated Spotify artwork"
+        ],
+        'ArtistLounge': [
+          "Need affordable tools for digital art creation",
+          "How to create art for music without being an artist?"
         ],
         'musicproduction': [
           "Need visual content for my music but not a video editor",
@@ -2038,22 +3065,80 @@ Mention soundswap.live. Use ${selectedStyle} tone. Focus on how our features sol
           "Tools for musicians to create lyric videos",
           "Creating Spotify Canvas without design skills"
         ],
+        'makinghiphop': [
+          "Need Type Beat artwork for my YouTube channel",
+          "How to create visuals for hip hop tracks",
+          "Tools for rap lyric videos",
+          "Creating urban-style visual content"
+        ],
+        'edmproduction': [
+          "Need high-energy visuals for my EDM tracks",
+          "How to create visualizers that match drops",
+          "Tools for electronic music visuals",
+          "Creating motion-heavy lyric videos"
+        ],
+        'BedroomBands': [
+          "Need quick visual assets for our collab project",
+          "Tools for remote band visual content",
+          "Creating consistent visuals across collaborators"
+        ],
+        'MusicInTheMaking': [
+          "Need demo visuals for my early track",
+          "Visual concepts for unfinished music",
+          "Tools for project visualization"
+        ],
+        'Songwriters': [
+          "How to visualize lyrics effectively",
+          "Tools for lyric-focused music videos",
+          "Creating visuals that enhance storytelling"
+        ],
         'aiArt': [
           "Using AI art for music visualizations",
           "Best AI tools for album cover creation",
           "Turning sketches into animated music visuals",
           "AI art generation for Spotify Canvas"
         ],
-        'ArtistLounge': [
-          "Need affordable tools for digital art creation",
-          "How to create art for music without being an artist?"
+        'AIArtCommunity': [
+          "AI tools for music visualization",
+          "Generative art for audio projects",
+          "Community tools for AI music art"
+        ],
+        'VaporwaveAesthetics': [
+          "Creating retro-futuristic album art",
+          "Vaporwave style visual tools",
+          "Nostalgic aesthetic generation"
+        ],
+        'Hyperpop': [
+          "DIY glitch art tools for music",
+          "Hyperpop aesthetic visuals",
+          "Creating chaotic colorful visuals"
+        ],
+        'AlbumArtPorn': [
+          "Professional album cover creation tools",
+          "High-concept artwork generation",
+          "Tools for thematic visual stories"
+        ],
+        'IndieMusicFeedback': [
+          "Need feedback on my music visuals",
+          "Tools for indie artist visual content",
+          "Creating visuals on a budget"
+        ],
+        'PromoteYourMusic': [
+          "Tools for self-promotion visuals",
+          "Creating content that gets noticed",
+          "Visuals that help music stand out"
+        ],
+        'SocialMediaMarketing': [
+          "Creating Reels-optimized music content",
+          "Vertical video tools for musicians",
+          "Social media visual strategies"
         ]
       };
       
       return samplePosts[subreddit] || ["Looking for help with creative projects"];
     };
 
-    // Define runScheduledPosts with PRO optimization
+    // Define runScheduledPosts with BATCHED ORCHESTRATION
     runScheduledPosts = async () => {
       const startTime = Date.now();
       
@@ -2064,15 +3149,42 @@ Mention soundswap.live. Use ${selectedStyle} tone. Focus on how our features sol
         const currentTime = getCurrentTimeInAppTimezone();
         const currentDay = getCurrentDayInAppTimezone();
         const timeWindow = getCurrentTimeWindow();
+        const currentUTCHour = getCurrentUTCHour();
+        const withinHumanWindow = isWithinHumanWindow();
         
-        console.log(`[INFO] ⏰ PRO OPTIMIZATION Cron Running`);
+        console.log(`[INFO] ⏰ BATCHED ORCHESTRATION Cron Running`);
         console.log(`[INFO] 📅 Date: ${getCurrentDateInAppTimezone()} (${currentDay})`);
         console.log(`[INFO] 🕒 Time: ${currentTime} (Window: ${timeWindow.start}-${timeWindow.end})`);
-        console.log(`[INFO] 💎 Strategy: SCAN_ALL_FILTER_ONE`);
+        console.log(`[INFO] 🌍 UTC: ${currentUTCHour}:00 (Human Window: ${withinHumanWindow ? 'ACTIVE' : 'INACTIVE'})`);
+        console.log(`[INFO] 💎 Strategy: BATCHED_ORCHESTRATION`);
+        console.log(`[INFO] 📊 Batches: A (${BATCHES.A.subreddits.length}), B (${BATCHES.B.subreddits.length}), C (${BATCHES.C.subreddits.length}), D (${BATCHES.D.subreddits.length})`);
         console.log(`[INFO] 🔄 Scanning all ${Object.keys(redditTargets).filter(k => redditTargets[k].active).length} active subreddits concurrently`);
         console.log(`[INFO] 🤖 AI Status: ${genAI ? 'Available' : 'Fallback mode'}`);
-        console.log(`[INFO] 📊 Gemini Quota: ${geminiQuotaInfo.quotaLimit - geminiQuotaInfo.requestCount} remaining`);
+        console.log(`[INFO] 📊 Gemini Quota: ${geminiQuotaInfo.quotaLimit - geminiQuotaInfo.requestCount} remaining of ${geminiQuotaInfo.quotaLimit}`);
         console.log(`[INFO] 💬 Discord Webhook: ${DISCORD_WEBHOOK_URL ? 'Configured' : 'Not configured'}`);
+        console.log(`[INFO] 🔔 Discord Threshold: Score > ${DISCORD_HIGH_PRIORITY_THRESHOLD}`);
+        console.log(`[INFO] ⏱️ Randomized delays: ENABLED`);
+        console.log(`[INFO] 🛡️ Exponential backoff: ${RATE_LIMIT_MONITOR.consecutiveErrors > 0 ? 'ACTIVE' : 'INACTIVE'}`);
+        
+        // Check for critical alerts
+        if (RATE_LIMIT_MONITOR.consecutiveErrors >= 3) {
+          await sendCriticalAlert('rate_limit_critical', {
+            consecutiveErrors: RATE_LIMIT_MONITOR.consecutiveErrors,
+            backoffMultiplier: RATE_LIMIT_MONITOR.backoffMultiplier
+          });
+        }
+        
+        // Check for Batch C comments needing verification
+        const batchCChecks = SHADOW_DELETE_CHECK.loggedOutBrowserCheck.filter(
+          check => check.batch === 'C' && new Date(check.checkAfter) <= new Date()
+        );
+        
+        if (batchCChecks.length >= 3) {
+          await sendCriticalAlert('batch_c_attention', {
+            count: batchCChecks.length,
+            batch: 'C'
+          });
+        }
         
         // STEP 1: Concurrently scan ALL active subreddits
         const scanStartTime = Date.now();
@@ -2094,6 +3206,9 @@ Mention soundswap.live. Use ${selectedStyle} tone. Focus on how our features sol
         let goldenHourPosted = 0;
         let discordNotificationsSent = 0;
         let discordNotificationsFailed = 0;
+        let expertAdvicePosted = 0;
+        let promotionalPosted = 0;
+        let postedComments = [];
         
         // STEP 2: Process top opportunities (up to MAX_POSTS_PER_RUN)
         if (scanResults.topOpportunities.length > 0) {
@@ -2102,6 +3217,7 @@ Mention soundswap.live. Use ${selectedStyle} tone. Focus on how our features sol
           for (const opportunity of scanResults.topOpportunities) {
             const subreddit = opportunity.subreddit;
             const config = opportunity.subredditConfig;
+            const batch = opportunity.batch || getBatchForSubreddit(subreddit);
             
             // Check daily limits
             const dailyCount = postingActivity.dailyCounts[subreddit] || 0;
@@ -2110,16 +3226,39 @@ Mention soundswap.live. Use ${selectedStyle} tone. Focus on how our features sol
               continue;
             }
             
-            console.log(`[ACTION] 💎 Processing opportunity from r/${subreddit} (Score: ${opportunity.leadScore})`);
+            console.log(`[ACTION] 💎 Processing opportunity from r/${subreddit} (Batch ${batch}, Score: ${opportunity.leadScore})`);
             console.log(`[ACTION] 📝 Post: "${opportunity.title.substring(0, 80)}..."`);
             
-            // Generate comment
-            const commentResponse = await generatePremiumFeatureComment(
-              opportunity.title,
-              opportunity.content,
-              subreddit,
-              opportunity.painPointAnalysis.painPoints
-            );
+            // 80/20 Split Logic - Industry Authority vs Promotion
+            const shouldPromote = Math.random() <= (config.soundswapMentionRate || 0.2);
+            let commentResponse;
+            
+            if (shouldPromote) {
+              // 20% - Promotional (SoundSwap mention)
+              commentResponse = await generatePremiumFeatureComment(
+                opportunity.title,
+                opportunity.content,
+                subreddit,
+                opportunity.painPointAnalysis.painPoints,
+                batch
+              );
+              commentResponse.isPromotional = true;
+              promotionalPosted++;
+            } else {
+              // 80% - Industry Authority (no promotion)
+              commentResponse = await generateIndustryExpertComment(
+                opportunity.title,
+                opportunity.content,
+                subreddit,
+                opportunity.painPointAnalysis.painPoints,
+                batch
+              );
+              commentResponse.isPromotional = false;
+              expertAdvicePosted++;
+              
+              // Log expert advice for analytics
+              console.log(`[INDUSTRY-AUTHORITY] 🎓 Providing ${commentResponse.adviceType} advice in r/${subreddit} (Batch ${batch})`);
+            }
             
             if (commentResponse.success) {
               // Post to Reddit (simulated for now)
@@ -2130,7 +3269,8 @@ Mention soundswap.live. Use ${selectedStyle} tone. Focus on how our features sol
                 'comment',
                 '',
                 config.keywords,
-                opportunity.id
+                opportunity.id,
+                batch
               );
               
               if (postResult.success) {
@@ -2140,51 +3280,75 @@ Mention soundswap.live. Use ${selectedStyle} tone. Focus on how our features sol
                 postingActivity.totalComments++;
                 postingActivity.goldenHourStats.goldenHourComments++;
                 
-                // Create lead data for Discord notification
-                const leadData = {
+                // Update batch stats
+                if (batch && postingActivity.batchStats[batch]) {
+                  postingActivity.batchStats[batch].posts = (postingActivity.batchStats[batch].posts || 0) + 1;
+                }
+                
+                // Track posted comment
+                const postedComment = {
                   subreddit,
-                  postTitle: opportunity.title,
-                  leadType: commentResponse.premiumFeature,
-                  interestLevel: opportunity.leadScore > 50 ? 'high' : 'medium',
-                  painPoints: opportunity.painPointAnalysis.painPoints,
+                  batch,
                   leadScore: opportunity.leadScore,
-                  redditUrl: postResult.redditUrl,
-                  totalLeadsToday: (postingActivity.premiumLeadsGenerated || 0) + 1
+                  isPromotional: commentResponse.isPromotional,
+                  commentPreview: commentResponse.comment.substring(0, 60) + '...'
                 };
+                postedComments.push(postedComment);
                 
-                // Save lead to Firebase
-                const leadSaved = await savePremiumLead(
-                  subreddit,
-                  opportunity.title,
-                  commentResponse.premiumFeature,
-                  opportunity.leadScore > 50 ? 'high' : 'medium',
-                  opportunity.painPointAnalysis.painPoints,
-                  opportunity.leadScore,
-                  postResult.redditUrl
-                );
-                
-                // Send Discord notification directly
-                const discordSent = await sendDiscordLeadNotification(leadData);
-                
-                if (discordSent) {
-                  discordNotificationsSent++;
-                  postingActivity.discordNotifications.totalSent = (postingActivity.discordNotifications.totalSent || 0) + 1;
-                  postingActivity.discordNotifications.lastSent = new Date().toISOString();
-                  console.log(`[DISCORD] ✅ Notification sent for lead from r/${subreddit}`);
-                } else {
-                  discordNotificationsFailed++;
-                  console.log(`[DISCORD] ❌ Failed to send notification for lead from r/${subreddit}`);
+                // Create lead data for Discord notification (only for promotional comments)
+                if (commentResponse.isPromotional) {
+                  const leadData = {
+                    subreddit,
+                    postTitle: opportunity.title,
+                    leadType: commentResponse.premiumFeature,
+                    interestLevel: opportunity.leadScore > 50 ? 'high' : 'medium',
+                    painPoints: opportunity.painPointAnalysis.painPoints,
+                    leadScore: opportunity.leadScore,
+                    redditUrl: postResult.redditUrl,
+                    totalLeadsToday: (postingActivity.premiumLeadsGenerated || 0) + 1,
+                    batch: batch
+                  };
+                  
+                  // Save lead to Firebase
+                  const leadSaved = await savePremiumLead(
+                    subreddit,
+                    opportunity.title,
+                    commentResponse.premiumFeature,
+                    opportunity.leadScore > 50 ? 'high' : 'medium',
+                    opportunity.painPointAnalysis.painPoints,
+                    opportunity.leadScore,
+                    postResult.redditUrl,
+                    batch
+                  );
+                  
+                  // Send Discord notification only for high-priority leads
+                  if (opportunity.leadScore >= DISCORD_HIGH_PRIORITY_THRESHOLD) {
+                    const discordSent = await sendDiscordLeadNotification(leadData);
+                    
+                    if (discordSent) {
+                      discordNotificationsSent++;
+                      postingActivity.discordNotifications.totalSent = (postingActivity.discordNotifications.totalSent || 0) + 1;
+                      postingActivity.discordNotifications.lastSent = new Date().toISOString();
+                      console.log(`[DISCORD] ✅ Notification sent for high-priority lead from r/${subreddit} (Batch ${batch}, Score: ${opportunity.leadScore})`);
+                    } else {
+                      discordNotificationsFailed++;
+                      console.log(`[DISCORD] ❌ Failed to send notification for lead from r/${subreddit}`);
+                    }
+                  } else {
+                    console.log(`[DISCORD] ⏭️ Skipping Discord for lead score ${opportunity.leadScore} (threshold: ${DISCORD_HIGH_PRIORITY_THRESHOLD})`);
+                  }
+                  
+                  premiumPosted++;
                 }
                 
                 totalPosted++;
                 goldenHourPosted++;
-                premiumPosted++;
                 
-                console.log(`[SUCCESS] ✅ Posted to r/${subreddit} (Golden Hour)`);
-                console.log(`[SUCCESS] 📊 Lead Score: ${opportunity.leadScore}, Pain Points: ${opportunity.painPointAnalysis.painPoints.join(', ')}`);
+                console.log(`[SUCCESS] ✅ Posted to r/${subreddit} (Batch ${batch})`);
+                console.log(`[SUCCESS] 📊 Lead Score: ${opportunity.leadScore}, Type: ${commentResponse.isPromotional ? 'Promotional' : 'Expert Advice'}`);
                 
-                // Rate limiting delay between posts
-                await new Promise(resolve => safeSetTimeout(resolve, 2000));
+                // Randomized delay between posts
+                await new Promise(resolve => safeSetTimeout(resolve, getRandomizedDelay()));
               } else {
                 console.log(`[ERROR] ❌ Failed to post to r/${subreddit}:`, postResult.error);
               }
@@ -2212,18 +3376,36 @@ Mention soundswap.live. Use ${selectedStyle} tone. Focus on how our features sol
             
             if (availableSubreddits.length > 0) {
               const [selectedSubreddit, config] = availableSubreddits[0];
+              const batch = config.batch || getBatchForSubreddit(selectedSubreddit);
               const samplePosts = getSamplePostsForSubreddit(selectedSubreddit);
               const postTitle = samplePosts[Math.floor(Math.random() * samplePosts.length)];
               const painPoints = config.painPointFocus?.[0] ? [config.painPointFocus[0]] : ['frustration'];
               
-              console.log(`[FALLBACK] 🚀 Generating Bridge Technique comment for r/${selectedSubreddit}`);
+              console.log(`[FALLBACK] 🚀 Generating Bridge Technique comment for r/${selectedSubreddit} (Batch ${batch})`);
               
-              const commentResponse = await generatePremiumFeatureComment(
-                postTitle,
-                '',
-                selectedSubreddit,
-                painPoints
-              );
+              // 80/20 split for fallback too
+              const shouldPromote = Math.random() <= (config.soundswapMentionRate || 0.2);
+              let commentResponse;
+              
+              if (shouldPromote) {
+                commentResponse = await generatePremiumFeatureComment(
+                  postTitle,
+                  '',
+                  selectedSubreddit,
+                  painPoints,
+                  batch
+                );
+                promotionalPosted++;
+              } else {
+                commentResponse = await generateIndustryExpertComment(
+                  postTitle,
+                  '',
+                  selectedSubreddit,
+                  painPoints,
+                  batch
+                );
+                expertAdvicePosted++;
+              }
               
               if (commentResponse.success) {
                 // Simulate posting
@@ -2233,30 +3415,31 @@ Mention soundswap.live. Use ${selectedStyle} tone. Focus on how our features sol
                 postingActivity.dailyCounts[selectedSubreddit] = (postingActivity.dailyCounts[selectedSubreddit] || 0) + 1;
                 postingActivity.totalComments++;
                 totalPosted++;
-                premiumPosted++;
                 
-                // Send Discord notification for fallback
-                const fallbackLeadData = {
-                  subreddit: selectedSubreddit,
-                  postTitle: postTitle,
-                  leadType: commentResponse.premiumFeature,
-                  interestLevel: 'Medium',
-                  leadScore: 30,
-                  painPoints: painPoints,
-                  redditUrl: `https://reddit.com/r/${selectedSubreddit}`,
-                  totalLeadsToday: (postingActivity.premiumLeadsGenerated || 0) + 1
-                };
-                
-                const discordSent = await sendDiscordLeadNotification(fallbackLeadData);
-                if (discordSent) {
-                  discordNotificationsSent++;
-                  postingActivity.premiumLeadsGenerated = (postingActivity.premiumLeadsGenerated || 0) + 1;
-                  postingActivity.discordNotifications.totalSent = (postingActivity.discordNotifications.totalSent || 0) + 1;
-                  postingActivity.discordNotifications.lastSent = new Date().toISOString();
-                  console.log(`[FALLBACK] 💬 Discord notification sent for fallback lead`);
+                // Update batch stats
+                if (batch && postingActivity.batchStats[batch]) {
+                  postingActivity.batchStats[batch].posts = (postingActivity.batchStats[batch].posts || 0) + 1;
                 }
                 
-                console.log(`[FALLBACK] ✅ Simulated post to r/${selectedSubreddit}`);
+                // Send Discord notification for fallback (only if promotional and high priority)
+                if (commentResponse.isPromotional) {
+                  const fallbackLeadData = {
+                    subreddit: selectedSubreddit,
+                    postTitle: postTitle,
+                    leadType: commentResponse.premiumFeature,
+                    interestLevel: 'Medium',
+                    leadScore: 30,
+                    painPoints: painPoints,
+                    redditUrl: `https://reddit.com/r/${selectedSubreddit}`,
+                    totalLeadsToday: (postingActivity.premiumLeadsGenerated || 0) + 1,
+                    batch: batch
+                  };
+                  
+                  // Note: Fallback leads typically have low scores, so Discord won't be sent due to threshold
+                  console.log(`[FALLBACK] 💬 Discord notification skipped (score 30 < threshold ${DISCORD_HIGH_PRIORITY_THRESHOLD})`);
+                  
+                  console.log(`[FALLBACK] ✅ Simulated post to r/${selectedSubreddit}`);
+                }
               }
             }
           }
@@ -2265,6 +3448,9 @@ Mention soundswap.live. Use ${selectedStyle} tone. Focus on how our features sol
         // Update pain point posts found stat
         postingActivity.goldenHourStats.painPointPostsFound += scanResults.highQualityPosts.length;
         
+        // Log lead summary
+        logLeadSummary(scanResults, postedComments);
+        
         // Save activity
         await quickSavePostingActivity(postingActivity);
         
@@ -2272,9 +3458,14 @@ Mention soundswap.live. Use ${selectedStyle} tone. Focus on how our features sol
         console.log(`\n[INFO] ✅ Cron completed in ${processingTime}ms`);
         console.log(`[INFO] 📈 Results: ${totalPosted} total posts`);
         console.log(`[INFO]    - ${goldenHourPosted} Golden Hour responses`);
-        console.log(`[INFO]    - ${premiumPosted} premium-focused posts`);
+        console.log(`[INFO]    - ${expertAdvicePosted} expert advice posts (80%)`);
+        console.log(`[INFO]    - ${promotionalPosted} promotional posts (20%)`);
         console.log(`[INFO] 💎 Premium Leads Generated: ${postingActivity.premiumLeadsGenerated}`);
         console.log(`[INFO] 💬 Discord Notifications: ${discordNotificationsSent} sent, ${discordNotificationsFailed} failed`);
+        console.log(`[INFO] 📊 Batch Performance:`);
+        Object.entries(postingActivity.batchStats || {}).forEach(([batch, stats]) => {
+          console.log(`[INFO]    - Batch ${batch}: ${stats.posts || 0} posts, ${stats.leads || 0} leads`);
+        });
         console.log(`[INFO] 🎯 Golden Hour Stats:`);
         console.log(`[INFO]    - Posts scanned this run: ${scanResults.allPosts.length}`);
         console.log(`[INFO]    - Total posts scanned: ${postingActivity.goldenHourStats.totalPostsScanned}`);
@@ -2282,13 +3473,16 @@ Mention soundswap.live. Use ${selectedStyle} tone. Focus on how our features sol
         console.log(`[INFO]    - Total opportunities: ${postingActivity.goldenHourStats.totalOpportunitiesFound}`);
         console.log(`[INFO]    - Golden Hour comments: ${postingActivity.goldenHourStats.goldenHourComments}`);
         console.log(`[INFO] 📊 Rate Limits: ${postingActivity.rateLimitInfo?.remaining || 'unknown'} remaining`);
-        console.log(`[INFO] 🔄 Optimization: SCAN_ALL_FILTER_ONE (${scanTime}ms scan time)`);
+        console.log(`[INFO] 🔄 Optimization: BATCHED_ORCHESTRATION (${scanTime}ms scan time)`);
+        console.log(`[INFO] ⏰ Human Window: ${withinHumanWindow ? 'ACTIVE' : 'INACTIVE'} (UTC ${currentUTCHour}:00)`);
+        console.log(`[INFO] 🔔 Discord Filter: Only scores > ${DISCORD_HIGH_PRIORITY_THRESHOLD} sent`);
         
         return {
           success: true,
           totalPosted: totalPosted,
           goldenHourPosted: goldenHourPosted,
-          premiumPosted: premiumPosted,
+          promotionalPosted: promotionalPosted,
+          expertAdvicePosted: expertAdvicePosted,
           processingTime: processingTime,
           scanTime: scanTime,
           opportunitiesScanned: scanResults.allPosts.length,
@@ -2296,12 +3490,18 @@ Mention soundswap.live. Use ${selectedStyle} tone. Focus on how our features sol
           rateLimitInfo: postingActivity.rateLimitInfo,
           premiumLeads: postingActivity.premiumLeadsGenerated,
           goldenHourStats: postingActivity.goldenHourStats,
+          batchStats: postingActivity.batchStats,
           geminiQuotaUsed: geminiQuotaInfo.requestCount,
           fallbackUsed: !genAI || geminiQuotaInfo.requestCount >= geminiQuotaInfo.quotaLimit,
           discordNotifications: {
             sent: discordNotificationsSent,
             failed: discordNotificationsFailed,
-            totalSent: postingActivity.discordNotifications.totalSent || 0
+            totalSent: postingActivity.discordNotifications.totalSent || 0,
+            threshold: DISCORD_HIGH_PRIORITY_THRESHOLD
+          },
+          humanWindow: {
+            active: withinHumanWindow,
+            currentUTC: `${currentUTCHour}:00 UTC`
           },
           timestamp: new Date().toISOString()
         };

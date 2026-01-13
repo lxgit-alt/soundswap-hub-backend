@@ -155,7 +155,7 @@ app.use(cors({
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'webhook-id', 'webhook-timestamp', 'webhook-signature', 'Origin', 'x-client-id'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'webhook-id', 'webhook-timestamp', 'webhook-signature', 'Origin', 'x-client-id', 'X-Batch-Focus', 'X-Debug-Mode'],
   exposedHeaders: ['Content-Range', 'X-Content-Range'],
   maxAge: 86400 // 24 hours
 }));
@@ -268,6 +268,7 @@ app.use('/api/reddit-admin', createLazyRouter('./routes/reddit-admin.js', 'reddi
 app.use('/api/email', createLazyRouter('./routes/send-welcome-email.js', 'email'));
 // Mount create-checkout with standard JSON parser
 app.use('/api/create-checkout', bodyParser.json({ limit: '20mb' }), createLazyRouter('./routes/create-checkout.js', 'payments'));
+app.use('/api/deduct-credits', createLazyRouter('./routes/deduct-credits.js', 'payments'));
 
 // Lyric Video API - lazy loaded to improve cold start
 app.use('/api/lyric-video', createLazyRouter('./routes/generate-video.js', 'lyricVideo'));
@@ -280,7 +281,7 @@ app.use('/api/ai-art', createLazyRouter('./routes/doodle-art.js', 'doodleArt'));
 // ==================== CREDIT MANAGEMENT ENDPOINTS ====================
 
 // Check user credits
-app.post('/api/check-credits', async (req, res) => {
+app.post('/api/deduct-credits/check', async (req, res) => {
   try {
     // 1. Validate Body Existence
     if (!req.body) {
@@ -324,13 +325,13 @@ app.post('/api/check-credits', async (req, res) => {
     let credits = 0;
     
     // 4. Safe Credit Retrieval (Handle undefined values)
+    // FIXED: Use correct field names
     if (type === 'coverArt') {
-      credits = userData.points || 0;
+      credits = userData.coverArtCredits || userData.points || 0; // Check both for backward compatibility
     } else if (type === 'lyricVideo') {
       credits = userData.lyricVideoCredits || 0;
     } else {
         console.warn(`[WARN] ⚠️ Unknown credit type requested: ${type}`);
-        // Return 0 instead of erroring, or handle as invalid type
         credits = 0;
     }
     
@@ -345,8 +346,7 @@ app.post('/api/check-credits', async (req, res) => {
     });
 
   } catch (error) {
-    console.error('[ERROR] ❌ Exception in /api/check-credits:', error);
-    // Ensure we always return JSON, even on crash
+    console.error('[ERROR] ❌ Exception in /api/deduct-credits/check:', error);
     return res.status(500).json({ 
       success: false,
       error: 'Internal Server Error during credit check',
@@ -356,127 +356,87 @@ app.post('/api/check-credits', async (req, res) => {
   }
 });
 
-// Deduct credits
-app.post('/api/deduct-credits', async (req, res) => {
+// ==================== DEDUCT CREDITS ENDPOINT ====================
+// This forwards to the create-checkout.js router which has the proper implementation
+app.post('/api/deduct-credits', bodyParser.json({ limit: '10mb' }), async (req, res) => {
   try {
-    console.log('[INFO] 💳 Deduct credits request received');
-
-    // 1. Auth Header Validation
-    const authHeader = req.headers.authorization;
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      console.warn('[WARN] ⚠️ Invalid or missing Authorization header');
-      return res.status(401).json({ error: 'Missing or invalid auth token' });
-    }
-
-    const token = authHeader.split('Bearer ')[1];
-    let uid;
-
-    // 2. Token Verification
-    try {
-      const decoded = await admin.auth().verifyIdToken(token);
-      uid = decoded.uid;
-    } catch (err) {
-      console.error('[ERROR] ❌ Token verification failed:', err.message);
-      return res.status(403).json({ error: 'Invalid or expired auth token' });
-    }
-
-    // 3. Payload Validation
-    if (!req.body) {
-         return res.status(400).json({ error: 'Request body missing' });
-    }
-
-    const { type, amount, reason } = req.body;
-    console.log(`[INFO] 📊 Deducting ${amount} ${type} credits for ${uid}. Reason: ${reason}`);
-
-    if (!type || amount === undefined || amount === null) {
-      return res.status(400).json({ error: 'Missing type or amount' });
-    }
-
-    if (!db) {
-       return res.status(503).json({ success: false, error: 'Database unavailable' });
-    }
-
-    const userRef = db.collection('users').doc(uid);
-
-    // 4. Atomic Transaction
-    const result = await db.runTransaction(async (tx) => {
-      const snap = await tx.get(userRef);
-      
-      if (!snap.exists) {
-        throw new Error('User profile not found'); // Caught by transaction failure
-      }
-
-      const data = snap.data();
-      let field = null;
-
-      // Strict mapping
-      if (type === 'coverArt') field = 'points';
-      else if (type === 'lyricVideo') field = 'lyricVideoCredits';
-      
-      if (!field) {
-        throw new Error(`Invalid credit type: ${type}`);
-      }
-
-      const current = data[field] || 0;
-      
-      if (current < amount) {
-        throw new Error(`Insufficient credits: Has ${current}, Needs ${amount}`);
-      }
-
-      const newVal = current - amount;
-      
-      // Update User Balance
-      tx.update(userRef, { 
-          [field]: newVal, 
-          updatedAt: admin.firestore.FieldValue.serverTimestamp() 
-      });
-
-      // Log Transaction Record
-      const txRef = db.collection('credit_transactions').doc();
-      tx.set(txRef, {
-        userId: uid,
-        type: 'deduction',
-        creditType: type,
-        amount: -amount,
-        reason: reason || 'generation',
-        remaining: newVal,
-        date: admin.firestore.FieldValue.serverTimestamp()
-      });
-
-      return { remaining: newVal, transactionId: txRef.id };
-    });
-
-    console.log(`[INFO] ✅ Deducted successfully. New balance: ${result.remaining}`);
+    // Get the lazy router for create-checkout
+    const lazyRouter = createLazyRouter('./routes/create-checkout.js', 'payments');
     
-    return res.json({ 
-      success: true, 
-      remaining: result.remaining, 
-      transactionId: result.transactionId,
-      message: `Deducted ${amount} ${type} credits successfully`
+    // Modify the request to match the create-checkout router's expected path
+    const originalUrl = req.originalUrl;
+    const originalPath = req.path;
+    
+    // Store original values
+    req._originalUrl = originalUrl;
+    req._originalPath = originalPath;
+    
+    // Update to match the create-checkout router's internal route
+    req.url = '/deduct-credits';
+    req.originalUrl = '/create-checkout/deduct-credits';
+    req.path = '/deduct-credits';
+    
+    console.log(`[ROUTE-FORWARD] 🔄 Forwarding /api/deduct-credits to create-checkout router`);
+    
+    // Create a custom response handler
+    const originalJson = res.json;
+    const originalStatus = res.status;
+    
+    let responseSent = false;
+    
+    // Override res.json to capture the response
+    res.json = function(data) {
+      if (!responseSent) {
+        responseSent = true;
+        console.log(`[ROUTE-FORWARD] ✅ Response from create-checkout router:`, 
+          data.success ? 'Success' : 'Failed');
+        return originalJson.call(this, data);
+      }
+    };
+    
+    // Override res.status
+    res.status = function(code) {
+      if (!responseSent) {
+        return {
+          json: function(data) {
+            responseSent = true;
+            console.log(`[ROUTE-FORWARD] ✅ Response with status ${code}:`, 
+              data.success ? 'Success' : 'Failed');
+            return originalJson.call(res, data);
+          }
+        };
+      }
+      return this;
+    };
+    
+    // Call the lazy router
+    await lazyRouter(req, res, (error) => {
+      if (error) {
+        console.error('[ROUTE-FORWARD] ❌ Error in lazy router:', error);
+        if (!responseSent) {
+          res.status(500).json({
+            success: false,
+            error: 'Internal server error',
+            details: error.message,
+            timestamp: new Date().toISOString()
+          });
+        }
+      } else if (!responseSent) {
+        // If the router didn't send a response
+        res.status(404).json({
+          success: false,
+          error: 'Endpoint not found in create-checkout router',
+          timestamp: new Date().toISOString()
+        });
+      }
     });
-
+    
   } catch (error) {
-    console.error('[ERROR] ❌ Error in /api/deduct-credits:', error);
-
-    // Determine Status Code based on error message
-    let statusCode = 500;
-    let errorMessage = 'Internal Server Error';
-
-    if (error.message.includes('Insufficient credits')) {
-        statusCode = 402; // Payment Required
-        errorMessage = 'Insufficient credits';
-    } else if (error.message.includes('User profile not found')) {
-        statusCode = 404;
-        errorMessage = 'User profile not found';
-    } else if (error.message.includes('Invalid credit type')) {
-        statusCode = 400;
-        errorMessage = 'Invalid credit type';
-    }
-
-    return res.status(statusCode).json({ 
+    console.error('[ROUTE-FORWARD] ❌ Error forwarding request:', error);
+    res.status(500).json({
       success: false,
-      error: errorMessage,
-      details: error.message, // Helpful for debugging
+      error: 'Failed to forward request to credit service',
+      details: error.message,
       timestamp: new Date().toISOString()
     });
   }
@@ -496,7 +456,7 @@ app.get('/api/transactions/:userId', async (req, res) => {
     let query = db.collection('credit_transactions')
       .where('userId', '==', userId)
       .orderBy('date', 'desc')
-      .limit(parseInt(limit) || 50); // Fallback if parse fails
+      .limit(parseInt(limit) || 50);
     
     if (type) {
       query = query.where('creditType', '==', type);
@@ -508,7 +468,6 @@ app.get('/api/transactions/:userId', async (req, res) => {
       return {
         id: doc.id,
         ...data,
-        // Safe date conversion
         date: data.date && typeof data.date.toDate === 'function' 
               ? data.date.toDate().toISOString() 
               : (data.date || new Date().toISOString())
@@ -551,7 +510,7 @@ app.get('/api/credits/:userId', async (req, res) => {
       success: true,
       userId,
       credits: {
-        coverArt: userData.points || 0,
+        coverArt: userData.coverArtCredits || userData.points || 0, // Updated field name
         lyricVideo: userData.lyricVideoCredits || 0,
         subscription: userData.subscription || 'free',
         founderPoints: userData.founderPoints || 0
@@ -694,6 +653,124 @@ app.get('/api/payments/test', async (req, res) => {
   }
 });
 
+// ==================== CRITICAL WATCH ITEM ENDPOINTS ====================
+
+// Shadow-delete check endpoint (standalone for manual testing)
+app.get('/api/shadow-check', async (req, res) => {
+  try {
+    console.log('[SHADOW-CHECK] 🔍 Manual shadow-delete check requested');
+    
+    // Dynamically load the reddit admin module
+    const redditModule = await import('./routes/reddit-admin.js');
+    const redditRouter = redditModule.default;
+    
+    // Create a wrapped request for the shadow-check endpoint
+    const shadowReq = {
+      ...req,
+      method: 'GET',
+      path: '/shadow-check-list'
+    };
+    
+    let shadowResponse = null;
+    const shadowRes = {
+      json: (data) => {
+        shadowResponse = data;
+      },
+      status: (code) => {
+        return {
+          json: (data) => {
+            shadowResponse = data;
+          }
+        };
+      }
+    };
+    
+    await new Promise((resolve, reject) => {
+      redditRouter(shadowReq, shadowRes, (err) => {
+        if (err) reject(err);
+        else resolve();
+      });
+    });
+    
+    if (shadowResponse) {
+      res.json(shadowResponse);
+    } else {
+      res.status(404).json({
+        success: false,
+        error: 'Shadow-check endpoint not found',
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+  } catch (error) {
+    console.error('[SHADOW-CHECK] ❌ Error in shadow-check:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to check shadow-delete status',
+      details: error.message,
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+// Health monitor endpoint (standalone for monitoring)
+app.get('/api/health-monitor', async (req, res) => {
+  try {
+    console.log('[HEALTH-MONITOR] 🔍 Manual health monitor check requested');
+    
+    // Dynamically load the reddit admin module
+    const redditModule = await import('./routes/reddit-admin.js');
+    const redditRouter = redditModule.default;
+    
+    // Create a wrapped request for the health-monitor endpoint
+    const monitorReq = {
+      ...req,
+      method: 'GET',
+      path: '/health-monitor'
+    };
+    
+    let monitorResponse = null;
+    const monitorRes = {
+      json: (data) => {
+        monitorResponse = data;
+      },
+      status: (code) => {
+        return {
+          json: (data) => {
+            monitorResponse = data;
+          }
+        };
+      }
+    };
+    
+    await new Promise((resolve, reject) => {
+      redditRouter(monitorReq, monitorRes, (err) => {
+        if (err) reject(err);
+        else resolve();
+      });
+    });
+    
+    if (monitorResponse) {
+      res.json(monitorResponse);
+    } else {
+      res.status(404).json({
+        success: false,
+        error: 'Health monitor endpoint not found',
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+  } catch (error) {
+    console.error('[HEALTH-MONITOR] ❌ Error in health monitor:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to get health monitor status',
+      details: error.message,
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
 // ==================== CRON ISOLATION ENDPOINTS ====================
 
 app.get('/api/module-status', (req, res) => {
@@ -740,7 +817,7 @@ app.post('/api/isolate-for-cron', async (req, res) => {
   }
 });
 
-// ==================== ISOLATED CRON ENDPOINT ====================
+// ==================== ISOLATED CRON ENDPOINT WITH BATCH SUPPORT ====================
 
 app.post('/api/cron-reddit', async (req, res) => {
   const startTime = Date.now();
@@ -758,6 +835,12 @@ app.post('/api/cron-reddit', async (req, res) => {
 
     console.log('[CRON-ISOLATED] 🚀 Starting isolated Reddit cron execution');
     
+    // Extract batch focus from headers or body
+    const batchFocus = req.headers['x-batch-focus'] || req.body?.batchFocus || 'all';
+    const debugMode = req.headers['x-debug-mode'] === 'true' || req.body?.debugMode === true;
+    
+    console.log(`[CRON-ISOLATED] 🎭 Batch focus: ${batchFocus}, Debug: ${debugMode}`);
+    
     // Isolate modules for cron
     await isolateCronExecution();
     
@@ -770,14 +853,21 @@ app.post('/api/cron-reddit', async (req, res) => {
     
     const redditRouter = redditModule.default;
     
-    // Create minimal request wrapper
+    // Create enhanced request wrapper with batch focus
     const cronReq = {
       ...req,
       method: 'POST',
       path: '/cron',
       headers: {
         ...req.headers,
-        'x-isolated-cron': 'true'
+        'x-isolated-cron': 'true',
+        'x-batch-focus': batchFocus,
+        'x-debug-mode': debugMode.toString()
+      },
+      body: {
+        ...req.body,
+        batchFocus,
+        debugMode
       }
     };
     
@@ -804,7 +894,7 @@ app.post('/api/cron-reddit', async (req, res) => {
           else resolve();
         });
       }),
-      8000,
+      25000, // Increased timeout for batched orchestration
       'Cron execution timeout'
     );
     
@@ -813,11 +903,14 @@ app.post('/api/cron-reddit', async (req, res) => {
     
     const processingTime = Date.now() - startTime;
     console.log(`[CRON-ISOLATED] ✅ Cron completed in ${processingTime}ms`);
+    console.log(`[CRON-ISOLATED] 📊 Results: ${cronResponse?.totalPosted || 0} posts, ${cronResponse?.premiumLeads || 0} leads`);
     
     res.json({
       ...cronResponse,
       isolated: true,
       processingTime: processingTime,
+      batchFocus: batchFocus,
+      debugMode: debugMode,
       modulesLoaded: loadedModules,
       timestamp: new Date().toISOString()
     });
@@ -856,13 +949,21 @@ app.get('/api/health', (req, res) => {
     timezone: APP_TIMEZONE,
     currentTime: currentTime,
     currentDay: currentDay,
-    version: '2.1.0',
+    version: '2.2.0',
     cronSafe: true,
     moduleLoading: 'isolated',
     services: {
       reddit_automation: 'available',
       cron_scheduler: 'running',
-      module_isolation: 'active'
+      module_isolation: 'active',
+      batched_orchestration: 'enabled'
+    },
+    batched_automation: {
+      strategy: '4-Batch Rotation',
+      subreddits: 20,
+      human_window: '12:00-22:00 UTC',
+      discord_threshold: 'Score > 85',
+      shadow_delete_monitoring: 'active'
     }
   });
 });
@@ -881,7 +982,7 @@ app.get('/api/status', (req, res) => {
     success: true,
     service: 'soundswap-backend',
     status: 'operational',
-    version: '2.1.0',
+    version: '2.2.0',
     environment: process.env.NODE_ENV || 'development',
     timezone: APP_TIMEZONE,
     currentTime: currentTime,
@@ -891,6 +992,8 @@ app.get('/api/status', (req, res) => {
       health: '/api/health',
       status: '/api/status',
       isolated_cron: 'POST /api/cron-reddit (For GitHub Actions)',
+      shadow_check: 'GET /api/shadow-check (Manual verification)',
+      health_monitor: 'GET /api/health-monitor (System monitoring)',
       email: '/api/email/send-welcome-email',
       reddit_admin: '/api/reddit-admin/admin',
       lyric_video: '/api/lyric-video',
@@ -906,11 +1009,18 @@ app.get('/api/status', (req, res) => {
       optimized_schedule: '/api/reddit-admin/optimized-schedule',
       post_premium_feature: '/api/reddit-admin/post-premium-feature',
       reset_daily: '/api/reddit-admin/reset-daily',
-      check_credits: 'POST /api/check-credits',
+      check_credits: 'POST /api/deduct-credits/check',
       deduct_credits: 'POST /api/deduct-credits',
       get_transactions: 'GET /api/transactions/:userId',
       get_balance: 'GET /api/credits/:userId',
       get_purchases: 'GET /api/purchases/:userId'
+    },
+    batched_automation_endpoints: {
+      shadow_delete_check: 'GET /api/reddit-admin/shadow-check-list',
+      health_monitor: 'GET /api/reddit-admin/health-monitor',
+      batch_targets: 'GET /api/reddit-admin/targets',
+      today_schedule: 'GET /api/reddit-admin/schedule/today',
+      cron_status: 'GET /api/reddit-admin/cron-status'
     },
     video_generation_api: {
       generate_video: 'POST /api/generate-video',
@@ -936,7 +1046,7 @@ app.get('/api/status', (req, res) => {
       }
     },
     credit_management_api: {
-      check_credits: 'POST /api/check-credits - Check user credit balance',
+      check_credits: 'POST /api/deduct-credits/check - Check user credit balance',
       deduct_credits: 'POST /api/deduct-credits - Deduct credits for generation',
       get_transactions: 'GET /api/transactions/:userId - Get transaction history',
       get_balance: 'GET /api/credits/:userId - Get complete credit balance'
@@ -965,14 +1075,23 @@ app.get('/api/status', (req, res) => {
       premium_feature_focus: 'active',
       credit_system: 'active'
     },
-    reddit_automation_updates: {
-      total_subreddits: 12,
-      new_premium_subreddits: 8,
-      total_audience: '5M+',
-      daily_comments: '15 posts/day (rate limit safe)',
-      premium_focus: '80% of content focuses on premium features',
-      features: 'Rate limit aware, lead tracking, daily reset',
-      api_mode: 'LIVE REDDIT API'
+    batched_orchestration_features: {
+      version: '8.0.0',
+      strategy: '4-Batch Rotation',
+      subreddits: 20,
+      batches: ['A: Feedback Loop', 'B: Visual Showdown', 'C: Problem Solvers', 'D: Growth Hackers'],
+      human_window: '12:00-22:00 UTC',
+      discord_threshold: 'Score > 85',
+      industry_authority: '80% expert advice, 20% promotion',
+      rate_limit_protection: 'Exponential backoff with jitter',
+      shadow_delete_monitoring: '30% check probability',
+      critical_alerts: 'Active'
+    },
+    critical_monitoring: {
+      shadow_delete_checks: 'Weekly manual verification recommended',
+      batch_c_focus: 'Prioritize Batch C comment verification',
+      rate_limit_monitoring: 'Automatic exponential backoff',
+      discord_signal_noise: 'High-priority leads only (Score > 85)'
     }
   });
 });
@@ -985,7 +1104,7 @@ app.get('/', (req, res) => {
   res.json({
     success: true,
     message: 'SoundSwap API - Backend service is running',
-    version: '2.1.0',
+    version: '2.2.0',
     environment: 'production',
     timezone: APP_TIMEZONE,
     currentTime: currentTime,
@@ -994,6 +1113,9 @@ app.get('/', (req, res) => {
     endpoints: {
       health: '/api/health',
       status: '/api/status',
+      isolated_cron: 'POST /api/cron-reddit (GitHub Actions)',
+      shadow_check: 'GET /api/shadow-check (Critical monitoring)',
+      health_monitor: 'GET /api/health-monitor (System health)',
       email: '/api/email/send-welcome-email',
       reddit_admin: '/api/reddit-admin/admin',
       lyric_video: '/api/lyric-video',
@@ -1009,10 +1131,28 @@ app.get('/', (req, res) => {
       optimized_schedule: '/api/reddit-admin/optimized-schedule',
       post_premium_feature: '/api/reddit-admin/post-premium-feature',
       reset_daily: '/api/reddit-admin/reset-daily',
-      check_credits: 'POST /api/check-credits',
+      check_credits: 'POST /api/deduct-credits/check',
       deduct_credits: 'POST /api/deduct-credits',
       get_transactions: 'GET /api/transactions/:userId',
       get_balance: 'GET /api/credits/:userId'
+    },
+    batched_automation: {
+      strategy: '4-Batch Rotation System',
+      total_subreddits: 20,
+      schedule: 'Every 15 minutes, 12:00-22:00 UTC',
+      batches: [
+        'A: Feedback Loop (Morning/Trust Building)',
+        'B: Visual Showdown (Mid-Day/High Impact OC)',
+        'C: Problem Solvers (Afternoon/Direct Utility)',
+        'D: Growth Hackers (Evening/Marketing & ROI)'
+      ],
+      critical_features: [
+        'Discord High-Priority Filter (Score > 85)',
+        'Shadow-Delete Detection System',
+        'Rate Limit Protection with Exponential Backoff',
+        '80/20 Industry Authority Strategy',
+        'Human Window Enforcement (12:00-22:00 UTC)'
+      ]
     },
     video_generation_api: {
       generate_video: 'POST /api/generate-video',
@@ -1038,7 +1178,7 @@ app.get('/', (req, res) => {
       }
     },
     credit_management_api: {
-      check_credits: 'POST /api/check-credits - Check user credit balance',
+      check_credits: 'POST /api/deduct-credits/check - Check user credit balance',
       deduct_credits: 'POST /api/deduct-credits - Deduct credits for generation',
       get_transactions: 'GET /api/transactions/:userId - Get transaction history',
       get_balance: 'GET /api/credits/:userId - Get complete credit balance'
@@ -1066,15 +1206,6 @@ app.get('/', (req, res) => {
       reddit_api: 'live',
       premium_feature_focus: 'active',
       credit_system: 'active'
-    },
-    reddit_automation_updates: {
-      total_subreddits: 12,
-      new_premium_subreddits: 8,
-      total_audience: '5M+',
-      daily_comments: '15 posts/day (rate limit safe)',
-      premium_focus: '80% of content focuses on premium features',
-      features: 'Rate limit aware, lead tracking, daily reset',
-      api_mode: 'LIVE REDDIT API'
     }
   });
 });
@@ -1096,6 +1227,8 @@ app.use('*', (req, res) => {
       '/health',
       '/api/status',
       '/api/cron-reddit (POST)',
+      '/api/shadow-check (Critical monitoring)',
+      '/api/health-monitor (System health)',
       '/api/email/send-welcome-email',
       '/api/reddit-admin/admin',
       '/api/lyric-video',
@@ -1114,7 +1247,7 @@ app.use('*', (req, res) => {
       '/api/create-checkout',
       '/api/lemon-webhook',
       '/api/payments/status',
-      '/api/check-credits (POST)',
+      '/api/deduct-credits/check (POST)',
       '/api/deduct-credits (POST)',
       '/api/transactions/:userId',
       '/api/credits/:userId',
@@ -1152,7 +1285,10 @@ if (process.env.NODE_ENV !== 'production' || process.env.VERCEL !== '1') {
     console.log(`📅 Current time: ${currentTime} on ${currentDay}`);
     console.log(`❤️  Health check: http://localhost:${PORT}/api/health`);
     console.log(`🔒 Isolated cron: POST http://localhost:${PORT}/api/cron-reddit`);
-    console.log(`📊 Module status: GET http://localhost:${PORT}/api/module-status`);
+    console.log(`👁️  Shadow-check: GET http://localhost:${PORT}/api/shadow-check`);
+    console.log(`📊 Health monitor: GET http://localhost:${PORT}/api/health-monitor`);
+    console.log(`🔧 Module status: GET http://localhost:${PORT}/api/module-status`);
     console.log(`🌐 CORS enabled for: localhost:3000, localhost:3001, soundswap.live`);
+    console.log(`🎭 Batched Orchestration: 20 subreddits, 4 batches, Discord threshold: Score > 85`);
   });
 }

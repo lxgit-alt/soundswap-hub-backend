@@ -13,7 +13,7 @@ let auth = null;
 // Static product catalog - no imports needed (SUBSCRIPTIONS REMOVED)
 const PRODUCT_CATALOG = {
   // One-time purchases (Cover Art Credits)
-  'prod_starter': {
+  'cover_starter': {
     id: 'pdt_0NVpYnGqHkTrG1MBpjZDH',
     name: 'Starter Pack',
     description: '10 Cover Art Credits',
@@ -22,7 +22,7 @@ const PRODUCT_CATALOG = {
     type: 'one_time',
     creditType: 'coverArt'
   },
-  'prod_creator': {
+  'cover_creator': {
     id: 'pdt_0NVpYz3UZCFhpDsJRpIkJ',
     name: 'Creator Pack',
     description: '25 Cover Art Credits',
@@ -31,7 +31,7 @@ const PRODUCT_CATALOG = {
     type: 'one_time',
     creditType: 'coverArt'
   },
-  'prod_pro': {
+  'cover_pro': {
     id: 'pdt_0NVpZ68TtojJFxcvTKFHD',
     name: 'Professional Pack',
     description: '100 Cover Art Credits',
@@ -246,6 +246,7 @@ const addCreditsToUser = async (userId, productKey) => {
 
 // ==================== CHECKOUT ENDPOINT WITH TIMEOUT PROTECTION ====================
 
+// CRITICAL FIX: Your frontend calls '/api/create-checkout' so this should be POST /
 router.post('/', async (req, res) => {
   // Signal that payments processing is active to suppress other modules
   try { process.__payments_running = true; } catch (e) { /* no-op */ }
@@ -302,9 +303,10 @@ router.post('/', async (req, res) => {
     }
 
     const { uid, email: tokenEmail } = decodedToken;
-    const { variantId, successUrl, cancelUrl } = req.body;
+    const { variantId, successUrl, cancelUrl, metadata } = req.body;
     
-    const { name, email: bodyEmail } = req.body;
+    // Extract metadata from request body if provided
+    const { name, email: bodyEmail } = metadata || {};
     
     if (!variantId) {
       console.log('[ERROR] ❌ Missing variantId in request');
@@ -317,7 +319,7 @@ router.post('/', async (req, res) => {
 
     // Security check (skip in test mode)
     if (process.env.NODE_ENV !== 'test') {
-      const { userId } = req.body;
+      const { userId } = metadata || {};
       if (userId && userId !== uid) {
         console.log(`[ERROR] ❌ User ID mismatch - Token: ${uid}, Request: ${userId}`);
         clearTimeout(requestTimeout);
@@ -389,15 +391,19 @@ router.post('/', async (req, res) => {
           product_id: dodoProductId, // Use your actual Dodo product ID here
           quantity: 1 
         } ],
-        customer: { email: customerEmail, name: name || '' },
+        customer: { 
+          email: customerEmail, 
+          name: name || customerEmail.split('@')[0] || 'Customer'
+        },
         metadata: { 
           user_id: uid, 
           type: 'one_time', // All purchases are one-time (subscriptions removed)
           creditType: product.creditType,
           credits: product.credits,
           productKey: variantId,
-          firebase_uid: uid, 
-          requested_variant: variantId 
+          firebase_uid: uid,
+          requested_variant: variantId,
+          ...(metadata || {})
         },
         return_url: successUrl || `${process.env.NEXT_PUBLIC_APP_URL || 'https://soundswap.live'}/studio?payment=success`,
         cancel_url: cancelUrl || `${process.env.NEXT_PUBLIC_APP_URL || 'https://soundswap.live'}/studio?payment=cancelled`,
@@ -1049,7 +1055,7 @@ router.post('/test-webhook', async (req, res) => {
 
 console.log('[INFO] ✅ Dodo API Key:', process.env.DODO_PAYMENTS_API_KEY ? 'Configured' : 'Not Configured');
 console.log('[INFO] 📊 Products Available:', Object.keys(PRODUCT_CATALOG).length);
-console.log('[INFO] 🎯 Endpoint: /api/create-checkout');
+console.log('[INFO] 🎯 Endpoint: POST /api/create-checkout');
 console.log('[INFO] 🔄 Lazy loading enabled: Firebase Admin loads only for token verification');
 console.log('[INFO] ⏱️  Timeout protection: 8s request timeout, 5s API timeouts');
 console.log('[INFO] ⚠️  NOTE: Subscriptions have been removed - only one-time purchases available');
