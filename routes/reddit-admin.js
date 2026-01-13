@@ -179,8 +179,7 @@ const calculateTimeout = (baseMs, subtractMs = 0) => {
 // Gemini API quota management
 let geminiQuotaInfo = {
   lastRequest: null,
-  requestCount: 0,
-  quotaLimit: 20,
+  requestCount:100,
   resetTime: null,
   lastError: null
 };

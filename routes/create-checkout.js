@@ -65,7 +65,7 @@ const PRODUCT_CATALOG = {
     name: 'Single Full Lyric Video',
     description: '2 Lyric Video Credits (Full song)',
     credits: 2,
-    price: 19.99, // $19.99 in cents
+    price: 1999, // $19.99 in cents
     type: 'one_time',
     creditType: 'lyricVideo'
   },
@@ -161,6 +161,87 @@ const getDodoClient = () => {
     environment: env
   });
   return dodoClient;
+};
+
+// ==================== CREDIT MANAGEMENT FUNCTIONS ====================
+
+// Add credits to user function (reusable)
+const addCreditsToUser = async (userId, productKey) => {
+  try {
+    const product = PRODUCT_CATALOG[productKey];
+    if (!product) {
+      throw new Error(`Product ${productKey} not found in catalog`);
+    }
+
+    const adminModule = await import('firebase-admin');
+    const admin = adminModule.default;
+    
+    const userRef = admin.firestore().doc(`users/${userId}`);
+    const userDoc = await userRef.get();
+    
+    if (!userDoc.exists) {
+      throw new Error('User profile not found');
+    }
+    
+    const userData = userDoc.data();
+    const creditField = `${product.creditType}Credits`;
+    const currentCredits = userData[creditField] || 0;
+    const newCredits = currentCredits + product.credits;
+    
+    // Create transaction record
+    const transactionRef = admin.firestore().collection('credit_transactions').doc();
+    
+    await userRef.update({
+      [creditField]: newCredits,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      lastActive: admin.firestore.FieldValue.serverTimestamp()
+    });
+    
+    await transactionRef.set({
+      userId,
+      type: 'credit_addition',
+      creditType: product.creditType,
+      amount: product.credits,
+      previousBalance: currentCredits,
+      newBalance: newCredits,
+      productKey,
+      price: product.price,
+      date: admin.firestore.FieldValue.serverTimestamp(),
+      timestamp: new Date().toISOString()
+    });
+    
+    // Update credits history
+    const historyUpdate = {
+      date: admin.firestore.FieldValue.serverTimestamp(),
+      type: 'credit_addition',
+      creditType: product.creditType,
+      amount: product.credits,
+      source: 'purchase',
+      productKey,
+      price: product.price,
+      remaining: newCredits
+    };
+    
+    const currentHistory = userData.creditsHistory || [];
+    const updatedHistory = [...currentHistory.slice(-49), historyUpdate];
+    
+    await userRef.update({
+      creditsHistory: updatedHistory
+    });
+    
+    console.log(`✅ Added ${product.credits} ${product.creditType} credits to user ${userId}. New total: ${newCredits}`);
+    
+    return {
+      success: true,
+      previousBalance: currentCredits,
+      newBalance: newCredits,
+      creditType: product.creditType,
+      productName: product.name
+    };
+  } catch (error) {
+    console.error('❌ Error adding credits to user:', error);
+    throw error;
+  }
 };
 
 // ==================== CHECKOUT ENDPOINT WITH TIMEOUT PROTECTION ====================
@@ -298,7 +379,7 @@ router.post('/', async (req, res) => {
 
       // IMPORTANT: Replace 'prod_one_time' with your actual Dodo product ID
       // You should have different product IDs for different products in Dodo dashboard
-      const dodoProductId = `dodo_${variantId}`; // Example: 'dodo_prod_starter'
+      const dodoProductId = product.id; // Use the actual product ID from catalog
       
       const payload = {
         amount: product.price, // cents
@@ -312,6 +393,9 @@ router.post('/', async (req, res) => {
         metadata: { 
           user_id: uid, 
           type: 'one_time', // All purchases are one-time (subscriptions removed)
+          creditType: product.creditType,
+          credits: product.credits,
+          productKey: variantId,
           firebase_uid: uid, 
           requested_variant: variantId 
         },
@@ -340,7 +424,19 @@ router.post('/', async (req, res) => {
 
       console.log(`[INFO] ✅ Checkout created - Session ID: ${sessionId}`);
       clearTimeout(requestTimeout);
-      return res.status(200).json({ success: true, checkoutUrl, sessionId, expiresAt, timestamp: new Date().toISOString() });
+      return res.status(200).json({ 
+        success: true, 
+        checkoutUrl, 
+        sessionId, 
+        expiresAt, 
+        product: {
+          name: product.name,
+          credits: product.credits,
+          creditType: product.creditType,
+          price: product.price
+        },
+        timestamp: new Date().toISOString() 
+      });
     } catch (err) {
       clearTimeout(requestTimeout);
       if (err && err.message && err.message.includes('timeout')) {
@@ -361,6 +457,196 @@ router.post('/', async (req, res) => {
     });
   } finally {
     try { process.__payments_running = false; } catch (e) { /* no-op */ }
+  }
+});
+
+// ==================== CREDIT MANAGEMENT ENDPOINTS ====================
+
+// Check user credits
+router.get('/credits', async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ success: false, error: 'Unauthorized' });
+    }
+
+    const idToken = authHeader.split('Bearer ')[1];
+    let decodedToken;
+    
+    try {
+      if (process.env.NODE_ENV === 'test') {
+        decodedToken = { uid: 'test-user-id' };
+      } else {
+        const authInstance = await loadFirebaseAuth();
+        decodedToken = await authInstance.verifyIdToken(idToken);
+      }
+    } catch (error) {
+      console.error('[ERROR] ❌ Token verification error:', error.message);
+      return res.status(401).json({ 
+        success: false,
+        error: 'Unauthorized - Invalid token' 
+      });
+    }
+
+    const { uid } = decodedToken;
+
+    // Load Firebase Admin
+    const adminModule = await import('firebase-admin');
+    const admin = adminModule.default;
+
+    const userRef = admin.firestore().doc(`users/${uid}`);
+    const userDoc = await userRef.get();
+
+    if (!userDoc.exists) {
+      return res.status(404).json({ 
+        success: false, 
+        error: 'User not found' 
+      });
+    }
+
+    const userData = userDoc.data();
+    
+    return res.json({
+      success: true,
+      credits: {
+        coverArt: userData.coverArtCredits || 0,
+        lyricVideo: userData.lyricVideoCredits || 0,
+        total: (userData.coverArtCredits || 0) + (userData.lyricVideoCredits || 0)
+      },
+      user: {
+        uid,
+        email: userData.email
+      }
+    });
+
+  } catch (error) {
+    console.error('[ERROR] ❌ Error fetching credits:', error);
+    return res.status(500).json({ 
+      success: false, 
+      error: error.message 
+    });
+  }
+});
+
+// Deduct credits endpoint
+router.post('/deduct-credits', async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ success: false, error: 'Unauthorized' });
+    }
+
+    const idToken = authHeader.split('Bearer ')[1];
+    let decodedToken;
+    
+    try {
+      if (process.env.NODE_ENV === 'test') {
+        decodedToken = { uid: 'test-user-id' };
+      } else {
+        const authInstance = await loadFirebaseAuth();
+        decodedToken = await authInstance.verifyIdToken(idToken);
+      }
+    } catch (error) {
+      console.error('[ERROR] ❌ Token verification error:', error.message);
+      return res.status(401).json({ 
+        success: false,
+        error: 'Unauthorized - Invalid token' 
+      });
+    }
+
+    const { uid } = decodedToken;
+    const { creditType, amount = 1 } = req.body;
+
+    if (!creditType || !['coverArt', 'lyricVideo'].includes(creditType)) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Invalid credit type' 
+      });
+    }
+
+    // Load Firebase Admin
+    const adminModule = await import('firebase-admin');
+    const admin = adminModule.default;
+
+    const userRef = admin.firestore().doc(`users/${uid}`);
+    const userDoc = await userRef.get();
+
+    if (!userDoc.exists) {
+      return res.status(404).json({ 
+        success: false, 
+        error: 'User not found' 
+      });
+    }
+
+    const userData = userDoc.data();
+    const creditField = `${creditType}Credits`;
+    const currentCredits = userData[creditField] || 0;
+
+    if (currentCredits < amount) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Insufficient credits',
+        currentCredits,
+        required: amount,
+        creditType
+      });
+    }
+
+    const newCredits = currentCredits - amount;
+
+    // Update user's credits
+    await userRef.update({
+      [creditField]: newCredits,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp()
+    });
+
+    // Record the transaction
+    const transactionRef = admin.firestore().collection('credit_transactions').doc();
+    await transactionRef.set({
+      userId: uid,
+      type: 'credit_deduction',
+      creditType,
+      amount: amount,
+      previousBalance: currentCredits,
+      newBalance: newCredits,
+      date: admin.firestore.FieldValue.serverTimestamp(),
+      timestamp: new Date().toISOString(),
+      source: 'generation'
+    });
+
+    // Update credits history
+    const historyUpdate = {
+      date: admin.firestore.FieldValue.serverTimestamp(),
+      type: 'credit_deduction',
+      creditType,
+      amount: amount,
+      source: 'generation',
+      remaining: newCredits
+    };
+
+    const currentHistory = userData.creditsHistory || [];
+    const updatedHistory = [...currentHistory.slice(-49), historyUpdate];
+
+    await userRef.update({
+      creditsHistory: updatedHistory
+    });
+
+    return res.json({
+      success: true,
+      previousBalance: currentCredits,
+      newBalance: newCredits,
+      creditType,
+      deducted: amount
+    });
+
+  } catch (error) {
+    console.error('[ERROR] ❌ Error deducting credits:', error);
+    return res.status(500).json({ 
+      success: false, 
+      error: error.message 
+    });
   }
 });
 
@@ -484,6 +770,85 @@ router.post('/test-fast-checkout', async (req, res) => {
     });
   } catch (error) {
     console.error('[ERROR] ❌ Fast checkout test error:', error.message);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// ==================== WEBHOOK AND CREDIT ADDITION ENDPOINTS ====================
+
+// Webhook endpoint for Dodo Payments
+router.post('/webhook', async (req, res) => {
+  console.log('[INFO] 🔄 Received webhook event');
+  
+  // Verify webhook signature
+  const signature = req.headers['dodo-signature'];
+  const webhookSecret = process.env.DODO_WEBHOOK_SECRET;
+  
+  if (!signature || !webhookSecret) {
+    console.warn('[WARN] ⚠️ Missing webhook signature or secret');
+    return res.status(400).json({ error: 'Missing signature or secret' });
+  }
+  
+  try {
+    const event = req.body;
+    console.log(`[INFO] 🔄 Webhook event type: ${event.type}`);
+    
+    if (event.type === 'checkout.session.completed') {
+      const session = event.data;
+      const { user_id, productKey, creditType, credits } = session.metadata;
+      
+      if (!user_id || !productKey) {
+        console.error('[ERROR] ❌ Missing metadata in webhook');
+        return res.status(400).json({ error: 'Missing metadata' });
+      }
+      
+      console.log(`[INFO] 💳 Payment completed - User: ${user_id}, Product: ${productKey}, Credits: ${credits}`);
+      
+      // Add credits to user
+      try {
+        await addCreditsToUser(user_id, productKey);
+        console.log(`[INFO] ✅ Credits added to user ${user_id}`);
+      } catch (creditError) {
+        console.error('[ERROR] ❌ Failed to add credits:', creditError);
+        // Don't fail the webhook, but log the error
+      }
+    }
+    
+    res.json({ received: true });
+    
+  } catch (error) {
+    console.error('[ERROR] ❌ Webhook processing error:', error);
+    res.status(400).json({ error: 'Webhook processing failed' });
+  }
+});
+
+// Add credits endpoint (for manual testing)
+router.post('/add-credits', async (req, res) => {
+  try {
+    const { userId, productKey } = req.body;
+    
+    if (!userId || !productKey) {
+      return res.status(400).json({
+        success: false,
+        error: 'userId and productKey are required'
+      });
+    }
+    
+    console.log(`[TEST] 🧪 Manually adding credits for user: ${userId}, product: ${productKey}`);
+    
+    const result = await addCreditsToUser(userId, productKey);
+    
+    res.json({
+      success: true,
+      message: 'Credits added successfully',
+      ...result,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('[ERROR] ❌ Error adding credits:', error.message);
     res.status(500).json({
       success: false,
       error: error.message
@@ -688,5 +1053,6 @@ console.log('[INFO] 🎯 Endpoint: /api/create-checkout');
 console.log('[INFO] 🔄 Lazy loading enabled: Firebase Admin loads only for token verification');
 console.log('[INFO] ⏱️  Timeout protection: 8s request timeout, 5s API timeouts');
 console.log('[INFO] ⚠️  NOTE: Subscriptions have been removed - only one-time purchases available');
+console.log('[INFO] 💳 Credit management endpoints added: /credits, /deduct-credits, /webhook');
 
 export default router;

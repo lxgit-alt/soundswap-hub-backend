@@ -282,10 +282,11 @@ app.use('/api/ai-art', createLazyRouter('./routes/doodle-art.js', 'doodleArt'));
 // Check user credits
 app.post('/api/check-credits', async (req, res) => {
   try {
-    console.log('🔍 Checking credits for user:', req.body.userId);
+    console.log('[INFO] 🔍 Checking credits for user:', req.body.userId);
     const { userId, type } = req.body;
     
     if (!userId || !type) {
+      console.log('[WARN] ⚠️ Missing required fields for credit check');
       return res.status(400).json({ 
         error: 'Missing required fields',
         timestamp: new Date().toISOString()
@@ -293,6 +294,7 @@ app.post('/api/check-credits', async (req, res) => {
     }
     
     if (!db) {
+      console.error('[ERROR] ❌ Firebase not initialized for credit check');
       return res.status(500).json({
         success: false,
         error: 'Firebase not initialized',
@@ -300,9 +302,11 @@ app.post('/api/check-credits', async (req, res) => {
       });
     }
     
+    console.log(`[INFO] 📊 Fetching user document for: ${userId}`);
     const userDoc = await db.collection('users').doc(userId).get();
     
     if (!userDoc.exists) {
+      console.log(`[WARN] ⚠️ User not found: ${userId}`);
       return res.status(404).json({ 
         error: 'User not found',
         timestamp: new Date().toISOString()
@@ -318,7 +322,7 @@ app.post('/api/check-credits', async (req, res) => {
       credits = userData.lyricVideoCredits || 0;
     }
     
-    console.log(`✅ Credits check: ${credits} ${type} credits for user ${userId}`);
+    console.log(`[INFO] ✅ Credits check completed: ${credits} ${type} credits for user ${userId}`);
     
     res.json({
       success: true,
@@ -328,7 +332,7 @@ app.post('/api/check-credits', async (req, res) => {
       timestamp: new Date().toISOString()
     });
   } catch (error) {
-    console.error('❌ Error checking credits:', error);
+    console.error('[ERROR] ❌ Error checking credits:', error);
     res.status(500).json({ 
       success: false,
       error: error.message,
@@ -340,34 +344,36 @@ app.post('/api/check-credits', async (req, res) => {
 // Deduct credits
 app.post('/api/deduct-credits', async (req, res) => {
   try {
-    console.log('💳 Deduct credits request received');
+    console.log('[INFO] 💳 Deduct credits request received');
     const authHeader = req.headers.authorization || '';
     const token = authHeader.startsWith('Bearer ') ? authHeader.split('Bearer ')[1] : null;
     if (!token) {
-      console.log('❌ No auth token provided');
+      console.log('[WARN] ⚠️ No auth token provided for credit deduction');
       return res.status(401).json({ error: 'Missing auth token' });
     }
 
     // Verify token and determine uid
     let uid;
     try {
-      console.log('🔐 Verifying ID token...');
+      console.log('[INFO] 🔐 Verifying ID token...');
       const decoded = await admin.auth().verifyIdToken(token);
       uid = decoded.uid;
-      console.log(`✅ Token verified for user: ${uid}`);
+      console.log(`[INFO] ✅ Token verified for user: ${uid}`);
     } catch (err) {
-      console.error('❌ Token verification failed:', err.message);
+      console.error('[ERROR] ❌ Token verification failed:', err.message);
       return res.status(401).json({ error: 'Invalid auth token' });
     }
 
     const { type, amount, reason } = req.body;
-    console.log(`📊 Deducting ${amount} ${type} credits for user ${uid}, reason: ${reason || 'generation'}`);
+    console.log(`[INFO] 📊 Deducting ${amount} ${type} credits for user ${uid}, reason: ${reason || 'generation'}`);
     
     if (!type || !amount) {
+      console.log('[WARN] ⚠️ Missing required fields for credit deduction');
       return res.status(400).json({ error: 'Missing required fields' });
     }
 
     if (!db) {
+      console.error('[ERROR] ❌ Firebase not initialized for credit deduction');
       return res.status(500).json({ success: false, error: 'Firebase not initialized' });
     }
 
@@ -375,15 +381,24 @@ app.post('/api/deduct-credits', async (req, res) => {
 
     // Run transaction to atomically deduct and record transaction
     const result = await db.runTransaction(async (tx) => {
-      console.log('🔄 Starting Firestore transaction for credit deduction');
+      console.log('[INFO] 🔄 Starting Firestore transaction for credit deduction');
       const snap = await tx.get(userRef);
-      if (!snap.exists) throw new Error('User profile not found');
+      if (!snap.exists) {
+        console.error(`[ERROR] ❌ User profile not found: ${uid}`);
+        throw new Error('User profile not found');
+      }
       const data = snap.data();
       const field = type === 'coverArt' ? 'points' : (type === 'lyricVideo' ? 'lyricVideoCredits' : null);
-      if (!field) throw new Error('Invalid credit type');
+      if (!field) {
+        console.error(`[ERROR] ❌ Invalid credit type: ${type}`);
+        throw new Error('Invalid credit type');
+      }
       const current = data[field] || 0;
-      console.log(`📊 Current ${type} credits: ${current}, deducting: ${amount}`);
-      if (current < amount) throw new Error('Insufficient credits');
+      console.log(`[INFO] 📊 Current ${type} credits: ${current}, deducting: ${amount}`);
+      if (current < amount) {
+        console.log(`[WARN] ⚠️ Insufficient credits: ${current} available, ${amount} required`);
+        throw new Error('Insufficient credits');
+      }
       const newVal = current - amount;
       tx.update(userRef, { [field]: newVal, updatedAt: admin.firestore.FieldValue.serverTimestamp() });
 
@@ -401,7 +416,7 @@ app.post('/api/deduct-credits', async (req, res) => {
       return { remaining: newVal, transactionId: txRef.id };
     });
 
-    console.log(`✅ Successfully deducted ${amount} ${type} credits. New balance: ${result.remaining}`);
+    console.log(`[INFO] ✅ Successfully deducted ${amount} ${type} credits. New balance: ${result.remaining}`);
     
     res.json({ 
       success: true, 
@@ -410,7 +425,7 @@ app.post('/api/deduct-credits', async (req, res) => {
       message: `Deducted ${amount} ${type} credits successfully`
     });
   } catch (error) {
-    console.error('❌ Error deducting credits:', error);
+    console.error('[ERROR] ❌ Error deducting credits:', error);
     res.status(500).json({ 
       success: false,
       error: error.message,
@@ -425,7 +440,10 @@ app.get('/api/transactions/:userId', async (req, res) => {
     const { userId } = req.params;
     const { limit = 50, type } = req.query;
     
+    console.log(`[INFO] 📋 Fetching transaction history for user: ${userId}, type: ${type || 'all'}`);
+    
     if (!db) {
+      console.error('[ERROR] ❌ Firebase not initialized for transaction history');
       return res.status(500).json({
         success: false,
         error: 'Firebase not initialized',
@@ -454,6 +472,8 @@ app.get('/api/transactions/:userId', async (req, res) => {
       });
     });
     
+    console.log(`[INFO] ✅ Retrieved ${transactions.length} transactions for user: ${userId}`);
+    
     res.json({ 
       success: true,
       transactions,
@@ -462,7 +482,7 @@ app.get('/api/transactions/:userId', async (req, res) => {
       timestamp: new Date().toISOString()
     });
   } catch (error) {
-    console.error('❌ Error fetching transactions:', error);
+    console.error('[ERROR] ❌ Error fetching transactions:', error);
     res.status(500).json({ 
       success: false,
       error: error.message,
@@ -476,7 +496,10 @@ app.get('/api/credits/:userId', async (req, res) => {
   try {
     const { userId } = req.params;
     
+    console.log(`[INFO] 💰 Fetching credit balance for user: ${userId}`);
+    
     if (!db) {
+      console.error('[ERROR] ❌ Firebase not initialized for credit balance');
       return res.status(500).json({
         success: false,
         error: 'Firebase not initialized',
@@ -487,6 +510,7 @@ app.get('/api/credits/:userId', async (req, res) => {
     const userDoc = await db.collection('users').doc(userId).get();
     
     if (!userDoc.exists) {
+      console.log(`[WARN] ⚠️ User not found for credit balance: ${userId}`);
       return res.status(404).json({ 
         error: 'User not found',
         timestamp: new Date().toISOString()
@@ -494,6 +518,8 @@ app.get('/api/credits/:userId', async (req, res) => {
     }
     
     const userData = userDoc.data();
+    
+    console.log(`[INFO] ✅ Credit balance retrieved for user: ${userId}`);
     
     res.json({
       success: true,
@@ -516,7 +542,7 @@ app.get('/api/credits/:userId', async (req, res) => {
       timestamp: new Date().toISOString()
     });
   } catch (error) {
-    console.error('❌ Error getting credit balance:', error);
+    console.error('[ERROR] ❌ Error getting credit balance:', error);
     res.status(500).json({ 
       success: false,
       error: error.message,
@@ -531,7 +557,10 @@ app.get('/api/purchases/:userId', async (req, res) => {
     const { userId } = req.params;
     const { limit = 20 } = req.query;
     
+    console.log(`[INFO] 🛍️ Fetching purchases for user: ${userId}`);
+    
     if (!db) {
+      console.error('[ERROR] ❌ Firebase not initialized for purchases');
       return res.status(500).json({
         success: false,
         error: 'Firebase not initialized',
@@ -556,6 +585,8 @@ app.get('/api/purchases/:userId', async (req, res) => {
       });
     });
     
+    console.log(`[INFO] ✅ Retrieved ${purchases.length} purchases for user: ${userId}`);
+    
     res.json({
       success: true,
       purchases,
@@ -564,7 +595,7 @@ app.get('/api/purchases/:userId', async (req, res) => {
       timestamp: new Date().toISOString()
     });
   } catch (error) {
-    console.error('❌ Error fetching purchases:', error);
+    console.error('[ERROR] ❌ Error fetching purchases:', error);
     res.status(500).json({
       success: false,
       error: error.message,
@@ -576,6 +607,7 @@ app.get('/api/purchases/:userId', async (req, res) => {
 // ==================== DODO PAYMENTS STATUS ENDPOINTS ====================
 
 app.get('/api/payments/status', (req, res) => {
+  console.log('[INFO] 🔍 Checking Dodo Payments service status');
   res.json({
     success: true,
     service: 'dodo-payments',
@@ -601,9 +633,12 @@ app.get('/api/payments/status', (req, res) => {
 // Test Dodo API connection
 app.get('/api/payments/test', async (req, res) => {
   try {
+    console.log('[INFO] 🧪 Testing Dodo API connection');
+    
     const DODO_API_KEY = process.env.DODO_PAYMENTS_API_KEY;
     
     if (!DODO_API_KEY) {
+      console.error('[ERROR] ❌ Dodo API key not configured');
       return res.status(500).json({
         success: false,
         error: 'Dodo API key not configured',
@@ -620,6 +655,7 @@ app.get('/api/payments/test', async (req, res) => {
     
     if (response.ok) {
       const result = await response.json();
+      console.log('[INFO] ✅ Dodo API connection successful');
       res.json({
         success: true,
         message: 'Dodo API connection successful',
@@ -633,6 +669,7 @@ app.get('/api/payments/test', async (req, res) => {
       });
     } else {
       const error = await response.json();
+      console.error('[ERROR] ❌ Dodo API connection failed:', error.message || 'Unknown error');
       res.status(response.status).json({
         success: false,
         error: error.message || 'Dodo API connection failed',
@@ -641,7 +678,7 @@ app.get('/api/payments/test', async (req, res) => {
       });
     }
   } catch (error) {
-    console.error('❌ Dodo API test error:', error);
+    console.error('[ERROR] ❌ Dodo API test error:', error);
     res.status(500).json({
       success: false,
       error: error.message,
