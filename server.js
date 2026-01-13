@@ -282,31 +282,38 @@ app.use('/api/ai-art', createLazyRouter('./routes/doodle-art.js', 'doodleArt'));
 // Check user credits
 app.post('/api/check-credits', async (req, res) => {
   try {
-    console.log('[INFO] 🔍 Checking credits for user:', req.body.userId);
+    // 1. Validate Body Existence
+    if (!req.body) {
+      console.warn('[WARN] ⚠️ Request body is missing');
+      return res.status(400).json({ error: 'Request body missing' });
+    }
+
     const { userId, type } = req.body;
+    console.log(`[INFO] 🔍 Checking credits | User: ${userId} | Type: ${type}`);
     
+    // 2. Validate Required Fields
     if (!userId || !type) {
-      console.log('[WARN] ⚠️ Missing required fields for credit check');
+      console.warn('[WARN] ⚠️ Missing required fields for credit check');
       return res.status(400).json({ 
         error: 'Missing required fields',
         timestamp: new Date().toISOString()
       });
     }
     
+    // 3. Database Check
     if (!db) {
-      console.error('[ERROR] ❌ Firebase not initialized for credit check');
-      return res.status(500).json({
+      console.error('[ERROR] ❌ Firebase not initialized');
+      return res.status(503).json({
         success: false,
-        error: 'Firebase not initialized',
+        error: 'Database unavailable',
         timestamp: new Date().toISOString()
       });
     }
     
-    console.log(`[INFO] 📊 Fetching user document for: ${userId}`);
     const userDoc = await db.collection('users').doc(userId).get();
     
     if (!userDoc.exists) {
-      console.log(`[WARN] ⚠️ User not found: ${userId}`);
+      console.warn(`[WARN] ⚠️ User not found: ${userId}`);
       return res.status(404).json({ 
         error: 'User not found',
         timestamp: new Date().toISOString()
@@ -316,26 +323,34 @@ app.post('/api/check-credits', async (req, res) => {
     const userData = userDoc.data();
     let credits = 0;
     
+    // 4. Safe Credit Retrieval (Handle undefined values)
     if (type === 'coverArt') {
       credits = userData.points || 0;
     } else if (type === 'lyricVideo') {
       credits = userData.lyricVideoCredits || 0;
+    } else {
+        console.warn(`[WARN] ⚠️ Unknown credit type requested: ${type}`);
+        // Return 0 instead of erroring, or handle as invalid type
+        credits = 0;
     }
     
-    console.log(`[INFO] ✅ Credits check completed: ${credits} ${type} credits for user ${userId}`);
+    console.log(`[INFO] ✅ Credits check: ${credits} ${type} credits available`);
     
-    res.json({
+    return res.json({
       success: true,
       credits,
       type,
       userId,
       timestamp: new Date().toISOString()
     });
+
   } catch (error) {
-    console.error('[ERROR] ❌ Error checking credits:', error);
-    res.status(500).json({ 
+    console.error('[ERROR] ❌ Exception in /api/check-credits:', error);
+    // Ensure we always return JSON, even on crash
+    return res.status(500).json({ 
       success: false,
-      error: error.message,
+      error: 'Internal Server Error during credit check',
+      details: error.message, 
       timestamp: new Date().toISOString()
     });
   }
@@ -345,63 +360,78 @@ app.post('/api/check-credits', async (req, res) => {
 app.post('/api/deduct-credits', async (req, res) => {
   try {
     console.log('[INFO] 💳 Deduct credits request received');
-    const authHeader = req.headers.authorization || '';
-    const token = authHeader.startsWith('Bearer ') ? authHeader.split('Bearer ')[1] : null;
-    if (!token) {
-      console.log('[WARN] ⚠️ No auth token provided for credit deduction');
-      return res.status(401).json({ error: 'Missing auth token' });
+
+    // 1. Auth Header Validation
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      console.warn('[WARN] ⚠️ Invalid or missing Authorization header');
+      return res.status(401).json({ error: 'Missing or invalid auth token' });
     }
 
-    // Verify token and determine uid
+    const token = authHeader.split('Bearer ')[1];
     let uid;
+
+    // 2. Token Verification
     try {
-      console.log('[INFO] 🔐 Verifying ID token...');
       const decoded = await admin.auth().verifyIdToken(token);
       uid = decoded.uid;
-      console.log(`[INFO] ✅ Token verified for user: ${uid}`);
     } catch (err) {
       console.error('[ERROR] ❌ Token verification failed:', err.message);
-      return res.status(401).json({ error: 'Invalid auth token' });
+      return res.status(403).json({ error: 'Invalid or expired auth token' });
+    }
+
+    // 3. Payload Validation
+    if (!req.body) {
+         return res.status(400).json({ error: 'Request body missing' });
     }
 
     const { type, amount, reason } = req.body;
-    console.log(`[INFO] 📊 Deducting ${amount} ${type} credits for user ${uid}, reason: ${reason || 'generation'}`);
-    
-    if (!type || !amount) {
-      console.log('[WARN] ⚠️ Missing required fields for credit deduction');
-      return res.status(400).json({ error: 'Missing required fields' });
+    console.log(`[INFO] 📊 Deducting ${amount} ${type} credits for ${uid}. Reason: ${reason}`);
+
+    if (!type || amount === undefined || amount === null) {
+      return res.status(400).json({ error: 'Missing type or amount' });
     }
 
     if (!db) {
-      console.error('[ERROR] ❌ Firebase not initialized for credit deduction');
-      return res.status(500).json({ success: false, error: 'Firebase not initialized' });
+       return res.status(503).json({ success: false, error: 'Database unavailable' });
     }
 
     const userRef = db.collection('users').doc(uid);
 
-    // Run transaction to atomically deduct and record transaction
+    // 4. Atomic Transaction
     const result = await db.runTransaction(async (tx) => {
-      console.log('[INFO] 🔄 Starting Firestore transaction for credit deduction');
       const snap = await tx.get(userRef);
+      
       if (!snap.exists) {
-        console.error(`[ERROR] ❌ User profile not found: ${uid}`);
-        throw new Error('User profile not found');
+        throw new Error('User profile not found'); // Caught by transaction failure
       }
-      const data = snap.data();
-      const field = type === 'coverArt' ? 'points' : (type === 'lyricVideo' ? 'lyricVideoCredits' : null);
-      if (!field) {
-        console.error(`[ERROR] ❌ Invalid credit type: ${type}`);
-        throw new Error('Invalid credit type');
-      }
-      const current = data[field] || 0;
-      console.log(`[INFO] 📊 Current ${type} credits: ${current}, deducting: ${amount}`);
-      if (current < amount) {
-        console.log(`[WARN] ⚠️ Insufficient credits: ${current} available, ${amount} required`);
-        throw new Error('Insufficient credits');
-      }
-      const newVal = current - amount;
-      tx.update(userRef, { [field]: newVal, updatedAt: admin.firestore.FieldValue.serverTimestamp() });
 
+      const data = snap.data();
+      let field = null;
+
+      // Strict mapping
+      if (type === 'coverArt') field = 'points';
+      else if (type === 'lyricVideo') field = 'lyricVideoCredits';
+      
+      if (!field) {
+        throw new Error(`Invalid credit type: ${type}`);
+      }
+
+      const current = data[field] || 0;
+      
+      if (current < amount) {
+        throw new Error(`Insufficient credits: Has ${current}, Needs ${amount}`);
+      }
+
+      const newVal = current - amount;
+      
+      // Update User Balance
+      tx.update(userRef, { 
+          [field]: newVal, 
+          updatedAt: admin.firestore.FieldValue.serverTimestamp() 
+      });
+
+      // Log Transaction Record
       const txRef = db.collection('credit_transactions').doc();
       tx.set(txRef, {
         userId: uid,
@@ -416,19 +446,37 @@ app.post('/api/deduct-credits', async (req, res) => {
       return { remaining: newVal, transactionId: txRef.id };
     });
 
-    console.log(`[INFO] ✅ Successfully deducted ${amount} ${type} credits. New balance: ${result.remaining}`);
+    console.log(`[INFO] ✅ Deducted successfully. New balance: ${result.remaining}`);
     
-    res.json({ 
+    return res.json({ 
       success: true, 
       remaining: result.remaining, 
       transactionId: result.transactionId,
       message: `Deducted ${amount} ${type} credits successfully`
     });
+
   } catch (error) {
-    console.error('[ERROR] ❌ Error deducting credits:', error);
-    res.status(500).json({ 
+    console.error('[ERROR] ❌ Error in /api/deduct-credits:', error);
+
+    // Determine Status Code based on error message
+    let statusCode = 500;
+    let errorMessage = 'Internal Server Error';
+
+    if (error.message.includes('Insufficient credits')) {
+        statusCode = 402; // Payment Required
+        errorMessage = 'Insufficient credits';
+    } else if (error.message.includes('User profile not found')) {
+        statusCode = 404;
+        errorMessage = 'User profile not found';
+    } else if (error.message.includes('Invalid credit type')) {
+        statusCode = 400;
+        errorMessage = 'Invalid credit type';
+    }
+
+    return res.status(statusCode).json({ 
       success: false,
-      error: error.message,
+      error: errorMessage,
+      details: error.message, // Helpful for debugging
       timestamp: new Date().toISOString()
     });
   }
@@ -440,41 +488,34 @@ app.get('/api/transactions/:userId', async (req, res) => {
     const { userId } = req.params;
     const { limit = 50, type } = req.query;
     
-    console.log(`[INFO] 📋 Fetching transaction history for user: ${userId}, type: ${type || 'all'}`);
-    
+    // Ensure DB is ready
     if (!db) {
-      console.error('[ERROR] ❌ Firebase not initialized for transaction history');
-      return res.status(500).json({
-        success: false,
-        error: 'Firebase not initialized',
-        timestamp: new Date().toISOString()
-      });
+        return res.status(503).json({ success: false, error: 'Database unavailable' });
     }
-    
+
     let query = db.collection('credit_transactions')
       .where('userId', '==', userId)
       .orderBy('date', 'desc')
-      .limit(parseInt(limit));
+      .limit(parseInt(limit) || 50); // Fallback if parse fails
     
     if (type) {
       query = query.where('creditType', '==', type);
     }
     
     const snapshot = await query.get();
-    const transactions = [];
-    
-    snapshot.forEach(doc => {
+    const transactions = snapshot.docs.map(doc => {
       const data = doc.data();
-      transactions.push({
+      return {
         id: doc.id,
         ...data,
-        date: data.date?.toDate?.()?.toISOString() || data.date
-      });
+        // Safe date conversion
+        date: data.date && typeof data.date.toDate === 'function' 
+              ? data.date.toDate().toISOString() 
+              : (data.date || new Date().toISOString())
+      };
     });
     
-    console.log(`[INFO] ✅ Retrieved ${transactions.length} transactions for user: ${userId}`);
-    
-    res.json({ 
+    return res.json({ 
       success: true,
       transactions,
       count: transactions.length,
@@ -483,7 +524,7 @@ app.get('/api/transactions/:userId', async (req, res) => {
     });
   } catch (error) {
     console.error('[ERROR] ❌ Error fetching transactions:', error);
-    res.status(500).json({ 
+    return res.status(500).json({ 
       success: false,
       error: error.message,
       timestamp: new Date().toISOString()
@@ -496,32 +537,17 @@ app.get('/api/credits/:userId', async (req, res) => {
   try {
     const { userId } = req.params;
     
-    console.log(`[INFO] 💰 Fetching credit balance for user: ${userId}`);
-    
-    if (!db) {
-      console.error('[ERROR] ❌ Firebase not initialized for credit balance');
-      return res.status(500).json({
-        success: false,
-        error: 'Firebase not initialized',
-        timestamp: new Date().toISOString()
-      });
-    }
+    if (!db) return res.status(503).json({ error: 'Database unavailable' });
     
     const userDoc = await db.collection('users').doc(userId).get();
     
     if (!userDoc.exists) {
-      console.log(`[WARN] ⚠️ User not found for credit balance: ${userId}`);
-      return res.status(404).json({ 
-        error: 'User not found',
-        timestamp: new Date().toISOString()
-      });
+      return res.status(404).json({ error: 'User not found' });
     }
     
     const userData = userDoc.data();
     
-    console.log(`[INFO] ✅ Credit balance retrieved for user: ${userId}`);
-    
-    res.json({
+    return res.json({
       success: true,
       userId,
       credits: {
@@ -543,11 +569,7 @@ app.get('/api/credits/:userId', async (req, res) => {
     });
   } catch (error) {
     console.error('[ERROR] ❌ Error getting credit balance:', error);
-    res.status(500).json({ 
-      success: false,
-      error: error.message,
-      timestamp: new Date().toISOString()
-    });
+    return res.status(500).json({ success: false, error: error.message });
   }
 });
 
@@ -557,37 +579,26 @@ app.get('/api/purchases/:userId', async (req, res) => {
     const { userId } = req.params;
     const { limit = 20 } = req.query;
     
-    console.log(`[INFO] 🛍️ Fetching purchases for user: ${userId}`);
-    
-    if (!db) {
-      console.error('[ERROR] ❌ Firebase not initialized for purchases');
-      return res.status(500).json({
-        success: false,
-        error: 'Firebase not initialized',
-        timestamp: new Date().toISOString()
-      });
-    }
+    if (!db) return res.status(503).json({ error: 'Database unavailable' });
     
     const query = db.collection('purchases')
       .where('userId', '==', userId)
       .orderBy('date', 'desc')
-      .limit(parseInt(limit));
+      .limit(parseInt(limit) || 20);
     
     const snapshot = await query.get();
-    const purchases = [];
-    
-    snapshot.forEach(doc => {
+    const purchases = snapshot.docs.map(doc => {
       const data = doc.data();
-      purchases.push({
+      return {
         id: doc.id,
         ...data,
-        date: data.date?.toDate?.()?.toISOString() || data.date
-      });
+        date: data.date && typeof data.date.toDate === 'function'
+              ? data.date.toDate().toISOString() 
+              : (data.date || new Date().toISOString())
+      };
     });
     
-    console.log(`[INFO] ✅ Retrieved ${purchases.length} purchases for user: ${userId}`);
-    
-    res.json({
+    return res.json({
       success: true,
       purchases,
       count: purchases.length,
@@ -596,11 +607,7 @@ app.get('/api/purchases/:userId', async (req, res) => {
     });
   } catch (error) {
     console.error('[ERROR] ❌ Error fetching purchases:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message,
-      timestamp: new Date().toISOString()
-    });
+    return res.status(500).json({ success: false, error: error.message });
   }
 });
 
