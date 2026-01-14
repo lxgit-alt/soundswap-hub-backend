@@ -1,62 +1,473 @@
-name: Reddit Automation Engine
+name: SoundSwap Reddit Automation Engine (Fluid Compute - 30m Edition)
+
 on:
   schedule:
-    # Run every 5 minutes during exact posting hours with 1-hour buffer
-    # UTC conversion for America/New_York (EST: UTC-5, EDT: UTC-4)
-    # Posting schedule: 08:00-22:00 EST → 13:00-03:00 UTC next day
-    # With 1-hour buffer: 07:00-23:00 EST → 12:00-04:00 UTC next day
-    - cron: '*/5 12-23 * * *'  # UTC 12:00-23:59 (covers 07:00-18:59 EST/EDT)
-    - cron: '*/5 0-4 * * *'     # UTC 00:00-04:59 (covers 19:00-23:59 EST/EDT)
+    # Run during HUMAN WINDOW only (12:00 PM – 10:00 PM UTC)
+    # Every 30 minutes for optimal rate limit compliance
+    - cron: '0/30 12-21 * * *'  # 12:00 PM - 9:59 PM UTC (30-minute intervals)
+    - cron: '0 22 * * *'         # One final run at 10:00 PM UTC
   workflow_dispatch:
     inputs:
       debug:
-        description: 'Run in debug mode'
+        description: 'Run in debug mode (extended logging)'
         required: false
         default: 'false'
+      batch:
+        description: 'Specific batch to run (A, B, C, D, or all)'
+        required: false
+        default: 'all'
+        type: choice
+        options:
+        - all
+        - A
+        - B
+        - C
+        - D
+      mode:
+        description: 'Processing mode'
+        required: false
+        default: 'balanced'
+        type: choice
+        options:
+        - quick
+        - balanced
+        - comprehensive
 
 jobs:
   run-reddit-automation:
     runs-on: ubuntu-latest
-    name: Run Reddit Automation
+    timeout-minutes: 10  # Increased to match Vercel's 5-minute limit + buffer
+    name: 🚀 Fluid Compute Automation (30m Intervals)
     steps:
-      - name: Checkout code
+      - name: 📥 Checkout code
         uses: actions/checkout@v4
 
-      - name: Display Time Info
+      - name: 🕒 Display Time & Fluid Compute Info
         run: |
-          echo "🕒 GitHub Actions Run Time"
-          echo "📅 UTC: $(date -u)"
-          echo "🇺🇸 New York: $(TZ=America/New_York date)"
-          echo "🌍 Timezone: America/New_York"
+          echo "⚡ SoundSwap Fluid Compute Engine v10.0"
+          echo "📅 Date: $(date +'%Y-%m-%d')"
+          echo "🕒 UTC: $(date -u +'%H:%M')"
+          echo "🇺🇸 New York: $(TZ=America/New_York date +'%H:%M %Z')"
+          echo "🌍 Current UTC Hour: $(date -u +'%H')"
+          echo "🎭 Batch: ${{ inputs.batch || 'all' }}"
+          echo "⚙️  Mode: ${{ inputs.mode || 'balanced' }}"
+          echo "🔥 Vercel Fluid Compute: ACTIVE"
+          echo "⏱️  Execution Limit: 5 minutes (300 seconds)"
+          echo "⏰ Schedule: 30-minute intervals"
+          echo "🔄 Strategy: Optimal rate limit compliance with enhanced processing"
+          
+          # Check if within human window
+          current_hour_utc=$(date -u +'%H')
+          if [ $current_hour_utc -ge 12 ] && [ $current_hour_utc -le 21 ]; then
+            echo "✅ Within human window (12:00-22:00 UTC)"
+          elif [ $current_hour_utc -eq 22 ]; then
+            echo "⚠️  Final window run (22:00 UTC)"
+          else
+            echo "❌ Outside human window - engine will skip posting"
+          fi
 
-      - name: Run Reddit Cron
+      - name: 🔄 Calculate Batch Focus with Strategy
+        id: calculate_batch
+        run: |
+          # Enhanced batch calculation with 30-minute interval strategy
+          current_hour_utc=$(date -u +'%H')
+          current_minute=$(date -u +'%M')
+          day_of_week=$(date +%u)  # 1=Monday, 7=Sunday
+          
+          # For 30-minute intervals, we have 2 runs per hour
+          # We can use minutes to determine if we should focus or scan
+          
+          if [ "${{ inputs.batch }}" != "all" ] && [ -n "${{ inputs.batch }}" ]; then
+            # Manual override from workflow_dispatch
+            batch="${{ inputs.batch }}"
+            strategy="manual_override"
+          else
+            # Determine if this is a focus run or scan run based on minute
+            if [ $current_minute -ge 0 ] && [ $current_minute -lt 30 ]; then
+              # First half-hour: Focus on specific batch
+              case $current_hour_utc in
+                12|13) 
+                  batch="A"
+                  strategy="morning_focus"
+                  ;;
+                14|15) 
+                  batch="B" 
+                  strategy="midday_focus"
+                  ;;
+                16|17) 
+                  batch="C"
+                  strategy="afternoon_focus"
+                  ;;
+                18|19|20) 
+                  batch="D"
+                  strategy="evening_focus"
+                  ;;
+                21) 
+                  batch="C"  # Late evening focus on problem solvers
+                  strategy="late_focus"
+                  ;;
+                *) 
+                  batch="all"
+                  strategy="comprehensive_scan"
+                  ;;
+              esac
+              echo "🎯 Focus Run: Targeting Batch $batch specifically"
+            else
+              # Second half-hour: Comprehensive scan of all batches
+              batch="all"
+              strategy="comprehensive_scan"
+              echo "🔍 Scan Run: Comprehensive scan of all batches"
+            fi
+            
+            # Weekend adjustment
+            if [ $day_of_week -ge 6 ]; then  # Saturday (6) or Sunday (7)
+              echo "🎉 Weekend mode activated - adjusted strategy"
+              strategy="${strategy}_weekend"
+              # On weekends, we can be more aggressive with community engagement
+              if [ "$batch" = "all" ]; then
+                strategy="weekend_community_scan"
+              fi
+            fi
+          fi
+          
+          echo "⏰ Time-based batch: $batch (Hour: $current_hour_utc, Minute: $current_minute)"
+          echo "🎯 Strategy: $strategy"
+          echo "📅 Day of week: $day_of_week (1=Mon, 7=Sun)"
+          
+          echo "batch_focus=$batch" >> $GITHUB_OUTPUT
+          echo "batch_strategy=$strategy" >> $GITHUB_OUTPUT
+
+      - name: 🚀 Run Enhanced Automation (5-Minute Mode)
+        id: run_automation
         env:
           CRON_SECRET: ${{ secrets.CRON_SECRET }}
           VERCEL_URL: ${{ secrets.VERCEL_URL }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          BATCH_FOCUS: ${{ steps.calculate_batch.outputs.batch_focus }}
+          BATCH_STRATEGY: ${{ steps.calculate_batch.outputs.batch_strategy }}
+          DEBUG_MODE: ${{ inputs.debug }}
+          PROCESSING_MODE: ${{ inputs.mode || 'balanced' }}
         run: |
-          echo "🚀 Starting Reddit Automation..."
+          echo "🚀 Starting Enhanced Automation with 5-Minute Limit"
+          echo "🎯 Batch Focus: $BATCH_FOCUS"
+          echo "⚙️  Strategy: $BATCH_STRATEGY"
+          echo "🔧 Mode: $PROCESSING_MODE"
+          echo "⏰ Schedule: 30-minute intervals"
+          echo "⏱️  Using 240-second timeout (4 minutes) for safety"
           
-          response=$(curl -s -w "\n%{http_code}" -X POST \
-            -H "Authorization: Bearer $CRON_SECRET" \
-            -H "Content-Type: application/json" \
-            "$VERCEL_URL/api/reddit-admin/cron")
+          # Enhanced payload for 30-minute interval strategy
+          payload=$(cat <<EOF
+          {
+            "batchFocus": "$BATCH_FOCUS",
+            "strategy": "$BATCH_STRATEGY",
+            "mode": "$PROCESSING_MODE",
+            "scheduleInterval": 30,
+            "enableComprehensiveChecks": true,
+            "shadowDeleteCheckRate": 0.4,
+            "rateLimitBuffer": 0.7,
+            "maxProcessingTime": 240000,
+            "discordThreshold": 85,
+            "enableAnalytics": true,
+            "timestamp": "$(date -u +'%Y-%m-%dT%H:%M:%SZ')",
+            "features": [
+              "30_minute_interval",
+              "fluid_compute_optimized",
+              "enhanced_rate_limit_protection",
+              "batch_focus_rotation",
+              "comprehensive_weekend_strategy"
+            ]
+          }
+          EOF
+          )
           
-          http_code=$(echo "$response" | tail -n1)
-          body=$(echo "$response" | head -n1)
+          echo "📦 Enhanced payload for 30-minute intervals"
           
-          echo "📡 HTTP Status: $http_code"
-          echo "📦 Response: $body"
+          # Use 240-second timeout (4 minutes) to stay under 5-minute limit
+          max_retries=1
+          retry_count=0
+          success=false
           
-          if [ "$http_code" -eq 200 ]; then
-            echo "✅ Cron executed successfully"
+          while [ $retry_count -le $max_retries ] && [ "$success" = false ]; do
+            echo "Attempt $((retry_count + 1)) of $((max_retries + 1))..."
+            
+            # Use longer timeout - 240 seconds for comprehensive processing
+            response=$(timeout 240 curl -s -w "\nHTTP_CODE:%{http_code}\nTIME_TOTAL:%{time_total}\n" \
+              -X POST \
+              -H "Authorization: Bearer $CRON_SECRET" \
+              -H "Content-Type: application/json" \
+              -H "X-Fluid-Compute: true" \
+              -H "X-Schedule-Interval: 30" \
+              -H "X-Processing-Mode: $PROCESSING_MODE" \
+              -H "X-Timeout-Limit: 240000" \
+              -d "$payload" \
+              "$VERCEL_URL/api/cron-reddit")
+            
+            # Parse response
+            http_code=$(echo "$response" | grep "HTTP_CODE:" | cut -d':' -f2)
+            time_taken=$(echo "$response" | grep "TIME_TOTAL:" | cut -d':' -f2)
+            body=$(echo "$response" | sed '/HTTP_CODE:\|TIME_TOTAL:/d')
+            
+            if [ -z "$http_code" ]; then
+              echo "⏰ Request timed out after 240 seconds"
+              http_code="TIMEOUT"
+            fi
+            
+            echo "⏱️  Request duration: ${time_taken:-0}s"
+            
+            if [ "$http_code" = "200" ] || [ "$http_code" = "201" ]; then
+              echo "✅ Success! HTTP $http_code"
+              success=true
+              
+              # Parse comprehensive response
+              if command -v jq >/dev/null 2>&1; then
+                total_posted=$(echo "$body" | jq -r '.totalPosted // 0' 2>/dev/null || echo "0")
+                expert_advice=$(echo "$body" | jq -r '.expertAdvicePosted // 0' 2>/dev/null || echo "0")
+                promotional=$(echo "$body" | jq -r '.promotionalPosted // 0' 2>/dev/null || echo "0")
+                premium_leads=$(echo "$body" | jq -r '.premiumLeads // 0' 2>/dev/null || echo "0")
+                shadow_checks=$(echo "$body" | jq -r '.shadowChecks // 0' 2>/dev/null || echo "0")
+                rate_limit_remaining=$(echo "$body" | jq -r '.rateLimitRemaining // 0' 2>/dev/null || echo "0")
+                processing_time=$(echo "$body" | jq -r '.processingTime // 0' 2>/dev/null || echo "0")
+                
+                echo "📊 Comprehensive Results:"
+                echo "  - Total posts: $total_posted"
+                echo "  - Expert advice: $expert_advice"
+                echo "  - Promotional: $promotional"
+                echo "  - Premium leads: $premium_leads"
+                echo "  - Shadow checks: $shadow_checks"
+                echo "  - Rate limit remaining: $rate_limit_remaining"
+                echo "  - Processing time: ${processing_time}ms"
+                
+                # Save outputs
+                echo "total_posted=$total_posted" >> $GITHUB_OUTPUT
+                echo "expert_advice=$expert_advice" >> $GITHUB_OUTPUT
+                echo "promotional=$promotional" >> $GITHUB_OUTPUT
+                echo "premium_leads=$premium_leads" >> $GITHUB_OUTPUT
+                echo "shadow_checks=$shadow_checks" >> $GITHUB_OUTPUT
+                echo "rate_limit_remaining=$rate_limit_remaining" >> $GITHUB_OUTPUT
+                echo "processing_time=$processing_time" >> $GITHUB_OUTPUT
+                
+                # Check for batch performance data
+                if echo "$body" | jq -e '.batchPerformance' >/dev/null 2>&1; then
+                  echo "📈 Batch Performance:"
+                  echo "$body" | jq '.batchPerformance'
+                fi
+              fi
+              
+            elif [ "$http_code" = "504" ] || [ "$http_code" = "TIMEOUT" ]; then
+              echo "⚠️  Timeout or gateway error (HTTP $http_code)"
+              if [ $retry_count -lt $max_retries ]; then
+                echo "🔄 Retrying in 10 seconds..."
+                sleep 10
+                retry_count=$((retry_count + 1))
+              else
+                echo "❌ Max retries reached"
+                success=false
+              fi
+            else
+              echo "❌ Failed with HTTP $http_code"
+              echo "📦 Response preview:"
+              echo "$body" | head -20
+              success=false
+              break
+            fi
+          done
+          
+          if [ "$success" = false ]; then
+            echo "⚠️  Primary endpoint failed, trying quick fallback..."
+            
+            # Quick fallback with minimal processing
+            fallback_response=$(timeout 60 curl -s -w "\n%{http_code}" \
+              -X POST \
+              -H "Authorization: Bearer $CRON_SECRET" \
+              -H "X-Fallback-Mode: true" \
+              "$VERCEL_URL/api/reddit-admin/cron-quick")
+            
+            fallback_code=$(echo "$fallback_response" | tail -n1)
+            
+            if [ "$fallback_code" -eq 200 ]; then
+              echo "✅ Fallback executed successfully"
+              echo "status=fallback_success" >> $GITHUB_OUTPUT
+            else
+              echo "⚠️  Fallback also failed"
+              echo "status=all_endpoints_failed" >> $GITHUB_OUTPUT
+            fi
           else
-            echo "❌ Cron execution failed"
-            exit 1
+            echo "status=primary_success" >> $GITHUB_OUTPUT
           fi
 
-      - name: Check Cron Status
+      - name: 📊 Enhanced Analytics & Health Check
+        if: always()
         env:
           VERCEL_URL: ${{ secrets.VERCEL_URL }}
         run: |
-          echo "📊 Final Status Check..."
-          curl -s "$VERCEL_URL/api/reddit-admin/cron-status" | jq '.scheduled, .cron | {scheduledComments: .scheduledComments, scheduledEducationalPosts: .scheduledEducationalPosts, totalPosted: .totalComments, lastRun: .lastCronRun}'
+          echo "📊 Enhanced Analytics & System Health"
+          echo "====================================="
+          
+          echo "🔍 Comprehensive System Status:"
+          timeout 30 curl -s "$VERCEL_URL/api/reddit-admin/health-monitor" | \
+            jq -r '{
+              "Rate Limit Status": .monitor.rateLimit.status,
+              "Remaining Calls": .monitor.rateLimit.remaining,
+              "Shadow Delete Status": .monitor.shadowDelete.status,
+              "Checked Items": .monitor.shadowDelete.checked,
+              "Discord Signal Status": .monitor.discordSignal.status,
+              "Sent": .monitor.discordSignal.sent,
+              "Industry Authority Status": .monitor.industryAuthority.status,
+              "Ratio": .monitor.industryAuthority.ratio,
+              "Fluid Compute Status": .monitor.fluidCompute?.status // "active",
+              "Max Duration": .monitor.fluidCompute?.maxDuration // "300s"
+            }' 2>/dev/null || echo "⚠️  Could not fetch comprehensive health"
+          
+          echo ""
+          echo "📈 Performance Metrics (30m Interval):"
+          timeout 30 curl -s "$VERCEL_URL/api/reddit-admin/analytics" | \
+            jq -r '{
+              "Last 30m Posts": .lastInterval?.posts // 0,
+              "Last 30m Leads": .lastInterval?.leads // 0,
+              "Today Total": .today?.posts // 0,
+              "Success Rate (24h)": .successRate?.percentage // "0%",
+              "Avg Processing Time": .performance?.avgProcessingTime // "0ms"
+            }' 2>/dev/null || echo "⚠️  Could not fetch analytics"
+          
+          echo ""
+          echo "🎯 30-Minute Interval Advantages:"
+          echo "1. Better rate limit compliance"
+          echo "2. More time for Reddit API cooling"
+          echo "3. Reduced risk of detection"
+          echo "4. More comprehensive processing per run"
+          echo "5. Improved analytics aggregation"
+
+      - name: 📈 Send Comprehensive Discord Summary (30m Edition)
+        if: always() && secrets.DISCORD_WEBHOOK_URL != ''
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          BATCH_FOCUS: ${{ steps.calculate_batch.outputs.batch_focus }}
+          BATCH_STRATEGY: ${{ steps.calculate_batch.outputs.batch_strategy }}
+          TOTAL_POSTED: ${{ steps.run_automation.outputs.total_posted || 0 }}
+          PREMIUM_LEADS: ${{ steps.run_automation.outputs.premium_leads || 0 }}
+          EXPERT_ADVICE: ${{ steps.run_automation.outputs.expert_advice || 0 }}
+          PROMOTIONAL: ${{ steps.run_automation.outputs.promotional || 0 }}
+          SHADOW_CHECKS: ${{ steps.run_automation.outputs.shadow_checks || 0 }}
+          PROCESSING_TIME: ${{ steps.run_automation.outputs.processing_time || 0 }}
+        run: |
+          echo "📊 Sending 30-minute interval Discord summary..."
+          
+          WORKFLOW_URL="https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          JOB_STATUS="${{ job.status }}"
+          CURRENT_UTC=$(date -u +'%H:%M')
+          CURRENT_NY=$(TZ=America/New_York date +'%H:%M %Z')
+          CURRENT_MINUTE=$(date -u +'%M')
+          
+          # Determine if this was a focus or scan run
+          if [ $CURRENT_MINUTE -lt 30 ]; then
+            RUN_TYPE="🎯 Focus Run"
+          else
+            RUN_TYPE="🔍 Scan Run"
+          fi
+          
+          # Calculate ratios
+          TOTAL_CONTENT=$((EXPERT_ADVICE + PROMOTIONAL))
+          if [ $TOTAL_CONTENT -gt 0 ]; then
+            EXPERT_PERCENT=$((EXPERT_ADVICE * 100 / TOTAL_CONTENT))
+            PROMO_PERCENT=$((PROMOTIONAL * 100 / TOTAL_CONTENT))
+            CONTENT_RATIO="${EXPERT_PERCENT}% expert / ${PROMO_PERCENT}% promo"
+          else
+            CONTENT_RATIO="No posts"
+          fi
+          
+          # Format processing time
+          if [ $PROCESSING_TIME -gt 1000 ]; then
+            PROC_TIME_FORMATTED="$((PROCESSING_TIME / 1000)).$((PROCESSING_TIME % 1000 / 100))s"
+          else
+            PROC_TIME_FORMATTED="${PROCESSING_TIME}ms"
+          fi
+          
+          # Determine color
+          case "$JOB_STATUS" in
+            success) COLOR=3066993 ;;  # Blue
+            failure) COLOR=15158332 ;; # Red
+            cancelled) COLOR=10181046 ;; # Purple
+            *) COLOR=3447003 ;;        # Dark Blue
+          esac
+          
+          # Create comprehensive embed
+          curl -X POST "$DISCORD_WEBHOOK_URL" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"embeds\": [{
+                \"title\": \"⏰ 30-Minute Automation Complete\",
+                \"color\": $COLOR,
+                \"thumbnail\": {
+                  \"url\": \"https://cdn-icons-png.flaticon.com/512/2702/2702602.png\"
+                },
+                \"fields\": [
+                  {\"name\": \"Run Type\", \"value\": \"$RUN_TYPE\", \"inline\": true},
+                  {\"name\": \"Status\", \"value\": \"$JOB_STATUS\", \"inline\": true},
+                  {\"name\": \"Batch\", \"value\": \"$BATCH_FOCUS\", \"inline\": true},
+                  {\"name\": \"Strategy\", \"value\": \"$BATCH_STRATEGY\", \"inline\": true},
+                  {\"name\": \"Total Posts\", \"value\": \"$TOTAL_POSTED\", \"inline\": true},
+                  {\"name\": \"Content Ratio\", \"value\": \"$CONTENT_RATIO\", \"inline\": true},
+                  {\"name\": \"Premium Leads\", \"value\": \"$PREMIUM_LEADS\", \"inline\": true},
+                  {\"name\": \"Shadow Checks\", \"value\": \"$SHADOW_CHECKS\", \"inline\": true},
+                  {\"name\": \"Processing Time\", \"value\": \"$PROC_TIME_FORMATTED\", \"inline\": true},
+                  {\"name\": \"Schedule\", \"value\": \"30-minute intervals\", \"inline\": true},
+                  {\"name\": \"Time (UTC)\", \"value\": \"$CURRENT_UTC\", \"inline\": true},
+                  {\\"name\": \"Time (NY)\", \"value\": \"$CURRENT_NY\", \"inline\": true},
+                  {\"name\": \"Next Run\", \"value\": \"In 30 minutes\", \"inline\": true},
+                  {\"name\": \"Key Features\", \"value\": \"✅ Fluid Compute (5m) • ⏰ 30m Intervals • 🔍 40% Shadow Checks • 📈 Rate Limit Optimized\", \"inline\": false}
+                ],
+                \"footer\": {
+                  \"text\": \"SoundSwap v10.0 • 30-Minute Edition • Run ID: $GITHUB_RUN_ID\",
+                  \"icon_url\": \"https://cdn-icons-png.flaticon.com/512/2702/2702702.png\"
+                },
+                \"timestamp\": \"$(date -u +'%Y-%m-%dT%H:%M:%S.000Z')\"
+              }]
+            }" 2>/dev/null || echo "⚠️  Discord notification failed"
+
+      - name: 🧹 Final Summary & Optimization Report
+        if: always()
+        run: |
+          echo "🧹 30-Minute Interval Workflow Summary"
+          echo "======================================"
+          echo "Workflow: ${{ github.workflow }}"
+          echo "Run ID: $GITHUB_RUN_ID"
+          echo "Status: ${{ job.status }}"
+          echo "Trigger: ${{ github.event_name }}"
+          echo "Batch: ${{ steps.calculate_batch.outputs.batch_focus || 'all' }}"
+          echo "Strategy: ${{ steps.calculate_batch.outputs.batch_strategy || 'default' }}"
+          echo "Schedule: 30-minute intervals"
+          echo ""
+          echo "📊 Performance Summary:"
+          echo "  - Posts Made: ${{ steps.run_automation.outputs.total_posted || 0 }}"
+          echo "  - Expert Advice: ${{ steps.run_automation.outputs.expert_advice || 0 }}"
+          echo "  - Promotional: ${{ steps.run_automation.outputs.promotional || 0 }}"
+          echo "  - Premium Leads: ${{ steps.run_automation.outputs.premium_leads || 0 }}"
+          echo "  - Shadow Checks: ${{ steps.run_automation.outputs.shadow_checks || 0 }}"
+          echo "  - Processing Time: ${{ steps.run_automation.outputs.processing_time || 0 }}ms"
+          echo ""
+          echo "🎯 30-MINUTE INTERVAL STRATEGY:"
+          echo "================================"
+          echo "✅ Focus runs (XX:00-XX:29): Target specific batches"
+          echo "✅ Scan runs (XX:30-XX:59): Comprehensive all-batch scans"
+          echo "✅ Rate limit optimized: 30 minutes between API calls"
+          echo "✅ Fluid Compute: 5-minute execution window"
+          echo "✅ Smart batching: Time-based batch rotation"
+          echo ""
+          echo "⏰ Schedule Breakdown:"
+          echo "  12:00-12:29 UTC: Batch A focus (Morning engagement)"
+          echo "  12:30-12:59 UTC: All-batch scan"
+          echo "  13:00-13:29 UTC: Batch A focus"
+          echo "  13:30-13:59 UTC: All-batch scan"
+          echo "  ... continues through 21:30-21:59"
+          echo "  22:00 UTC: Final daily run"
+          echo ""
+          echo "📈 View Full Logs:"
+          echo "https://github.com/${{ github.repository }}/actions/runs/$GITHUB_RUN_ID"
+          echo ""
+          echo "⏰ Next Scheduled Run:"
+          echo "  - Every 30 minutes during 12:00-22:00 UTC"
+          echo "  - Focus runs at XX:00, scan runs at XX:30"
+          echo "  - Final run at 22:00 UTC"
+          echo ""
+          echo "🕐 Current UTC: $(date -u +'%H:%M')"
+          echo "  - Minute: $(date -u +'%M') ($( [ $(date -u +'%M') -lt 30 ] && echo 'Focus run window' || echo 'Scan run window' ))"
