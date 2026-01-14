@@ -163,6 +163,155 @@ const getDodoClient = () => {
   return dodoClient;
 };
 
+// ==================== ADD /api/payments/status ENDPOINT ====================
+
+// Payment system status endpoint (FAST - no external dependencies)
+router.get('/status', (req, res) => {
+  try {
+    console.log('[INFO] 🔍 Checking Dodo Payments service status');
+    
+    const DODO_API_KEY = process.env.DODO_PAYMENTS_API_KEY;
+    const DODO_WEBHOOK_KEY = process.env.DODO_PAYMENTS_WEBHOOK_KEY;
+    const FIREBASE_LOADED = isFirebaseLoaded;
+    const FIREBASE_AUTH_AVAILABLE = isFirebaseAuthAvailable();
+    
+    // Test Dodo API connection with short timeout
+    let dodoApiStatus = 'unknown';
+    let dodoAccountInfo = null;
+    
+    // Simple fetch test without async/await to keep response fast
+    const testDodoConnection = async () => {
+      if (!DODO_API_KEY) return 'not_configured';
+      
+      try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 2000);
+        
+        const response = await fetch('https://api.dodopayments.com/v1/account', {
+          method: 'GET',
+          headers: {
+            'Authorization': `Bearer ${DODO_API_KEY}`
+          },
+          signal: controller.signal
+        });
+        
+        clearTimeout(timeoutId);
+        
+        if (response.ok) {
+          const result = await response.json();
+          dodoAccountInfo = {
+            id: result.id,
+            name: result.name,
+            email: result.email,
+            mode: result.mode || 'unknown'
+          };
+          return 'connected';
+        } else {
+          return 'connection_failed';
+        }
+      } catch (error) {
+        if (error.name === 'AbortError') {
+          return 'timeout';
+        }
+        return 'error';
+      }
+    };
+    
+    // Test all services concurrently
+    Promise.all([
+      testDodoConnection(),
+      // Add other service tests here if needed
+    ]).then(([dodoStatus]) => {
+      dodoApiStatus = dodoStatus;
+      
+      const statusResponse = {
+        success: true,
+        service: 'dodo-payments',
+        status: dodoApiStatus === 'connected' ? 'operational' : 
+                dodoApiStatus === 'not_configured' ? 'configuration_needed' :
+                dodoApiStatus === 'timeout' ? 'degraded' : 'unavailable',
+        configuration: {
+          dodoApiKey: DODO_API_KEY ? 'configured' : 'missing',
+          dodoWebhookKey: DODO_WEBHOOK_KEY ? 'configured' : 'missing',
+          firebaseAuth: FIREBASE_AUTH_AVAILABLE ? 'available' : 'not_loaded',
+          environment: process.env.NODE_ENV || 'development',
+          lazyLoading: 'enabled'
+        },
+        services: {
+          dodoApi: {
+            status: dodoApiStatus,
+            account: dodoAccountInfo,
+            message: dodoApiStatus === 'connected' ? '✅ Connected to Dodo Payments API' :
+                    dodoApiStatus === 'not_configured' ? '⚠️ API key not configured' :
+                    dodoApiStatus === 'timeout' ? '⚠️ API timeout - service slow' :
+                    dodoApiStatus === 'connection_failed' ? '❌ Connection failed' : '❌ Unknown error'
+          },
+          firebaseAuth: {
+            loaded: FIREBASE_LOADED,
+            available: FIREBASE_AUTH_AVAILABLE,
+            message: FIREBASE_AUTH_AVAILABLE ? '✅ Firebase auth ready' : '⚠️ Firebase auth not loaded (lazy loading)'
+          },
+          productCatalog: {
+            count: Object.keys(PRODUCT_CATALOG).length,
+            message: `✅ ${Object.keys(PRODUCT_CATALOG).length} products available`
+          }
+        },
+        endpoints: {
+          createCheckout: 'POST /api/create-checkout',
+          creditCheck: 'GET /api/create-checkout/credits',
+          creditDeduction: 'POST /api/create-checkout/deduct-credits',
+          products: 'GET /api/create-checkout/products',
+          sessionStatus: 'GET /api/create-checkout/session/:sessionId',
+          testDodo: 'GET /api/create-checkout/test-dodo',
+          testWebhook: 'POST /api/create-checkout/test-webhook',
+          webhook: 'POST /api/create-checkout/webhook',
+          status: 'GET /api/create-checkout/status'
+        },
+        productTypes: {
+          coverArt: Object.values(PRODUCT_CATALOG).filter(p => p.creditType === 'coverArt').length,
+          lyricVideo: Object.values(PRODUCT_CATALOG).filter(p => p.creditType === 'lyricVideo').length,
+          total: Object.keys(PRODUCT_CATALOG).length
+        },
+        performance: {
+          lazyLoading: true,
+          timeoutProtection: true,
+          note: 'Firebase loads only when authentication is needed'
+        },
+        systemInfo: {
+          version: '1.2.0',
+          environment: process.env.NODE_ENV || 'development',
+          subscriptionSupport: 'disabled',
+          oneTimePurchases: 'enabled'
+        },
+        timestamp: new Date().toISOString()
+      };
+      
+      res.json(statusResponse);
+      
+    }).catch(error => {
+      console.error('[ERROR] ❌ Status check error:', error);
+      res.status(500).json({
+        success: false,
+        service: 'dodo-payments',
+        status: 'check_failed',
+        error: 'Status check failed',
+        details: process.env.NODE_ENV === 'development' ? error.message : undefined,
+        timestamp: new Date().toISOString()
+      });
+    });
+    
+  } catch (error) {
+    console.error('[ERROR] ❌ Status endpoint error:', error.message);
+    res.status(500).json({
+      success: false,
+      service: 'dodo-payments',
+      status: 'error',
+      error: 'Internal server error',
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
 // ==================== CREDIT MANAGEMENT FUNCTIONS ====================
 
 // Add credits to user function (reusable)
@@ -1060,5 +1209,6 @@ console.log('[INFO] 🔄 Lazy loading enabled: Firebase Admin loads only for tok
 console.log('[INFO] ⏱️  Timeout protection: 8s request timeout, 5s API timeouts');
 console.log('[INFO] ⚠️  NOTE: Subscriptions have been removed - only one-time purchases available');
 console.log('[INFO] 💳 Credit management endpoints added: /credits, /deduct-credits, /webhook');
+console.log('[INFO] 📊 Status endpoint added: GET /api/create-checkout/status');
 
 export default router;

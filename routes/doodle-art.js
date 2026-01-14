@@ -184,7 +184,106 @@ const downloadImage = async (url) => {
   }
 };
 
-// Test Replicate connection
+// ============================================
+// TEST ENDPOINTS
+// ============================================
+
+// Test endpoint similar to /api/deduct-credits/test-connection
+router.get('/test-connection', async (req, res) => {
+  try {
+    console.log('🔍 Testing doodle-art/ai-art API connection...');
+    
+    const testResults = {
+      timestamp: new Date().toISOString(),
+      success: true,
+      services: {}
+    };
+
+    // 1. Test Replicate API
+    if (!process.env.REPLICATE_API_TOKEN) {
+      testResults.services.replicate = {
+        status: 'error',
+        message: 'REPLICATE_API_TOKEN is not configured in environment variables'
+      };
+    } else {
+      try {
+        const scribbleModel = await replicate.models.get("jagilley/controlnet-scribble");
+        testResults.services.replicate = {
+          status: 'connected',
+          model: 'jagilley/controlnet-scribble',
+          message: 'Replicate API connected successfully'
+        };
+      } catch (error) {
+        testResults.services.replicate = {
+          status: 'error',
+          message: `Replicate API connection failed: ${error.message}`
+        };
+      }
+    }
+
+    // 2. Test Firebase connection
+    try {
+      const firestore = await loadFirebaseAdmin();
+      if (firestore) {
+        testResults.services.firebase = {
+          status: 'connected',
+          message: 'Firebase Admin initialized successfully'
+        };
+      } else {
+        testResults.services.firebase = {
+          status: 'warning',
+          message: 'Firebase Admin not initialized - credit system may not work'
+        };
+      }
+    } catch (error) {
+      testResults.services.firebase = {
+        status: 'error',
+        message: `Firebase initialization failed: ${error.message}`
+      };
+    }
+
+    // 3. Check environment variables
+    const requiredEnvVars = ['REPLICATE_API_TOKEN', 'FIREBASE_PROJECT_ID'];
+    testResults.services.environment = {
+      status: 'checking',
+      variables: {}
+    };
+
+    requiredEnvVars.forEach(varName => {
+      const exists = !!process.env[varName];
+      testResults.services.environment.variables[varName] = {
+        configured: exists,
+        value: exists ? '✓ Configured' : '✗ Missing'
+      };
+    });
+
+    // Determine overall status
+    const hasCriticalErrors = Object.values(testResults.services).some(
+      service => service.status === 'error'
+    );
+
+    if (hasCriticalErrors) {
+      testResults.success = false;
+      testResults.message = 'API has configuration issues';
+    } else {
+      testResults.message = 'Doodle-to-Art / AI-Art API is operational';
+    }
+
+    console.log('✅ Test connection completed');
+    res.json(testResults);
+
+  } catch (error) {
+    console.error('❌ Test connection failed:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Test connection failed',
+      message: error.message,
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+// Original test endpoint (kept for backward compatibility)
 router.get('/test', async (req, res) => {
   try {
     console.log('Testing Replicate connection...');
@@ -221,8 +320,12 @@ router.get('/test', async (req, res) => {
   }
 });
 
-// Doodle-to-Art generation endpoint
-router.post('/generate', async (req, res) => {
+// ============================================
+// GENERATE ENDPOINTS - Doodle-Art & AI-Art
+// ============================================
+
+// Handle both /generate and /generate-ai with the same function
+const handleGenerate = async (req, res, endpointType = 'doodle-art') => {
   try {
     const { sketch, prompt, conditioningScale = 0.8, style = "digital art" } = req.body;
 
@@ -253,7 +356,7 @@ router.post('/generate', async (req, res) => {
       });
     }
 
-    console.log('Starting doodle-to-art generation...');
+    console.log(`Starting ${endpointType} generation...`);
     console.log('Prompt:', prompt.substring(0, 100) + (prompt.length > 100 ? '...' : ''));
     console.log('Conditioning scale:', conditioningScale);
     console.log('Style:', style);
@@ -290,7 +393,8 @@ router.post('/generate', async (req, res) => {
         error: creditVerification.error,
         message: creditVerification.message,
         requiredCredits: creditVerification.requiredCredits || 1,
-        available: creditVerification.creditsAvailable
+        available: creditVerification.creditsAvailable,
+        endpoint: endpointType
       });
     }
     
@@ -312,7 +416,8 @@ router.post('/generate', async (req, res) => {
           return res.status(400).json({
             success: false,
             error: 'NSFW',
-            message: 'Whoa there! Let\'s keep it PG-13. Try a different prompt or sketch.'
+            message: 'Whoa there! Let\'s keep it PG-13. Try a different prompt or sketch.',
+            endpoint: endpointType
           });
         }
       }
@@ -320,6 +425,7 @@ router.post('/generate', async (req, res) => {
 
     res.json({
       success: true,
+      endpoint: endpointType,
       generationId: generationId,
       images: output,
       prompt: prompt,
@@ -329,13 +435,13 @@ router.post('/generate', async (req, res) => {
       note: 'AI may not render text accurately. Add text/logo afterwards using editing tools like Canva or Photoshop.',
       features: {
         canAnimate: true,
-        animationEndpoint: '/api/doodle-art/animate',
+        animationEndpoint: endpointType === 'doodle-art' ? '/api/doodle-art/animate' : '/api/ai-art/animate',
         animationCost: '$0.08 - $0.12 per animation'
       }
     });
 
   } catch (error) {
-    console.error('Doodle generation error:', error.message);
+    console.error(`${req.path} generation error:`, error.message);
     
     // REFUND: Revert credits if failure is NOT due to insufficient credits
     const userId = req.body.userId || req.body.uid;
@@ -353,7 +459,8 @@ router.post('/generate', async (req, res) => {
       return res.status(400).json({
         success: false,
         error: 'NSFW',
-        message: 'Content was blocked by safety filters. Please try a different sketch or prompt.'
+        message: 'Content was blocked by safety filters. Please try a different sketch or prompt.',
+        endpoint: req.path.includes('generate-ai') ? 'ai-art' : 'doodle-art'
       });
     }
 
@@ -361,7 +468,8 @@ router.post('/generate', async (req, res) => {
       return res.status(402).json({
         success: false,
         error: 'Insufficient Credits',
-        message: 'Please add credits to your Replicate account or check your payment method.'
+        message: 'Please add credits to your Replicate account or check your payment method.',
+        endpoint: req.path.includes('generate-ai') ? 'ai-art' : 'doodle-art'
       });
     }
 
@@ -369,7 +477,8 @@ router.post('/generate', async (req, res) => {
       return res.status(429).json({
         success: false,
         error: 'Rate Limited',
-        message: 'Too many requests. Please wait a moment and try again.'
+        message: 'Too many requests. Please wait a moment and try again.',
+        endpoint: req.path.includes('generate-ai') ? 'ai-art' : 'doodle-art'
       });
     }
 
@@ -378,7 +487,8 @@ router.post('/generate', async (req, res) => {
       return res.status(504).json({
         success: false,
         error: 'Timeout',
-        message: 'Generation took too long. Please try again with a simpler sketch or prompt.'
+        message: 'Generation took too long. Please try again with a simpler sketch or prompt.',
+        endpoint: req.path.includes('generate-ai') ? 'ai-art' : 'doodle-art'
       });
     }
 
@@ -387,13 +497,22 @@ router.post('/generate', async (req, res) => {
       success: false,
       error: 'Generation failed',
       message: error.message || 'An unexpected error occurred during generation',
-      suggestion: 'Check your Replicate API token and ensure you have sufficient credits.'
+      suggestion: 'Check your Replicate API token and ensure you have sufficient credits.',
+      endpoint: req.path.includes('generate-ai') ? 'ai-art' : 'doodle-art'
     });
   }
-});
+};
 
-// Animation endpoint - Turn static art into Spotify Canvas video
-router.post('/animate', async (req, res) => {
+// Main generate endpoints
+router.post('/generate', (req, res) => handleGenerate(req, res, 'doodle-art'));
+router.post('/generate-ai', (req, res) => handleGenerate(req, res, 'ai-art'));
+
+// ============================================
+// ANIMATION ENDPOINTS - Doodle-Art & AI-Art
+// ============================================
+
+// Handle both /animate and /animate-ai with the same function
+const handleAnimate = async (req, res, endpointType = 'doodle-art') => {
   try {
     const { imageUrl, prompt, motionStrength = 0.8, duration = 8 } = req.body;
 
@@ -415,7 +534,7 @@ router.post('/animate', async (req, res) => {
       });
     }
 
-    console.log('Starting animation generation...');
+    console.log(`Starting ${endpointType} animation generation...`);
     console.log('Image URL:', imageUrl);
     console.log('Motion strength:', motionStrength);
     console.log('Duration:', duration, 'seconds');
@@ -434,14 +553,14 @@ router.post('/animate', async (req, res) => {
         error: creditVerification.error,
         message: creditVerification.message,
         requiredCredits: creditVerification.requiredCredits || 1,
-        available: creditVerification.creditsAvailable
+        available: creditVerification.creditsAvailable,
+        endpoint: endpointType
       });
     }
     
     console.log(`[VERIFIED] ✅ User credits verified (${creditVerification.creditsAvailable} available)`);
 
     // For Spotify Canvas, we need 8-second videos
-    // Using Stability AI's video diffusion model
     const input = {
       input_image: imageUrl,
       motion_bucket_id: Math.floor(motionStrength * 255),
@@ -453,8 +572,6 @@ router.post('/animate', async (req, res) => {
 
     console.log('Calling Stability AI Video API...');
     
-    // Note: This is a placeholder model. You'll need to use the actual Stability Video API
-    // For now, we'll use Replicate's implementation
     const output = await replicate.run(
       "stability-ai/stable-video-diffusion:3f0457e4619daac51203dedb472816fd4af51f3149fa7a9e0b5ffcf1b8172438",
       { input }
@@ -467,6 +584,7 @@ router.post('/animate', async (req, res) => {
 
     res.json({
       success: true,
+      endpoint: endpointType,
       animationId: animationId,
       videoUrl: output,
       duration: duration,
@@ -485,7 +603,7 @@ router.post('/animate', async (req, res) => {
     });
 
   } catch (error) {
-    console.error('Animation generation error:', error.message);
+    console.error(`${req.path} animation error:`, error.message);
     
     // REFUND: Revert credits if failure is NOT due to insufficient credits
     const userId = req.body.userId || req.body.uid;
@@ -503,7 +621,8 @@ router.post('/animate', async (req, res) => {
       return res.status(400).json({
         success: false,
         error: 'NSFW',
-        message: 'Animation was blocked by safety filters.'
+        message: 'Animation was blocked by safety filters.',
+        endpoint: req.path.includes('animate-ai') ? 'ai-art' : 'doodle-art'
       });
     }
 
@@ -511,7 +630,8 @@ router.post('/animate', async (req, res) => {
       return res.status(402).json({
         success: false,
         error: 'Insufficient Credits',
-        message: 'Please add credits to your Replicate account for animation generation.'
+        message: 'Please add credits to your Replicate account for animation generation.',
+        endpoint: req.path.includes('animate-ai') ? 'ai-art' : 'doodle-art'
       });
     }
 
@@ -519,7 +639,8 @@ router.post('/animate', async (req, res) => {
       return res.status(429).json({
         success: false,
         error: 'Rate Limited',
-        message: 'Too many animation requests. Please wait a moment and try again.'
+        message: 'Too many animation requests. Please wait a moment and try again.',
+        endpoint: req.path.includes('animate-ai') ? 'ai-art' : 'doodle-art'
       });
     }
 
@@ -529,7 +650,8 @@ router.post('/animate', async (req, res) => {
         success: false,
         error: 'Animation Failed',
         message: 'Video generation failed. The image might not be suitable for animation.',
-        suggestion: 'Try a different image or adjust the motion strength.'
+        suggestion: 'Try a different image or adjust the motion strength.',
+        endpoint: req.path.includes('animate-ai') ? 'ai-art' : 'doodle-art'
       });
     }
 
@@ -538,13 +660,22 @@ router.post('/animate', async (req, res) => {
       success: false,
       error: 'Animation failed',
       message: error.message || 'An unexpected error occurred during animation',
-      suggestion: 'Check your Replicate API token and ensure you have sufficient credits.'
+      suggestion: 'Check your Replicate API token and ensure you have sufficient credits.',
+      endpoint: req.path.includes('animate-ai') ? 'ai-art' : 'doodle-art'
     });
   }
-});
+};
+
+// Main animation endpoints
+router.post('/animate', (req, res) => handleAnimate(req, res, 'doodle-art'));
+router.post('/animate-ai', (req, res) => handleAnimate(req, res, 'ai-art'));
+
+// ============================================
+// PREMIUM ANIMATION ENDPOINTS
+// ============================================
 
 // Premium animation with more control (for upselling)
-router.post('/animate/premium', async (req, res) => {
+router.post(['/animate/premium', '/animate-ai/premium'], async (req, res) => {
   try {
     const { 
       imageUrl, 
@@ -565,7 +696,8 @@ router.post('/animate/premium', async (req, res) => {
       });
     }
 
-    console.log('Starting premium animation generation...');
+    const endpointType = req.path.includes('animate-ai') ? 'ai-art' : 'doodle-art';
+    console.log(`Starting ${endpointType} premium animation generation...`);
     console.log('Style:', style);
     console.log('Camera motion:', cameraMotion);
     console.log('Loop type:', loopType);
@@ -585,7 +717,6 @@ router.post('/animate/premium', async (req, res) => {
 
     console.log('Calling Premium Video API...');
     
-    // Using a more advanced model for premium animations
     const output = await replicate.run(
       "stability-ai/stable-video-diffusion:3f0457e4619daac51203dedb472816fd4af51f3149fa7a9e0b5ffcf1b8172438",
       { input }
@@ -597,6 +728,7 @@ router.post('/animate/premium', async (req, res) => {
 
     res.json({
       success: true,
+      endpoint: endpointType,
       animationId: premiumId,
       videoUrl: output,
       duration: duration,
@@ -621,17 +753,24 @@ router.post('/animate/premium', async (req, res) => {
   } catch (error) {
     console.error('Premium animation error:', error.message);
     
+    const endpointType = req.path.includes('animate-ai') ? 'ai-art' : 'doodle-art';
+    
     res.status(500).json({
       success: false,
       error: 'Premium Animation Failed',
       message: error.message || 'An unexpected error occurred',
-      suggestion: 'Try standard animation or contact support for premium features.'
+      suggestion: 'Try standard animation or contact support for premium features.',
+      endpoint: endpointType
     });
   }
 });
 
+// ============================================
+// ADDITIONAL ENDPOINTS
+// ============================================
+
 // Batch animation (for multiple images)
-router.post('/animate/batch', async (req, res) => {
+router.post(['/animate/batch', '/animate-ai/batch'], async (req, res) => {
   try {
     const { imageUrls, motionStrength = 0.8, duration = 8 } = req.body;
 
@@ -643,11 +782,13 @@ router.post('/animate/batch', async (req, res) => {
       });
     }
 
+    const endpointType = req.path.includes('animate-ai') ? 'ai-art' : 'doodle-art';
+    
     // Limit batch size for cost control
     const maxBatchSize = 3;
     const imagesToProcess = imageUrls.slice(0, maxBatchSize);
 
-    console.log(`Starting batch animation for ${imagesToProcess.length} images...`);
+    console.log(`Starting ${endpointType} batch animation for ${imagesToProcess.length} images...`);
 
     const batchId = `batch_${crypto.randomBytes(8).toString('hex')}`;
     const results = [];
@@ -692,6 +833,7 @@ router.post('/animate/batch', async (req, res) => {
 
     res.json({
       success: true,
+      endpoint: endpointType,
       batchId: batchId,
       totalProcessed: imagesToProcess.length,
       successful: results.filter(r => r.success).length,
@@ -704,17 +846,22 @@ router.post('/animate/batch', async (req, res) => {
   } catch (error) {
     console.error('Batch animation error:', error.message);
     
+    const endpointType = req.path.includes('animate-ai') ? 'ai-art' : 'doodle-art';
+    
     res.status(500).json({
       success: false,
       error: 'Batch Animation Failed',
-      message: error.message || 'An unexpected error occurred'
+      message: error.message || 'An unexpected error occurred',
+      endpoint: endpointType
     });
   }
 });
 
 // Get animation status/quote
-router.post('/animate/quote', (req, res) => {
+router.post(['/animate/quote', '/animate-ai/quote'], (req, res) => {
   const { duration = 8, quality = "standard", count = 1 } = req.body;
+  
+  const endpointType = req.path.includes('animate-ai') ? 'ai-art' : 'doodle-art';
 
   // Pricing model
   const pricing = {
@@ -741,6 +888,7 @@ router.post('/animate/quote', (req, res) => {
 
   res.json({
     success: true,
+    endpoint: endpointType,
     quote: {
       duration: totalDuration,
       quality: quality,
@@ -753,20 +901,29 @@ router.post('/animate/quote', (req, res) => {
   });
 });
 
+// ============================================
+// ROOT AND HEALTH ENDPOINTS
+// ============================================
+
 // Health check endpoint
 router.get('/health', (req, res) => {
+  const endpointType = req.baseUrl.includes('ai-art') ? 'ai-art' : 'doodle-art';
+  
   res.json({
     success: true,
-    service: 'doodle-to-art-api',
+    service: `${endpointType}-api`,
     status: 'operational',
-    version: '2.0.0', // Updated version with animation
+    version: '2.1.0',
     timestamp: new Date().toISOString(),
     replicate_configured: !!process.env.REPLICATE_API_TOKEN,
     endpoints: {
       test: 'GET /test - Test Replicate API connection',
-      generate: 'POST /generate - Generate art from sketch',
-      animate: 'POST /animate - Create 8-second Spotify Canvas video',
-      animate_premium: 'POST /animate/premium - Premium animation with more control',
+      test_connection: 'GET /test-connection - Comprehensive API test',
+      generate: 'POST /generate - Generate art from sketch (doodle-art)',
+      generate_ai: 'POST /generate-ai - Generate art from sketch (ai-art)',
+      animate: 'POST /animate - Create 8-second Spotify Canvas video (doodle-art)',
+      animate_ai: 'POST /animate-ai - Create 8-second Spotify Canvas video (ai-art)',
+      animate_premium: 'POST /animate/premium - Premium animation',
       animate_batch: 'POST /animate/batch - Animate multiple images',
       animate_quote: 'POST /animate/quote - Get animation cost estimate',
       health: 'GET /health - API health check'
@@ -784,21 +941,25 @@ router.get('/health', (req, res) => {
   });
 });
 
-// Root endpoint
+// Root endpoint - shows which API is being accessed
 router.get('/', (req, res) => {
+  const endpointType = req.baseUrl.includes('ai-art') ? 'ai-art' : 'doodle-art';
+  
   res.json({
     success: true,
-    message: 'Doodle-to-Art API with Animation Features',
-    version: '2.0.0',
+    message: `${endpointType.toUpperCase()} API with Doodle-to-Art Generation`,
+    version: '2.1.0',
     timestamp: new Date().toISOString(),
+    accessed_as: endpointType,
     endpoints: {
-      test: 'GET /test',
-      generate: 'POST /generate',
-      animate: 'POST /animate',
+      test_connection: 'GET /test-connection',
+      generate: endpointType === 'doodle-art' ? 'POST /generate' : 'POST /generate-ai',
+      animate: endpointType === 'doodle-art' ? 'POST /animate' : 'POST /animate-ai',
       animate_premium: 'POST /animate/premium',
       animate_batch: 'POST /animate/batch',
       animate_quote: 'POST /animate/quote',
-      health: 'GET /health'
+      health: 'GET /health',
+      test: 'GET /test'
     },
     animationFeatures: {
       spotifyCanvas: '8-second looping videos',
@@ -814,7 +975,7 @@ router.get('/', (req, res) => {
     usageExamples: {
       generate: {
         method: 'POST',
-        endpoint: '/generate',
+        endpoint: endpointType === 'doodle-art' ? '/generate' : '/generate-ai',
         body: {
           sketch: 'Base64 image data URL',
           prompt: 'Text description',
@@ -824,7 +985,7 @@ router.get('/', (req, res) => {
       },
       animate: {
         method: 'POST',
-        endpoint: '/animate',
+        endpoint: endpointType === 'doodle-art' ? '/animate' : '/animate-ai',
         body: {
           imageUrl: 'URL from generate endpoint',
           motionStrength: '0.1 to 1.0',

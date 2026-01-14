@@ -193,7 +193,7 @@ const createLazyRouter = (modulePath, moduleName) => {
         console.log(`[LAZY-LOAD] 📦 Loading ${moduleName} module...`);
         
         // Resolve module path relative to this file for serverless/bundled environments
-        const module = await withTimeout(import('./' + modulePath.replace(/^\.\//, '')), 5000, `Module ${moduleName} load timeout`);
+        const module = await withTimeout(import('./' + modulePath.replace(/^\.\//, '')), 10000, `Module ${moduleName} load timeout`);
         router = module.default;
         loadedModules[moduleName] = true;
         
@@ -250,7 +250,7 @@ app.use((req, res, next) => {
   if (path.includes('/api/email')) loadedModules.email = true;
   if (path.includes('/api/create-checkout') || path.includes('/api/lemon-webhook')) loadedModules.payments = true;
   if (path.includes('/api/reddit-admin')) loadedModules.reddit = true;
-  if (path.includes('/api/doodle-art') || path.includes('/api/ai-art')) loadedModules.doodleArt = true;
+  if (path.includes('/api/doodle-art') || path.includes('/api/ai-art/generate-ai')) loadedModules.doodleArt = true;
   
   next();
 });
@@ -265,6 +265,8 @@ app.use((req, res, next) => {
 
 // Mount other routers with lazy loading
 app.use('/api/reddit-admin', createLazyRouter('./routes/reddit-admin.js', 'reddit'));
+// Add this near line 263 where other reddit-admin routes are mounted
+app.use('/api/reddit-admin/cron', bodyParser.json({ limit: '10mb' }), createLazyRouter('./routes/reddit-admin.js', 'reddit'));
 app.use('/api/email', createLazyRouter('./routes/send-welcome-email.js', 'email'));
 // Mount create-checkout with standard JSON parser
 app.use('/api/create-checkout', bodyParser.json({ limit: '20mb' }), createLazyRouter('./routes/create-checkout.js', 'payments'));
@@ -492,7 +494,7 @@ app.get('/api/transactions/:userId', async (req, res) => {
 });
 
 // Get credit balance
-app.get('/api/credits/:userId', async (req, res) => {
+app.get('/api/deduct-credits/credits/:userId', async (req, res) => {
   try {
     const { userId } = req.params;
     
@@ -572,7 +574,7 @@ app.get('/api/purchases/:userId', async (req, res) => {
 
 // ==================== DODO PAYMENTS STATUS ENDPOINTS ====================
 
-app.get('/api/payments/status', (req, res) => {
+app.get('/api/create-checkout/status', (req, res) => {
   console.log('[INFO] 🔍 Checking Dodo Payments service status');
   res.json({
     success: true,
@@ -668,7 +670,7 @@ app.get('/api/shadow-check', async (req, res) => {
     const shadowReq = {
       ...req,
       method: 'GET',
-      path: '/shadow-check-list'
+      path: '/api/reddit-admin/shadow-check-list'
     };
     
     let shadowResponse = null;
@@ -714,7 +716,7 @@ app.get('/api/shadow-check', async (req, res) => {
 });
 
 // Health monitor endpoint (standalone for monitoring)
-app.get('/api/health-monitor', async (req, res) => {
+app.get('/api/reddit-admin/health-monitor', async (req, res) => {
   try {
     console.log('[HEALTH-MONITOR] 🔍 Manual health monitor check requested');
     
@@ -726,7 +728,7 @@ app.get('/api/health-monitor', async (req, res) => {
     const monitorReq = {
       ...req,
       method: 'GET',
-      path: '/health-monitor'
+      path: '/api/reddit-admin/health-monitor'
     };
     
     let monitorResponse = null;
@@ -993,13 +995,13 @@ app.get('/api/status', (req, res) => {
       status: '/api/status',
       isolated_cron: 'POST /api/cron-reddit (For GitHub Actions)',
       shadow_check: 'GET /api/shadow-check (Manual verification)',
-      health_monitor: 'GET /api/health-monitor (System monitoring)',
+      health_monitor: 'GET /api/reddit-admin/health-monitor (System monitoring)',
       email: '/api/email/send-welcome-email',
       reddit_admin: '/api/reddit-admin/admin',
       lyric_video: '/api/lyric-video',
       generate_video: '/api/generate-video',
       doodle_art: '/api/doodle-art/generate',
-      ai_art: '/api/ai-art/generate',
+      ai_art: '/api/ai-art/generate-ai',
       gemini_ai: '/api/reddit-admin/generate-comment',
       automation: '/api/reddit-admin/cron-status',
       reddit_api_test: '/api/reddit-admin/test-reddit',
@@ -1011,9 +1013,9 @@ app.get('/api/status', (req, res) => {
       reset_daily: '/api/reddit-admin/reset-daily',
       check_credits: 'POST /api/deduct-credits/check',
       deduct_credits: 'POST /api/deduct-credits',
-      get_transactions: 'GET /api/transactions/:userId',
-      get_balance: 'GET /api/credits/:userId',
-      get_purchases: 'GET /api/purchases/:userId'
+      get_transactions: 'GET /api/deduct-credits/transactions/:userId',
+      get_balance: 'GET /api/deduct-credits/credits/:userId',
+      get_purchases: 'GET /api/deduct-credits/purchases/:userId'
     },
     batched_automation_endpoints: {
       shadow_delete_check: 'GET /api/reddit-admin/shadow-check-list',
@@ -1048,8 +1050,8 @@ app.get('/api/status', (req, res) => {
     credit_management_api: {
       check_credits: 'POST /api/deduct-credits/check - Check user credit balance',
       deduct_credits: 'POST /api/deduct-credits - Deduct credits for generation',
-      get_transactions: 'GET /api/transactions/:userId - Get transaction history',
-      get_balance: 'GET /api/credits/:userId - Get complete credit balance'
+      get_transactions: 'GET /api/deduct-credits/transactions/:userId - Get transaction history',
+      get_balance: 'GET /api/deduct-credits/credits/:userId - Get complete credit balance'
     },
     reddit_premium_endpoints: {
       premium_analytics: 'GET /api/reddit-admin/premium-analytics - Track premium lead generation',
@@ -1115,13 +1117,13 @@ app.get('/', (req, res) => {
       status: '/api/status',
       isolated_cron: 'POST /api/cron-reddit (GitHub Actions)',
       shadow_check: 'GET /api/shadow-check (Critical monitoring)',
-      health_monitor: 'GET /api/health-monitor (System health)',
+      health_monitor: 'GET /api/reddit-admin/health-monitor (System health)',
       email: '/api/email/send-welcome-email',
       reddit_admin: '/api/reddit-admin/admin',
       lyric_video: '/api/lyric-video',
       generate_video: '/api/generate-video',
       doodle_art: '/api/doodle-art/generate',
-      ai_art: '/api/ai-art/generate',
+      ai_art: '/api/ai-art/generate-ai',
       gemini_ai: '/api/reddit-admin/generate-comment',
       automation: '/api/reddit-admin/cron-status',
       reddit_api_test: '/api/reddit-admin/test-reddit',
@@ -1133,8 +1135,8 @@ app.get('/', (req, res) => {
       reset_daily: '/api/reddit-admin/reset-daily',
       check_credits: 'POST /api/deduct-credits/check',
       deduct_credits: 'POST /api/deduct-credits',
-      get_transactions: 'GET /api/transactions/:userId',
-      get_balance: 'GET /api/credits/:userId'
+      get_transactions: 'GET /api/deduct-credits/transactions/:userId',
+      get_balance: 'GET /api/deduct-credits/credits/:userId'
     },
     batched_automation: {
       strategy: '4-Batch Rotation System',
@@ -1180,8 +1182,8 @@ app.get('/', (req, res) => {
     credit_management_api: {
       check_credits: 'POST /api/deduct-credits/check - Check user credit balance',
       deduct_credits: 'POST /api/deduct-credits - Deduct credits for generation',
-      get_transactions: 'GET /api/transactions/:userId - Get transaction history',
-      get_balance: 'GET /api/credits/:userId - Get complete credit balance'
+      get_transactions: 'GET /api/deduct-credits/transactions/:userId - Get transaction history',
+      get_balance: 'GET /api/deduct-credits/credits/:userId - Get complete credit balance'
     },
     reddit_premium_endpoints: {
       premium_analytics: 'GET /api/reddit-admin/premium-analytics - Track premium lead generation',
@@ -1228,13 +1230,13 @@ app.use('*', (req, res) => {
       '/api/status',
       '/api/cron-reddit (POST)',
       '/api/shadow-check (Critical monitoring)',
-      '/api/health-monitor (System health)',
+      '/api/reddit-admin/health-monitor (System health)',
       '/api/email/send-welcome-email',
       '/api/reddit-admin/admin',
       '/api/lyric-video',
       '/api/generate-video',
       '/api/doodle-art/generate',
-      '/api/ai-art/generate',
+      '/api/ai-art/generate-ai',
       '/api/reddit-admin/generate-comment',
       '/api/reddit-admin/cron-status',
       '/api/reddit-admin/test-reddit',
@@ -1246,12 +1248,12 @@ app.use('*', (req, res) => {
       '/api/reddit-admin/reset-daily',
       '/api/create-checkout',
       '/api/lemon-webhook',
-      '/api/payments/status',
+      '/api/create-checkout/status',
       '/api/deduct-credits/check (POST)',
       '/api/deduct-credits (POST)',
-      '/api/transactions/:userId',
-      '/api/credits/:userId',
-      '/api/purchases/:userId'
+      '/api/deduct-credits/transactions/:userId',
+      '/api/deduct-credits/credits/:userId',
+      '/api/deduct-credits/purchases/:userId'
     ],
     timestamp: new Date().toISOString()
   });
@@ -1286,7 +1288,7 @@ if (process.env.NODE_ENV !== 'production' || process.env.VERCEL !== '1') {
     console.log(`❤️  Health check: http://localhost:${PORT}/api/health`);
     console.log(`🔒 Isolated cron: POST http://localhost:${PORT}/api/cron-reddit`);
     console.log(`👁️  Shadow-check: GET http://localhost:${PORT}/api/shadow-check`);
-    console.log(`📊 Health monitor: GET http://localhost:${PORT}/api/health-monitor`);
+    console.log(`📊 Health monitor: GET http://localhost:${PORT}/api/reddit-admin/health-monitor`);
     console.log(`🔧 Module status: GET http://localhost:${PORT}/api/module-status`);
     console.log(`🌐 CORS enabled for: localhost:3000, localhost:3001, soundswap.live`);
     console.log(`🎭 Batched Orchestration: 20 subreddits, 4 batches, Discord threshold: Score > 85`);
