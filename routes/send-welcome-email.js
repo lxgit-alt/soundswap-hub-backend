@@ -21,6 +21,7 @@ let sendWelcomeEmail = null;
 let sendPasswordResetEmail = null;
 let sendSongReviewedEmail = null;
 let sendTop10ChartEmail = null;
+let sendPaymentStatusEmail = null; // NEW: Payment status email function
 
 // ==================== IMMEDIATE FUNCTIONS ====================
 
@@ -90,6 +91,7 @@ const loadEmailModules = async () => {
             unsubscribeUrl: `${getClientURL()}/unsubscribe`,
             loginUrl: `${getClientURL()}/login`,
             chartsUrl: `${getClientURL()}/charts`,
+            studioUrl: `${getClientURL()}/studio`,
             twitterUrl: 'https://twitter.com/soundswap',
             facebookUrl: 'https://facebook.com/soundswap',
             instagramUrl: 'https://instagram.com/soundswap_official',
@@ -101,6 +103,47 @@ const loadEmailModules = async () => {
         } catch (error) {
           console.error(`[ERROR] ❌ Failed to render template '${templateName}':`, error);
           throw new Error(`Template '${templateName}' not found or invalid`);
+        }
+      };
+
+      // NEW: Payment Status Email Function
+      sendPaymentStatusEmail = async (email, data) => {
+        try {
+          console.log('[INFO] 📧 Preparing to send payment status email:', { email, status: data.status });
+          
+          if (!process.env.GMAIL_USER || !process.env.GMAIL_PASS) {
+            throw new Error('Email credentials not configured');
+          }
+
+          const html = await renderTemplate('payment-status', {
+            ...data,
+            statusClass: data.status === 'success' ? 'status-success' : 
+                        data.status === 'failed' ? 'status-failed' : 'status-pending',
+            title: data.status === 'success' ? 'Payment Successful - SoundSwap' : 
+                   data.status === 'failed' ? 'Payment Failed - SoundSwap' : 'Payment Processing - SoundSwap'
+          });
+
+          const subject = data.status === 'success' 
+            ? `🎉 Payment Successful! ${data.credits?.amount || ''} ${data.credits?.type || 'Credits'} Added`
+            : data.status === 'failed'
+            ? '⚠️ Payment Failed - SoundSwap'
+            : '⏳ Payment Processing - SoundSwap';
+
+          const transporter = createTransporter();
+          const mailOptions = {
+            from: { name: 'SoundSwap Payments', address: process.env.GMAIL_USER },
+            to: email,
+            subject: subject,
+            html: html
+          };
+
+          console.log('[INFO] 📤 Sending payment status email to:', email);
+          const result = await transporter.sendMail(mailOptions);
+          console.log('[INFO] ✅ Payment status email sent successfully:', result.messageId);
+          return result;
+        } catch (error) {
+          console.error('[ERROR] ❌ Error sending payment status email:', error);
+          throw error;
         }
       };
 
@@ -458,6 +501,88 @@ const sendTop10ChartHandler = async (req, res) => {
   }
 };
 
+// NEW: Payment Status Email Handler
+const sendPaymentStatusHandler = async (req, res) => {
+  console.log('[INFO] 📍 Hit /send-payment-status endpoint');
+  
+  try {
+    const { 
+      email, 
+      status, 
+      name, 
+      credits, 
+      product, 
+      amount, 
+      orderId, 
+      transactionId, 
+      paymentMethod,
+      message,
+      helpText
+    } = req.body;
+
+    if (!email || !status) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Email and status are required' 
+      });
+    }
+
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+      return res.status(400).json({ success: false, message: 'Invalid email format' });
+    }
+
+    if (!['success', 'failed', 'pending'].includes(status)) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Status must be one of: success, failed, pending' 
+      });
+    }
+
+    if (!isEmailLoaded) {
+      await loadEmailModules();
+    }
+
+    const data = {
+      status,
+      success: status === 'success',
+      name: name || email.split('@')[0],
+      credits,
+      product,
+      amount,
+      orderId,
+      transactionId,
+      paymentMethod,
+      message,
+      helpText,
+      date: new Date().toLocaleDateString('en-US', {
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit'
+      })
+    };
+
+    await sendPaymentStatusEmail(email, data);
+    
+    console.log('[INFO] ✅ Payment status email route completed successfully');
+    res.json({ 
+      success: true, 
+      message: 'Payment status email sent successfully',
+      status,
+      emailSent: true
+    });
+  } catch (error) {
+    console.error('[ERROR] ❌ Payment status email route error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to send payment status email',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+};
+
 const testEmailHandler = async (req, res) => {
   console.log('[INFO] 📍 Hit /test endpoint');
   
@@ -480,9 +605,10 @@ const testEmailHandler = async (req, res) => {
         'POST /api/email/send-password-reset',
         'POST /api/email/send-song-reviewed',
         'POST /api/email/send-top10-chart',
+        'POST /api/email/send-payment-status', // NEW
         'GET /api/email/test'
       ],
-      templates_used: ['welcome.hbs', 'password-reset.hbs', 'song-reviewed.hbs', 'top10-chart.hbs']
+      templates_used: ['welcome.hbs', 'password-reset.hbs', 'song-reviewed.hbs', 'top10-chart.hbs', 'payment-status.hbs'] // UPDATED
     });
   } catch (error) {
     console.error('[ERROR] ❌ Test endpoint error:', error);
@@ -501,6 +627,7 @@ router.post('/send-welcome-email', sendWelcomeEmailHandler);
 router.post('/send-password-reset', sendPasswordResetHandler);
 router.post('/send-song-reviewed', sendSongReviewedHandler);
 router.post('/send-top10-chart', sendTop10ChartHandler);
+router.post('/send-payment-status', sendPaymentStatusHandler); // NEW
 router.get('/test', testEmailHandler);
 
 router.get('/debug-routes', (req, res) => {
@@ -520,7 +647,7 @@ router.get('/debug-routes', (req, res) => {
     fullPaths: routes.map(route => 
       route.methods.map(method => `${method.toUpperCase()} /api/email${route.path}`)
     ).flat(),
-    templates_used: ['welcome.hbs', 'password-reset.hbs', 'song-reviewed.hbs', 'top10-chart.hbs'],
+    templates_used: ['welcome.hbs', 'password-reset.hbs', 'song-reviewed.hbs', 'top10-chart.hbs', 'payment-status.hbs'], // UPDATED
     lazy_loading: {
       enabled: true,
       email_modules: isEmailLoaded ? 'loaded' : 'not loaded',
@@ -534,9 +661,10 @@ console.log('[INFO]    POST /api/email/send-welcome-email');
 console.log('[INFO]    POST /api/email/send-password-reset'); 
 console.log('[INFO]    POST /api/email/send-song-reviewed');
 console.log('[INFO]    POST /api/email/send-top10-chart');
+console.log('[INFO]    POST /api/email/send-payment-status'); // NEW
 console.log('[INFO]    GET /api/email/test');
 console.log('[INFO]    GET /api/email/debug-routes');
-console.log('[INFO] 📧 Using Handlebars templates: welcome.hbs, password-reset.hbs, song-reviewed.hbs, top10-chart.hbs');
+console.log('[INFO] 📧 Using Handlebars templates: welcome.hbs, password-reset.hbs, song-reviewed.hbs, top10-chart.hbs, payment-status.hbs'); // UPDATED
 console.log('[INFO] 🔄 Email modules will lazy load on first use to improve startup time');
 
 export default router;

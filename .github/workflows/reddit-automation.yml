@@ -1,4 +1,4 @@
-name: SoundSwap Reddit Automation Engine (Fluid Compute - 30m Edition)
+name: Reddit Automation Engine 
 
 on:
   schedule:
@@ -337,8 +337,22 @@ jobs:
           echo "4. More comprehensive processing per run"
           echo "5. Improved analytics aggregation"
 
+      - name: 📈 Check Discord Webhook Availability
+        id: check_discord
+        run: |
+          # This step always runs to check if Discord webhook is configured
+          echo "🔍 Checking Discord webhook configuration..."
+          
+          # Note: We can't check secrets directly, but we can set an output
+          # The actual check will happen in the Discord step itself
+          echo "discord_available=true" >> $GITHUB_OUTPUT
+          echo "✅ Discord step will attempt to send notification"
+
       - name: 📈 Send Comprehensive Discord Summary (30m Edition)
-        if: always() && secrets.DISCORD_WEBHOOK_URL != ''
+        id: discord_summary
+        # FIXED: Removed the invalid 'secrets' reference from if condition
+        # The step will run and handle the missing webhook inside the run script
+        if: always()
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           BATCH_FOCUS: ${{ steps.calculate_batch.outputs.batch_focus }}
@@ -350,7 +364,14 @@ jobs:
           SHADOW_CHECKS: ${{ steps.run_automation.outputs.shadow_checks || 0 }}
           PROCESSING_TIME: ${{ steps.run_automation.outputs.processing_time || 0 }}
         run: |
-          echo "📊 Sending 30-minute interval Discord summary..."
+          echo "📊 Attempting to send Discord summary..."
+          
+          # Check if webhook URL is configured
+          if [ -z "$DISCORD_WEBHOOK_URL" ] || [ "$DISCORD_WEBHOOK_URL" = "" ]; then
+            echo "⚠️  Discord webhook URL not configured, skipping notification"
+            echo "ℹ️  To enable Discord notifications, add DISCORD_WEBHOOK_URL to repository secrets"
+            exit 0
+          fi
           
           WORKFLOW_URL="https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
           JOB_STATUS="${{ job.status }}"
@@ -391,7 +412,7 @@ jobs:
           esac
           
           # Create comprehensive embed
-          curl -X POST "$DISCORD_WEBHOOK_URL" \
+          curl_output=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$DISCORD_WEBHOOK_URL" \
             -H "Content-Type: application/json" \
             -d "{
               \"embeds\": [{
@@ -412,7 +433,7 @@ jobs:
                   {\"name\": \"Processing Time\", \"value\": \"$PROC_TIME_FORMATTED\", \"inline\": true},
                   {\"name\": \"Schedule\", \"value\": \"30-minute intervals\", \"inline\": true},
                   {\"name\": \"Time (UTC)\", \"value\": \"$CURRENT_UTC\", \"inline\": true},
-                  {\\"name\": \"Time (NY)\", \"value\": \"$CURRENT_NY\", \"inline\": true},
+                  {\"name\": \"Time (NY)\", \"value\": \"$CURRENT_NY\", \"inline\": true},
                   {\"name\": \"Next Run\", \"value\": \"In 30 minutes\", \"inline\": true},
                   {\"name\": \"Key Features\", \"value\": \"✅ Fluid Compute (5m) • ⏰ 30m Intervals • 🔍 40% Shadow Checks • 📈 Rate Limit Optimized\", \"inline\": false}
                 ],
@@ -422,7 +443,35 @@ jobs:
                 },
                 \"timestamp\": \"$(date -u +'%Y-%m-%dT%H:%M:%S.000Z')\"
               }]
-            }" 2>/dev/null || echo "⚠️  Discord notification failed"
+            }" 2>&1)
+          
+          curl_exit_code=$?
+          
+          if [ $curl_exit_code -eq 0 ]; then
+            echo "✅ Discord notification sent successfully"
+          else
+            echo "⚠️  Discord notification failed (exit code: $curl_exit_code)"
+            echo "Debug info: $curl_output"
+          fi
+
+      - name: 🧪 Debug Mode (Extended)
+        if: github.event_name == 'workflow_dispatch' && inputs.debug == 'true'
+        env:
+          VERCEL_URL: ${{ secrets.VERCEL_URL }}
+        run: |
+          echo "🧪 Extended Debug Mode Activated"
+          echo "================================"
+          
+          echo "📊 Full System Configuration:"
+          timeout 30 curl -s "$VERCEL_URL/api/reddit-admin/debug-config" | jq '.' 2>/dev/null || echo "No debug config available"
+          
+          echo ""
+          echo "🔍 Recent Logs (Last 5 entries):"
+          timeout 30 curl -s "$VERCEL_URL/api/reddit-admin/recent-logs" | jq -r '.[] | "\(.timestamp) - \(.level): \(.message)"' 2>/dev/null || echo "No logs available"
+          
+          echo ""
+          echo "📈 Batch Performance History:"
+          timeout 30 curl -s "$VERCEL_URL/api/reddit-admin/batch-history" | jq -r '.history[]? | "\(.batch): \(.posts) posts, \(.leads) leads, Success: \(.successRate)%"' 2>/dev/null || echo "No history available"
 
       - name: 🧹 Final Summary & Optimization Report
         if: always()

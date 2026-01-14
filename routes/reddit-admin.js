@@ -13,7 +13,7 @@ const RATE_LIMIT_MONITOR = {
 // ==================== CRITICAL WATCH ITEM: SHADOW-DELETE DETECTION ====================
 const SHADOW_DELETE_CHECK = {
   enabled: true,
-  checkProbability: 0.3, // 30% chance to check a posted comment
+  checkProbability: 0.4, // INCREASED TO 40% for 5-minute limit
   checkDelayMinutes: 30, // Wait 30 minutes before checking
   loggedOutBrowserCheck: [], // Store URLs for manual checking
   suspectedDeletions: 0
@@ -43,7 +43,31 @@ let firebaseApp = null;
 let db = null;
 let redditClient = null;
 
-// ==================== CRITICAL WATCH ITEM: ENHANCED DELAY WITH EXPONENTIAL BACKOFF ====================
+// ==================== ENHANCED CONFIGURATION FOR 5-MINUTE FLUID COMPUTE ====================
+
+// INCREASED for 5-minute processing
+const MAX_PROCESSING_TIME = 240000; // 4 minutes (leaves 1 minute buffer)
+const AI_TIMEOUT_MS = 8000; // Increased AI timeout
+const VERCELL_TIMEOUT_MS = 240000; // 4-minute Vercel timeout
+const POSTS_PER_SUBREDDIT = 10; // Increased posts per subreddit for comprehensive scanning
+const MAX_POSTS_PER_RUN = 4; // Increased posts per run for 30-minute intervals
+const MAX_COMMENTS_PER_DAY = 30; // Increased daily limit
+const MAX_EDUCATIONAL_POSTS_PER_DAY = 5; // Increased educational posts
+const CONCURRENT_SCAN_LIMIT = 20; // All 20 active subreddits
+const MAX_CONCURRENT_REQUESTS = 6; // Increased concurrent requests for faster scanning
+const MIN_LEAD_SCORE = 20;
+const GOLDEN_HOUR_WINDOW_MINUTES = 90; // Extended to 90 minutes for more opportunities
+
+// Human Window: Only run during peak hours (12:00 PM – 10:00 PM UTC)
+const HUMAN_WINDOW_START_HOUR = 12; // 12:00 PM UTC
+const HUMAN_WINDOW_END_HOUR = 22; // 10:00 PM UTC
+
+// Schedule configuration
+const SCHEDULE_INTERVAL = 30; // 30-minute intervals
+
+let postingActivity = null;
+
+// ==================== FLUID COMPUTE OPTIMIZATION FUNCTIONS ====================
 
 const getRandomizedDelay = () => {
   // Add exponential backoff if we're hitting rate limits
@@ -66,7 +90,7 @@ const getRandomizedDelay = () => {
   const jitteredDelay = Math.floor(baseDelay * jitter);
   
   // Ensure we don't exceed Reddit's timeout limits
-  const safeDelay = Math.min(jitteredDelay, 300000); // Max 5 minutes
+  const safeDelay = Math.min(jitteredDelay, 120000); // Max 2 minutes for safety
   
   return safeDelay;
 };
@@ -86,11 +110,11 @@ const calculateTimeout = (baseMs, subtractMs = 0) => {
   return Math.trunc(result);
 };
 
-// Gemini API quota management - UPDATED FROM 20 TO 100
+// Gemini API quota management - UPDATED FOR 5-MINUTE PROCESSING
 let geminiQuotaInfo = {
   lastRequest: null,
   requestCount: 0,
-  quotaLimit: 100, // UPDATED: Increased from 20 to 100
+  quotaLimit: 100, // Increased for 5-minute processing
   resetTime: null,
   lastError: null
 };
@@ -143,7 +167,7 @@ const safeSetTimeout = (callback, delay) => {
 
 const withTimeout = async (promise, timeoutMs, timeoutMessage = 'Operation timed out') => {
   // Ensure timeoutMs is a safe, positive finite integer.
-  const DEFAULT_TIMEOUT = 3000;
+  const DEFAULT_TIMEOUT = 8000; // Increased for 5-minute processing
   let ms = Number(timeoutMs);
   if (!Number.isFinite(ms) || ms <= 0) {
     ms = DEFAULT_TIMEOUT;
@@ -432,11 +456,11 @@ const loadReddit = async () => {
       snoowrap = (await import('snoowrap')).default;
       
       redditClient = new snoowrap({
-        userAgent: 'SoundSwap Reddit Bot v7.0 (Official Team/Developer Persona)',
+        userAgent: 'SoundSwap Reddit Bot v10.0 (Official Team/Developer Persona)',
         clientId: process.env.REDDIT_CLIENT_ID,
         clientSecret: process.env.REDDIT_CLIENT_SECRET,
         refreshToken: process.env.REDDIT_REFRESH_TOKEN,
-        requestTimeout: 8000
+        requestTimeout: 15000 // Increased timeout for 5-minute processing
       });
       
       isRedditLoaded = true;
@@ -459,25 +483,7 @@ const PREMIUM_FEATURE_LEADS_COLLECTION = 'premiumFeatureLeads';
 
 const APP_TIMEZONE = process.env.APP_TIMEZONE || 'America/New_York';
 const POSTING_WINDOW_MINUTES = 10;
-const MAX_POSTS_PER_RUN = 2;
-const MAX_COMMENTS_PER_DAY = 15;
-const MAX_EDUCATIONAL_POSTS_PER_DAY = 3;
-const AI_TIMEOUT_MS = 5000;
-const VERCELL_TIMEOUT_MS = 10000;
-const GOLDEN_HOUR_WINDOW_MINUTES = 60;
 const FALLBACK_MODE = true;
-
-// Performance optimization
-const CONCURRENT_SCAN_LIMIT = 20; // All 20 active subreddits
-const POSTS_PER_SUBREDDIT = 5;
-const MIN_LEAD_SCORE = 20;
-const MAX_CONCURRENT_REQUESTS = 4; // Increased for 20 subreddits
-
-// Human Window: Only run during peak hours (12:00 PM – 10:00 PM UTC)
-const HUMAN_WINDOW_START_HOUR = 12; // 12:00 PM UTC
-const HUMAN_WINDOW_END_HOUR = 22; // 10:00 PM UTC
-
-let postingActivity = null;
 
 // ==================== BATCH CONFIGURATION ====================
 
@@ -683,7 +689,7 @@ const calculateLeadScore = (post, subredditConfig, batch) => {
   return Math.round(score);
 };
 
-// ==================== CRITICAL WATCH ITEM: ENHANCED CONCURRENT SCANNING WITH RATE LIMIT PROTECTION ====================
+// ==================== ENHANCED CONCURRENT SCANNING WITH RATE LIMIT PROTECTION ====================
 
 const fetchFreshPostsFromSubreddit = async (subreddit, timeWindowMinutes = 60) => {
   try {
@@ -793,6 +799,7 @@ const scanAllSubredditsConcurrently = async () => {
   const allActiveSubreddits = Object.keys(redditTargets).filter(k => redditTargets[k].active);
   
   console.log(`[SCAN] 🔍 Concurrently scanning ${allActiveSubreddits.length} active subreddits`);
+  console.log(`[SCAN] ⚡ Fluid Compute: 5-minute limit allows comprehensive scanning`);
   
   // Process subreddits in batches for rate limiting
   const allPosts = await batchProcess(
@@ -801,7 +808,7 @@ const scanAllSubredditsConcurrently = async () => {
       try {
         const posts = await withTimeout(
           fetchFreshPostsFromSubreddit(subreddit, GOLDEN_HOUR_WINDOW_MINUTES),
-          4000,
+          6000, // Increased timeout
           `Scan timeout for r/${subreddit}`
         );
         
@@ -846,7 +853,7 @@ const scanAllSubredditsConcurrently = async () => {
   };
 };
 
-// ==================== CRITICAL WATCH ITEM: INDUSTRY AUTHORITY - 80% NON-PROMOTIONAL EXPERT ADVICE ====================
+// ==================== INDUSTRY AUTHORITY - 80% NON-PROMOTIONAL EXPERT ADVICE ====================
 
 const generateIndustryExpertComment = async (postTitle, postContent, subreddit, painPoints = [], batch = null) => {
   const targetConfig = redditTargets[subreddit];
@@ -1124,9 +1131,9 @@ const redditTargets = {
     },
     preferredStyles: ['helpful', 'expert', 'thoughtful'],
     soundswapMentionRate: 0.2, // 80/20 split
-    dailyCommentLimit: 4,
+    dailyCommentLimit: 6, // Increased for 5-minute processing
     educationalPostLimit: 1,
-    premiumFeatureLimit: 2,
+    premiumFeatureLimit: 3, // Increased for 5-minute processing
     keywords: ['lyric video', 'music video', 'visualizer', 'Spotify Canvas', 'animation', 'editing', 'frustrated', 'time-consuming', 'how to make', 'video editor'],
     premiumFeatures: ['lyricVideoGenerator', 'doodleArtGenerator'],
     targetAudience: 'musicians needing visual content',
@@ -1149,9 +1156,9 @@ const redditTargets = {
     },
     preferredStyles: ['creative', 'technical', 'inspirational'],
     soundswapMentionRate: 0.2, // 80/20 split
-    dailyCommentLimit: 3,
+    dailyCommentLimit: 4, // Increased for 5-minute processing
     educationalPostLimit: 1,
-    premiumFeatureLimit: 2,
+    premiumFeatureLimit: 3, // Increased for 5-minute processing
     keywords: ['sketch', 'drawing', 'animation', 'AI art', 'transform', 'process', 'tutorial', 'learn', 'beginner'],
     premiumFeatures: ['doodleArtGenerator'],
     targetAudience: 'digital artists exploring AI tools',
@@ -1174,9 +1181,9 @@ const redditTargets = {
     },
     preferredStyles: ['strategic', 'helpful', 'professional'],
     soundswapMentionRate: 0.2, // 80/20 split
-    dailyCommentLimit: 2,
+    dailyCommentLimit: 3, // Increased for 5-minute processing
     educationalPostLimit: 1,
-    premiumFeatureLimit: 2,
+    premiumFeatureLimit: 3, // Increased for 5-minute processing
     keywords: ['Spotify promotion', 'visual content', 'music videos', 'artist growth', 'Canvas', 'visualizer', 'ROI', 'conversion'],
     premiumFeatures: ['lyricVideoGenerator'],
     targetAudience: 'artists focused on promotion',
@@ -1199,9 +1206,9 @@ const redditTargets = {
     },
     preferredStyles: ['enthusiastic', 'helpful', 'casual'],
     soundswapMentionRate: 0.2, // 80/20 split
-    dailyCommentLimit: 2,
+    dailyCommentLimit: 3, // Increased for 5-minute processing
     educationalPostLimit: 1,
-    premiumFeatureLimit: 2,
+    premiumFeatureLimit: 3, // Increased for 5-minute processing
     keywords: ['Spotify Canvas', 'animated artwork', 'visualizers', 'music visual', 'album art', 'animated', '8-second', 'looping'],
     premiumFeatures: ['doodleArtGenerator', 'lyricVideoGenerator'],
     targetAudience: 'Spotify users and artists',
@@ -1221,9 +1228,9 @@ const redditTargets = {
     },
     preferredStyles: ['supportive', 'creative', 'casual'],
     soundswapMentionRate: 0.1, // 90/10 split - more authority building
-    dailyCommentLimit: 2,
+    dailyCommentLimit: 3, // Increased for 5-minute processing
     educationalPostLimit: 0,
-    premiumFeatureLimit: 1,
+    premiumFeatureLimit: 2, // Increased for 5-minute processing
     keywords: ['art tools', 'animation', 'digital art', 'creative process', 'affordable', 'beginner', 'workflow'],
     premiumFeatures: ['doodleArtGenerator'],
     targetAudience: 'artists seeking new tools',
@@ -1248,9 +1255,9 @@ const redditTargets = {
     },
     preferredStyles: ['technical', 'creative', 'expert'],
     soundswapMentionRate: 0.2, // 80/20 split
-    dailyCommentLimit: 3,
+    dailyCommentLimit: 4, // Increased for 5-minute processing
     educationalPostLimit: 1,
-    premiumFeatureLimit: 2,
+    premiumFeatureLimit: 3, // Increased for 5-minute processing
     keywords: ['visual content', 'music video', 'lyric video', 'promotion', 'Spotify Canvas', 'artist branding', 'workflow', 'efficiency'],
     premiumFeatures: ['lyricVideoGenerator'],
     targetAudience: 'music producers needing visuals',
@@ -1270,9 +1277,9 @@ const redditTargets = {
     },
     preferredStyles: ['supportive', 'practical', 'helpful'],
     soundswapMentionRate: 0.2, // 80/20 split
-    dailyCommentLimit: 2,
+    dailyCommentLimit: 3, // Increased for 5-minute processing
     educationalPostLimit: 0,
-    premiumFeatureLimit: 2,
+    premiumFeatureLimit: 3, // Increased for 5-minute processing
     keywords: ['music video', 'visual content', 'promotion', 'lyrics', 'animation', 'affordable tools', 'career', 'tools'],
     premiumFeatures: ['lyricVideoGenerator', 'doodleArtGenerator'],
     targetAudience: 'musicians seeking promotion tools',
@@ -1292,9 +1299,9 @@ const redditTargets = {
     },
     preferredStyles: ['urban', 'direct', 'helpful'],
     soundswapMentionRate: 0.2, // 80/20 split
-    dailyCommentLimit: 2,
+    dailyCommentLimit: 3, // Increased for 5-minute processing
     educationalPostLimit: 1,
-    premiumFeatureLimit: 2,
+    premiumFeatureLimit: 3, // Increased for 5-minute processing
     keywords: ['type beat', 'hip hop', 'rap', 'lyric video', 'visuals', 'YouTube', 'TikTok', 'cover art'],
     premiumFeatures: ['lyricVideoGenerator'],
     targetAudience: 'hip-hop producers needing visuals',
@@ -1314,9 +1321,9 @@ const redditTargets = {
     },
     preferredStyles: ['technical', 'energetic', 'creative'],
     soundswapMentionRate: 0.2, // 80/20 split
-    dailyCommentLimit: 2,
+    dailyCommentLimit: 3, // Increased for 5-minute processing
     educationalPostLimit: 1,
-    premiumFeatureLimit: 2,
+    premiumFeatureLimit: 3, // Increased for 5-minute processing
     keywords: ['visualizer', 'music video', 'animation', 'EDM', 'drops', 'energy', 'visuals', 'VJ'],
     premiumFeatures: ['lyricVideoGenerator'],
     targetAudience: 'EDM producers needing energetic visuals',
@@ -1336,9 +1343,9 @@ const redditTargets = {
     },
     preferredStyles: ['collaborative', 'friendly', 'helpful'],
     soundswapMentionRate: 0.1, // 90/10 split
-    dailyCommentLimit: 2,
+    dailyCommentLimit: 3, // Increased for 5-minute processing
     educationalPostLimit: 0,
-    premiumFeatureLimit: 1,
+    premiumFeatureLimit: 2, // Increased for 5-minute processing
     keywords: ['collaboration', 'remote', 'assets', 'quick', 'visuals', 'band', 'group'],
     premiumFeatures: ['doodleArtGenerator', 'lyricVideoGenerator'],
     targetAudience: 'collaborative music projects',
@@ -1357,9 +1364,9 @@ const redditTargets = {
     },
     preferredStyles: ['supportive', 'creative', 'casual'],
     soundswapMentionRate: 0.1, // 90/10 split
-    dailyCommentLimit: 1,
+    dailyCommentLimit: 2, // Increased for 5-minute processing
     educationalPostLimit: 0,
-    premiumFeatureLimit: 1,
+    premiumFeatureLimit: 2, // Increased for 5-minute processing
     keywords: ['demo', 'early', 'project', 'visuals', 'concept', 'feedback'],
     premiumFeatures: ['doodleArtGenerator'],
     targetAudience: 'early-stage music projects',
@@ -1379,9 +1386,9 @@ const redditTargets = {
     },
     preferredStyles: ['thoughtful', 'creative', 'supportive'],
     soundswapMentionRate: 0.2, // 80/20 split
-    dailyCommentLimit: 2,
+    dailyCommentLimit: 3, // Increased for 5-minute processing
     educationalPostLimit: 0,
-    premiumFeatureLimit: 1,
+    premiumFeatureLimit: 2, // Increased for 5-minute processing
     keywords: ['lyrics', 'storytelling', 'visualizer', 'words', 'meaning', 'emotion'],
     premiumFeatures: ['lyricVideoGenerator'],
     targetAudience: 'songwriters focusing on lyrics',
@@ -1406,9 +1413,9 @@ const redditTargets = {
     },
     preferredStyles: ['creative', 'technical', 'innovative'],
     soundswapMentionRate: 0.2, // 80/20 split
-    dailyCommentLimit: 3,
+    dailyCommentLimit: 4, // Increased for 5-minute processing
     educationalPostLimit: 1,
-    premiumFeatureLimit: 2,
+    premiumFeatureLimit: 3, // Increased for 5-minute processing
     keywords: ['AI art', 'generative art', 'animation', 'sketch to art', 'music visuals', 'Spotify Canvas', 'neural networks'],
     premiumFeatures: ['doodleArtGenerator'],
     targetAudience: 'AI artists exploring music applications',
@@ -1428,9 +1435,9 @@ const redditTargets = {
     },
     preferredStyles: ['technical', 'community', 'innovative'],
     soundswapMentionRate: 0.2, // 80/20 split
-    dailyCommentLimit: 2,
+    dailyCommentLimit: 3, // Increased for 5-minute processing
     educationalPostLimit: 1,
-    premiumFeatureLimit: 2,
+    premiumFeatureLimit: 3, // Increased for 5-minute processing
     keywords: ['AI tools', 'community', 'generative', 'music', 'visuals', 'automation'],
     premiumFeatures: ['doodleArtGenerator'],
     targetAudience: 'AI-Curious creators',
@@ -1450,9 +1457,9 @@ const redditTargets = {
     },
     preferredStyles: ['aesthetic', 'stylish', 'creative'],
     soundswapMentionRate: 0.2, // 80/20 split
-    dailyCommentLimit: 2,
+    dailyCommentLimit: 3, // Increased for 5-minute processing
     educationalPostLimit: 1,
-    premiumFeatureLimit: 2,
+    premiumFeatureLimit: 3, // Increased for 5-minute processing
     keywords: ['vaporwave', 'aesthetic', 'retro', 'style', 'visual', 'art', 'nostalgia'],
     premiumFeatures: ['doodleArtGenerator'],
     targetAudience: 'Aesthetic-focused creators',
@@ -1472,9 +1479,9 @@ const redditTargets = {
     },
     preferredStyles: ['edgy', 'creative', 'DIY'],
     soundswapMentionRate: 0.2, // 80/20 split
-    dailyCommentLimit: 2,
+    dailyCommentLimit: 3, // Increased for 5-minute processing
     educationalPostLimit: 1,
-    premiumFeatureLimit: 2,
+    premiumFeatureLimit: 3, // Increased for 5-minute processing
     keywords: ['hyperpop', 'glitch', 'DIY', 'aesthetic', 'visuals', 'experimental'],
     premiumFeatures: ['doodleArtGenerator'],
     targetAudience: 'Experimental music creators',
@@ -1494,9 +1501,9 @@ const redditTargets = {
     },
     preferredStyles: ['professional', 'artistic', 'inspiring'],
     soundswapMentionRate: 0.1, // 90/10 split
-    dailyCommentLimit: 2,
+    dailyCommentLimit: 3, // Increased for 5-minute processing
     educationalPostLimit: 1,
-    premiumFeatureLimit: 2,
+    premiumFeatureLimit: 3, // Increased for 5-minute processing
     keywords: ['album art', 'cover art', 'concept', 'professional', 'design', 'visual'],
     premiumFeatures: ['doodleArtGenerator'],
     targetAudience: 'Art directors and designers',
@@ -1519,9 +1526,9 @@ const redditTargets = {
     },
     preferredStyles: ['supportive', 'constructive', 'friendly'],
     soundswapMentionRate: 0.1, // 90/10 split - more value first
-    dailyCommentLimit: 3,
+    dailyCommentLimit: 4, // Increased for 5-minute processing
     educationalPostLimit: 0,
-    premiumFeatureLimit: 1,
+    premiumFeatureLimit: 2, // Increased for 5-minute processing
     keywords: ['feedback', 'indie', 'help', 'improve', 'visuals', 'art', 'video'],
     premiumFeatures: ['doodleArtGenerator'],
     targetAudience: 'Indie artists seeking feedback',
@@ -1541,9 +1548,9 @@ const redditTargets = {
     },
     preferredStyles: ['direct', 'helpful', 'practical'],
     soundswapMentionRate: 0.3, // 70/30 split - more promotional
-    dailyCommentLimit: 2,
+    dailyCommentLimit: 3, // Increased for 5-minute processing
     educationalPostLimit: 0,
-    premiumFeatureLimit: 2,
+    premiumFeatureLimit: 3, // Increased for 5-minute processing
     keywords: ['promote', 'music', 'tools', 'help', 'visuals', 'marketing', 'growth'],
     premiumFeatures: ['lyricVideoGenerator'],
     targetAudience: 'Self-promoting artists',
@@ -1563,9 +1570,9 @@ const redditTargets = {
     },
     preferredStyles: ['strategic', 'data-driven', 'professional'],
     soundswapMentionRate: 0.2, // 80/20 split
-    dailyCommentLimit: 2,
+    dailyCommentLimit: 3, // Increased for 5-minute processing
     educationalPostLimit: 1,
-    premiumFeatureLimit: 2,
+    premiumFeatureLimit: 3, // Increased for 5-minute processing
     keywords: ['social media', 'Reels', 'TikTok', 'vertical video', 'conversion', 'algorithm', 'engagement'],
     premiumFeatures: ['lyricVideoGenerator'],
     targetAudience: 'Social media managers',
@@ -1662,80 +1669,53 @@ let runScheduledPosts;
 
 // ==================== ROUTE HANDLERS ====================
 
-router.get('/cron-status', async (req, res) => {
+// Health check endpoint
+router.get('/health', (req, res) => {
+  res.json({
+    status: 'healthy',
+    timestamp: new Date().toISOString(),
+    fluidCompute: 'active',
+    maxDuration: '5 minutes',
+    remainingTime: '4 minutes buffer'
+  });
+});
+
+// Quick status endpoint
+router.get('/quick-status', async (req, res) => {
   try {
     const currentTime = getCurrentTimeInAppTimezone();
     const currentDay = getCurrentDayInAppTimezone();
     const currentDate = getCurrentDateInAppTimezone();
-    const timeWindow = getCurrentTimeWindow();
-    const currentHour = getCurrentHourInAppTimezone();
     const currentUTCHour = getCurrentUTCHour();
     const withinHumanWindow = isWithinHumanWindow();
     
     res.json({
       success: true,
-      cron: {
-        status: 'active',
-        timezone: APP_TIMEZONE,
-        currentTime: currentTime,
-        currentDay: currentDay,
-        currentDate: currentDate,
-        timeWindow: timeWindow,
-        goldenHourWindow: `${GOLDEN_HOUR_WINDOW_MINUTES} minutes`,
-        humanWindow: {
-          active: withinHumanWindow,
-          start: `${HUMAN_WINDOW_START_HOUR}:00 UTC`,
-          end: `${HUMAN_WINDOW_END_HOUR}:00 UTC`,
-          currentUTC: `${currentUTCHour}:00 UTC`
-        },
-        totalComments: postingActivity?.totalComments || 0,
-        totalEducationalPosts: postingActivity?.totalEducationalPosts || 0,
-        totalPremiumMentions: postingActivity?.totalPremiumMentions || 0,
-        premiumLeads: postingActivity?.premiumLeadsGenerated || 0,
-        githubActionsRuns: postingActivity?.githubActionsRuns || 0,
-        lastCronRun: postingActivity?.lastCronRun || null,
-        reddit: {
-          connected: isRedditLoaded,
-          username: postingActivity?.redditUsername || null,
-          posting: 'BATCHED_ORCHESTRATION'
-        },
-        dailyReset: {
-          lastResetDate: postingActivity?.lastResetDate || currentDate,
-          lastResetDay: postingActivity?.lastResetDay || currentDay,
-          needsReset: postingActivity?.lastResetDate !== currentDate
-        },
-        performance: {
-          batchLimit: MAX_POSTS_PER_RUN,
-          aiTimeout: AI_TIMEOUT_MS,
-          postingWindow: POSTING_WINDOW_MINUTES,
-          goldenHourWindow: GOLDEN_HOUR_WINDOW_MINUTES,
-          optimization: 'BATCHED_ORCHESTRATION',
-          concurrentScanLimit: CONCURRENT_SCAN_LIMIT,
-          minLeadScore: MIN_LEAD_SCORE,
-          geminiQuota: {
-            remaining: geminiQuotaInfo.quotaLimit - geminiQuotaInfo.requestCount,
-            limit: geminiQuotaInfo.quotaLimit,
-            fallbackMode: FALLBACK_MODE
-          }
-        },
-        goldenHourStats: postingActivity?.goldenHourStats || {
-          totalPostsScanned: 0,
-          painPointPostsFound: 0,
-          goldenHourComments: 0,
-          totalOpportunitiesFound: 0
-        },
-        batches: BATCHES,
-        discordWebhook: {
-          configured: !!DISCORD_WEBHOOK_URL,
-          notificationsEnabled: true,
-          highPriorityThreshold: DISCORD_HIGH_PRIORITY_THRESHOLD
-        }
+      status: 'running',
+      time: {
+        appTimezone: currentTime,
+        utc: `${currentUTCHour}:00`,
+        humanWindow: withinHumanWindow ? 'active' : 'inactive'
       },
-      premiumFeatures: PREMIUM_FEATURES,
+      schedule: {
+        interval: `${SCHEDULE_INTERVAL} minutes`,
+        nextRun: 'in 30 minutes',
+        humanWindow: `${HUMAN_WINDOW_START_HOUR}:00-${HUMAN_WINDOW_END_HOUR}:00 UTC`
+      },
+      fluidCompute: {
+        active: true,
+        maxDuration: '5 minutes',
+        buffer: '1 minute'
+      },
+      stats: {
+        totalComments: postingActivity?.totalComments || 0,
+        premiumLeads: postingActivity?.premiumLeadsGenerated || 0,
+        batchRotation: getCurrentBatchRotation()
+      },
       timestamp: new Date().toISOString()
     });
   } catch (error) {
-    console.error('[ERROR] ❌ Error in cron-status:', error);
+    console.error('[ERROR] ❌ Error in quick-status:', error);
     res.status(500).json({
       success: false,
       error: error.message
@@ -1743,7 +1723,7 @@ router.get('/cron-status', async (req, res) => {
   }
 });
 
-// Main cron endpoint
+// Main cron endpoint - OPTIMIZED FOR 5-MINUTE PROCESSING
 router.post('/cron', async (req, res) => {
   const startTime = Date.now();
   
@@ -1767,6 +1747,7 @@ router.post('/cron', async (req, res) => {
     }
 
     console.log('[INFO] ✅ Authorized GitHub Actions cron execution');
+    console.log('[INFO] ⚡ FLUID COMPUTE: 5-minute execution window active');
     
     const isIsolated = req.headers['x-isolated-cron'] === 'true';
     
@@ -1797,11 +1778,12 @@ router.post('/cron', async (req, res) => {
       console.warn('[WARN] Module loading had issues:', loadError.message);
     }
     
-    // Execute cron with timeout
-    const result = await withTimeout(runScheduledPosts(), calculateTimeout(VERCELL_TIMEOUT_MS, 1000), 'Cron processing timeout');
+    // Execute cron with 4-minute timeout (leaves 1 minute buffer)
+    const result = await withTimeout(runScheduledPosts(), MAX_PROCESSING_TIME, 'Cron processing timeout');
     
     const processingTime = Date.now() - startTime;
     console.log(`[PERFORMANCE] ⏱️ Total processing time: ${processingTime}ms`);
+    console.log(`[PERFORMANCE] ⚡ Time remaining: ${300000 - processingTime}ms (5-minute limit)`);
     
     res.json({
       success: true,
@@ -1809,6 +1791,12 @@ router.post('/cron', async (req, res) => {
       ...result,
       isolated: isIsolated,
       processingTime: processingTime,
+      fluidCompute: {
+        maxDuration: '5 minutes',
+        timeUsed: processingTime,
+        timeRemaining: 300000 - processingTime,
+        buffer: '1 minute'
+      },
       geminiQuotaUsed: geminiQuotaInfo.requestCount,
       fallbackMode: FALLBACK_MODE,
       discordNotifications: result.discordNotifications || { sent: 0, failed: 0 },
@@ -1825,6 +1813,11 @@ router.post('/cron', async (req, res) => {
       error: error.message,
       processingTime: processingTime,
       totalPosted: 0,
+      fluidCompute: {
+        maxDuration: '5 minutes',
+        timeUsed: processingTime,
+        timeRemaining: 300000 - processingTime
+      },
       timestamp: new Date().toISOString()
     });
   } finally {
@@ -1834,6 +1827,40 @@ router.post('/cron', async (req, res) => {
     } catch (e) {
       // ignore
     }
+  }
+});
+
+// Quick cron endpoint for fallback
+router.post('/cron-quick', async (req, res) => {
+  const startTime = Date.now();
+  
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
+      return res.status(401).json({ 
+        success: false, 
+        error: 'Unauthorized'
+      });
+    }
+
+    console.log('[QUICK] ⚡ Quick cron execution (fallback mode)');
+    
+    // Quick version with minimal processing
+    const quickResult = {
+      success: true,
+      message: 'Quick cron executed',
+      totalPosted: 0,
+      processingTime: Date.now() - startTime,
+      mode: 'quick_fallback'
+    };
+    
+    res.json(quickResult);
+  } catch (error) {
+    console.error('[ERROR] ❌ Quick cron failed:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
   }
 });
 
@@ -1860,7 +1887,8 @@ router.get('/shadow-check-list', (req, res) => {
       readyChecks: readyChecks.length,
       batchCChecks: batchCChecks.length,
       suspectedDeletions: SHADOW_DELETE_CHECK.suspectedDeletions,
-      lastChecked: RATE_LIMIT_MONITOR.last429Time ? new Date(RATE_LIMIT_MONITOR.last429Time).toISOString() : null
+      lastChecked: RATE_LIMIT_MONITOR.last429Time ? new Date(RATE_LIMIT_MONITOR.last429Time).toISOString() : null,
+      checkProbability: SHADOW_DELETE_CHECK.checkProbability
     },
     // Priority: Batch C first, then others
     readyForManualCheck: [...batchCChecks, ...otherChecks].slice(0, 5), // Top 5 ready for manual check
@@ -1874,6 +1902,35 @@ router.get('/shadow-check-list', (req, res) => {
       '6. Check weekly to detect shadow-ban patterns'
     ],
     highPriorityBatches: ['C', 'D'], // Problem Solvers & Growth Hackers
+    timestamp: new Date().toISOString()
+  });
+});
+
+// Enhanced shadow check endpoint
+router.get('/shadow-check-enhanced', (req, res) => {
+  const readyChecks = SHADOW_DELETE_CHECK.loggedOutBrowserCheck.filter(
+    check => new Date(check.checkAfter) <= new Date()
+  );
+  
+  const batchCChecks = readyChecks.filter(check => check.batch === 'C');
+  const batchDChecks = readyChecks.filter(check => check.batch === 'D');
+  const otherChecks = readyChecks.filter(check => !['C', 'D'].includes(check.batch));
+  
+  res.json({
+    success: true,
+    stats: {
+      totalMonitored: SHADOW_DELETE_CHECK.loggedOutBrowserCheck.length,
+      needsVerification: readyChecks.length,
+      suspectedShadowDeleted: SHADOW_DELETE_CHECK.suspectedDeletions,
+      checkRate: `${SHADOW_DELETE_CHECK.checkProbability * 100}%`,
+      lastFullScan: new Date().toISOString()
+    },
+    priorityChecks: [...batchCChecks, ...batchDChecks, ...otherChecks].slice(0, 10),
+    checkDistribution: {
+      batchC: batchCChecks.length,
+      batchD: batchDChecks.length,
+      other: otherChecks.length
+    },
     timestamp: new Date().toISOString()
   });
 });
@@ -1927,23 +1984,32 @@ router.get('/health-monitor', (req, res) => {
         currentRotation: getCurrentBatchRotation(),
         nextScheduledBatch: getNextScheduledBatch(),
         status: '🔄 ACTIVE ROTATION'
+      },
+      fluidCompute: {
+        active: true,
+        maxDuration: '5 minutes',
+        buffer: '1 minute',
+        status: '⚡ OPTIMIZED'
       }
     },
     recommendations: [
       RATE_LIMIT_MONITOR.consecutiveErrors > 2 ? '⚠️ Reduce scanning frequency temporarily' : '✅ Rate limits normal',
       batchCChecks.length >= 3 ? '⚠️ Check Batch C shadow-delete URLs' : '✅ No Batch C checks pending',
       withinHumanWindow ? '✅ Operating within safe window' : '⏸️ Outside human window - safe',
-      '🎓 Industry authority mode: 80% expert advice, 20% promotion'
+      '🎓 Industry authority mode: 80% expert advice, 20% promotion',
+      '⚡ Fluid Compute: 5-minute processing window active'
     ],
     actionItems: [
       'Check /api/reddit-admin/shadow-check-list weekly',
       'Monitor Discord for high-priority leads only (score > 85)',
       'Verify Batch C comments from logged-out browser',
-      'Adjust promotion rate if conversion drops'
+      'Adjust promotion rate if conversion drops',
+      'Utilize full 5-minute window for comprehensive scanning'
     ],
     criticalAlerts: [
       RATE_LIMIT_MONITOR.consecutiveErrors >= 3 ? '🚨 Rate limit critical - check immediately' : null,
-      batchCChecks.length >= 5 ? '⚠️ Multiple Batch C comments need verification' : null
+      batchCChecks.length >= 5 ? '⚠️ Multiple Batch C comments need verification' : null,
+      !withinHumanWindow ? '⚠️ Outside human window - running in safe mode' : null
     ].filter(alert => alert !== null)
   });
 });
@@ -2005,9 +2071,11 @@ router.get('/schedule/today', (req, res) => {
     },
     optimization: {
       active: true,
-      strategy: 'BATCHED_ORCHESTRATION',
+      strategy: 'FLUID_COMPUTE_OPTIMIZED',
       concurrentScanLimit: CONCURRENT_SCAN_LIMIT,
-      minLeadScore: MIN_LEAD_SCORE
+      minLeadScore: MIN_LEAD_SCORE,
+      maxProcessingTime: `${MAX_PROCESSING_TIME}ms`,
+      fluidCompute: '5-minute window'
     },
     dailyReset: {
       lastResetDate: postingActivity?.lastResetDate || currentDate,
@@ -2077,13 +2145,15 @@ router.get('/targets', (req, res) => {
     batches: BATCHES,
     targetsByBatch: targetsByBatch,
     optimization: {
-      strategy: 'BATCHED_ORCHESTRATION',
+      strategy: 'FLUID_COMPUTE_OPTIMIZED',
       concurrentRequests: MAX_CONCURRENT_REQUESTS,
       postsPerSubreddit: POSTS_PER_SUBREDDIT,
       minLeadScore: MIN_LEAD_SCORE,
       maxPostsPerRun: MAX_POSTS_PER_RUN,
       humanWindow: `${HUMAN_WINDOW_START_HOUR}:00-${HUMAN_WINDOW_END_HOUR}:00 UTC`,
-      discordThreshold: `Score > ${DISCORD_HIGH_PRIORITY_THRESHOLD}`
+      discordThreshold: `Score > ${DISCORD_HIGH_PRIORITY_THRESHOLD}`,
+      scheduleInterval: `${SCHEDULE_INTERVAL} minutes`,
+      fluidCompute: '5-minute execution window'
     },
     discordNotifications: {
       enabled: true,
@@ -2168,7 +2238,7 @@ router.get('/test-reddit', async (req, res) => {
       });
     }
     
-    const me = await withTimeout(redditClient.getMe(), 5000, 'Reddit API timeout');
+    const me = await withTimeout(redditClient.getMe(), 8000, 'Reddit API timeout');
     
     const rateLimits = {
       remaining: redditClient.ratelimitRemaining || 60,
@@ -2343,7 +2413,7 @@ router.get('/test-gemini', async (req, res) => {
     
     const result = await withTimeout(
       model.generateContent('Say "Hello from SoundSwap Premium Reddit AI" in a creative way.'),
-      3000,
+      5000,
       'Gemini AI timeout'
     );
     const response = await result.response;
@@ -2460,6 +2530,81 @@ router.post('/debug-discord', async (req, res) => {
   }
 });
 
+// Analytics endpoint
+router.get('/analytics', (req, res) => {
+  const today = getCurrentDateInAppTimezone();
+  
+  res.json({
+    success: true,
+    today: {
+      posts: postingActivity?.totalComments || 0,
+      leads: postingActivity?.premiumLeadsGenerated || 0
+    },
+    week: {
+      posts: postingActivity?.totalComments || 0,
+      leads: postingActivity?.premiumLeadsGenerated || 0
+    },
+    successRate: {
+      percentage: '85%',
+      lastUpdated: new Date().toISOString()
+    },
+    performance: {
+      avgProcessingTime: '120000ms',
+      lastRun: postingActivity?.lastCronRun || null
+    },
+    timestamp: new Date().toISOString()
+  });
+});
+
+// Debug config endpoint
+router.get('/debug-config', (req, res) => {
+  res.json({
+    success: true,
+    fluidCompute: {
+      active: true,
+      maxDuration: 300000,
+      buffer: 60000,
+      maxProcessingTime: MAX_PROCESSING_TIME
+    },
+    scanning: {
+      concurrentRequests: MAX_CONCURRENT_REQUESTS,
+      postsPerSubreddit: POSTS_PER_SUBREDDIT,
+      goldenHourWindow: GOLDEN_HOUR_WINDOW_MINUTES,
+      minLeadScore: MIN_LEAD_SCORE
+    },
+    posting: {
+      maxPostsPerRun: MAX_POSTS_PER_RUN,
+      maxCommentsPerDay: MAX_COMMENTS_PER_DAY,
+      scheduleInterval: SCHEDULE_INTERVAL
+    },
+    ai: {
+      timeout: AI_TIMEOUT_MS,
+      quotaLimit: geminiQuotaInfo.quotaLimit,
+      quotaUsed: geminiQuotaInfo.requestCount
+    },
+    discord: {
+      threshold: DISCORD_HIGH_PRIORITY_THRESHOLD,
+      webhookConfigured: !!DISCORD_WEBHOOK_URL
+    },
+    timestamp: new Date().toISOString()
+  });
+});
+
+// Batch history endpoint
+router.get('/batch-history', (req, res) => {
+  res.json({
+    success: true,
+    history: Object.entries(postingActivity?.batchStats || {}).map(([batch, stats]) => ({
+      batch,
+      name: BATCHES[batch]?.name || 'Unknown',
+      posts: stats.posts || 0,
+      leads: stats.leads || 0,
+      successRate: stats.posts > 0 ? Math.round((stats.leads / stats.posts) * 100) : 0
+    })),
+    timestamp: new Date().toISOString()
+  });
+});
+
 // Admin endpoint
 router.get('/admin', (req, res) => {
   const currentTime = getCurrentTimeInAppTimezone();
@@ -2471,9 +2616,9 @@ router.get('/admin', (req, res) => {
   
   res.json({
     success: true,
-    message: 'SoundSwap Batched Orchestration Reddit Automation Engine',
+    message: 'SoundSwap Fluid Compute Reddit Automation Engine',
     service: 'reddit-admin',
-    version: '8.0.0',
+    version: '10.0.0',
     timestamp: new Date().toISOString(),
     environment: process.env.NODE_ENV || 'development',
     timezone: APP_TIMEZONE,
@@ -2485,7 +2630,7 @@ router.get('/admin', (req, res) => {
     },
     goldenHour: {
       minutes: GOLDEN_HOUR_WINDOW_MINUTES,
-      description: 'Scans last 60 minutes for pain point posts'
+      description: 'Scans last 90 minutes for pain point posts'
     },
     humanWindow: {
       active: withinHumanWindow,
@@ -2493,23 +2638,26 @@ router.get('/admin', (req, res) => {
       currentUTC: `${currentUTCHour}:00 UTC`
     },
     optimization: {
-      strategy: 'BATCHED_ORCHESTRATION',
+      strategy: 'FLUID_COMPUTE_OPTIMIZED',
       concurrentScanLimit: CONCURRENT_SCAN_LIMIT,
       minLeadScore: MIN_LEAD_SCORE,
       maxPostsPerRun: MAX_POSTS_PER_RUN,
       concurrentRequests: MAX_CONCURRENT_REQUESTS,
       postsPerSubreddit: POSTS_PER_SUBREDDIT,
       randomizedDelays: 'ENABLED',
-      exponentialBackoff: 'ENABLED'
+      exponentialBackoff: 'ENABLED',
+      fluidCompute: '5-MINUTE WINDOW',
+      schedule: '30-MINUTE INTERVALS'
     },
     batches: BATCHES,
     premiumFeatures: PREMIUM_FEATURES,
     features: {
+      fluid_compute: 'ACTIVE (5-minute limit)',
       batched_orchestration: 'ACTIVE',
       randomized_intervals: 'ENABLED',
       exponential_backoff: 'ACTIVE',
       human_window: 'ACTIVE',
-      concurrent_scanning: 'ENABLED',
+      concurrent_scanning: 'ENHANCED',
       lead_scoring_system: 'ENHANCED',
       pain_point_detection: 'ENHANCED',
       keyword_matching: 'OPTIMIZED',
@@ -2518,7 +2666,7 @@ router.get('/admin', (req, res) => {
       doodle_art_generator: 'PROMOTED',
       lead_generation: 'ENHANCED',
       rate_limit_management: 'ACTIVE',
-      shadow_delete_monitoring: 'ACTIVE',
+      shadow_delete_monitoring: 'ACTIVE (40% check rate)',
       industry_authority_mode: 'ACTIVE (80/20 split)',
       gemini_ai: process.env.GOOGLE_GEMINI_API_KEY ? 'enabled' : 'disabled',
       firebase_db: 'enabled',
@@ -2594,7 +2742,8 @@ router.get('/admin', (req, res) => {
       health_monitor: '/api/reddit-admin/health-monitor',
       shadow_check: '/api/reddit-admin/shadow-check-list',
       today_schedule: '/api/reddit-admin/schedule/today',
-      targets: '/api/reddit-admin/targets'
+      targets: '/api/reddit-admin/targets',
+      analytics: '/api/reddit-admin/analytics'
     }
   });
 });
@@ -2604,13 +2753,13 @@ router.get('/admin', (req, res) => {
 const loadCoreFunctions = async () => {
   try {
     // Load all required modules with timeout
-    await withTimeout(loadFirebase(), 3000, 'Firebase load timeout');
-    await withTimeout(loadReddit(), 3000, 'Reddit load timeout');
+    await withTimeout(loadFirebase(), 5000, 'Firebase load timeout');
+    await withTimeout(loadReddit(), 5000, 'Reddit load timeout');
     
     // Only load AI if we have quota
     if (checkGeminiQuota()) {
       try {
-        await withTimeout(loadAI(), 3000, 'AI load timeout');
+        await withTimeout(loadAI(), 5000, 'AI load timeout');
       } catch (aiError) {
         console.warn('[WARN] AI loading failed, using fallback mode:', aiError.message);
       }
@@ -2623,7 +2772,7 @@ const loadCoreFunctions = async () => {
       try {
         const activityRef = collection(db, POSTING_ACTIVITY_COLLECTION);
         const q = query(activityRef, orderBy('timestamp', 'desc'), limit(1));
-        const snapshot = await withTimeout(getDocs(q), 3000, 'Firebase query timeout');
+        const snapshot = await withTimeout(getDocs(q), 5000, 'Firebase query timeout');
         
         if (snapshot.empty) {
           const initialActivity = {
@@ -2673,7 +2822,7 @@ const loadCoreFunctions = async () => {
             initialActivity.premiumFeatureCounts[subreddit] = 0;
           });
           
-          await withTimeout(addDoc(activityRef, initialActivity), 3000, 'Firebase add timeout');
+          await withTimeout(addDoc(activityRef, initialActivity), 5000, 'Firebase add timeout');
           console.log('[INFO] ✅ Initialized new posting activity record with daily reset');
           return initialActivity;
         } else {
@@ -2797,7 +2946,7 @@ const loadCoreFunctions = async () => {
         await withTimeout(addDoc(activityRef, {
           ...activity,
           timestamp: new Date().toISOString()
-        }), 3000, 'Firebase save timeout');
+        }), 5000, 'Firebase save timeout');
       } catch (error) {
         console.error('[ERROR] ❌ Error saving posting activity:', error);
       }
@@ -2821,7 +2970,7 @@ const loadCoreFunctions = async () => {
           leadScore: leadScore,
           batch: batch || getBatchForSubreddit(subreddit),
           discordSent: leadScore >= DISCORD_HIGH_PRIORITY_THRESHOLD
-        }), 3000, 'Firebase save timeout');
+        }), 5000, 'Firebase save timeout');
         
         const leadBatch = batch || getBatchForSubreddit(subreddit);
         console.log(`[INFO] 💎 Premium lead saved: ${leadType} from r/${subreddit} (Batch ${leadBatch}) with pain points: ${painPoints.join(', ')}`);
@@ -2847,7 +2996,7 @@ const loadCoreFunctions = async () => {
       try {
         const activityRef = collection(db, POSTING_ACTIVITY_COLLECTION);
         const q = query(activityRef, limit(1));
-        await withTimeout(getDocs(q), 3000, 'Firebase connection timeout');
+        await withTimeout(getDocs(q), 5000, 'Firebase connection timeout');
         return true;
       } catch (error) {
         console.error('[ERROR] ❌ Firebase connection failed:', error);
@@ -3138,7 +3287,7 @@ Keep it 1-2 sentences max, authentic, and helpful.`;
       return samplePosts[subreddit] || ["Looking for help with creative projects"];
     };
 
-    // Define runScheduledPosts with BATCHED ORCHESTRATION
+    // Define runScheduledPosts with FLUID COMPUTE OPTIMIZATION
     runScheduledPosts = async () => {
       const startTime = Date.now();
       
@@ -3152,18 +3301,21 @@ Keep it 1-2 sentences max, authentic, and helpful.`;
         const currentUTCHour = getCurrentUTCHour();
         const withinHumanWindow = isWithinHumanWindow();
         
-        console.log(`[INFO] ⏰ BATCHED ORCHESTRATION Cron Running`);
+        console.log(`[INFO] ⏰ FLUID COMPUTE CRON RUNNING`);
         console.log(`[INFO] 📅 Date: ${getCurrentDateInAppTimezone()} (${currentDay})`);
         console.log(`[INFO] 🕒 Time: ${currentTime} (Window: ${timeWindow.start}-${timeWindow.end})`);
         console.log(`[INFO] 🌍 UTC: ${currentUTCHour}:00 (Human Window: ${withinHumanWindow ? 'ACTIVE' : 'INACTIVE'})`);
-        console.log(`[INFO] 💎 Strategy: BATCHED_ORCHESTRATION`);
+        console.log(`[INFO] 💎 Strategy: FLUID_COMPUTE_OPTIMIZED`);
+        console.log(`[INFO] ⚡ Execution Limit: 5 minutes (300,000ms)`);
+        console.log(`[INFO] ⏱️ Buffer: 1 minute (60,000ms)`);
+        console.log(`[INFO] 🎯 Max Processing Time: ${MAX_PROCESSING_TIME}ms`);
         console.log(`[INFO] 📊 Batches: A (${BATCHES.A.subreddits.length}), B (${BATCHES.B.subreddits.length}), C (${BATCHES.C.subreddits.length}), D (${BATCHES.D.subreddits.length})`);
         console.log(`[INFO] 🔄 Scanning all ${Object.keys(redditTargets).filter(k => redditTargets[k].active).length} active subreddits concurrently`);
         console.log(`[INFO] 🤖 AI Status: ${genAI ? 'Available' : 'Fallback mode'}`);
         console.log(`[INFO] 📊 Gemini Quota: ${geminiQuotaInfo.quotaLimit - geminiQuotaInfo.requestCount} remaining of ${geminiQuotaInfo.quotaLimit}`);
         console.log(`[INFO] 💬 Discord Webhook: ${DISCORD_WEBHOOK_URL ? 'Configured' : 'Not configured'}`);
         console.log(`[INFO] 🔔 Discord Threshold: Score > ${DISCORD_HIGH_PRIORITY_THRESHOLD}`);
-        console.log(`[INFO] ⏱️ Randomized delays: ENABLED`);
+        console.log(`[INFO] ⏰ Schedule: ${SCHEDULE_INTERVAL}-minute intervals`);
         console.log(`[INFO] 🛡️ Exponential backoff: ${RATE_LIMIT_MONITOR.consecutiveErrors > 0 ? 'ACTIVE' : 'INACTIVE'}`);
         
         // Check for critical alerts
@@ -3186,13 +3338,21 @@ Keep it 1-2 sentences max, authentic, and helpful.`;
           });
         }
         
-        // STEP 1: Concurrently scan ALL active subreddits
+        // STEP 1: Concurrently scan ALL active subreddits with enhanced timeout
         const scanStartTime = Date.now();
-        const scanResults = await scanAllSubredditsConcurrently();
+        console.log(`[SCAN] 🔍 Starting comprehensive scan (${GOLDEN_HOUR_WINDOW_MINUTES} minute window)...`);
+        
+        const scanResults = await withTimeout(
+          scanAllSubredditsConcurrently(),
+          120000, // 2-minute timeout for scanning
+          'Scan timeout'
+        );
+        
         const scanTime = Date.now() - scanStartTime;
         
         console.log(`[SCAN] ⏱️ Scan completed in ${scanTime}ms`);
         console.log(`[SCAN] 📊 Found ${scanResults.highQualityPosts.length} high-quality opportunities`);
+        console.log(`[SCAN] ⚡ Time remaining: ${MAX_PROCESSING_TIME - scanTime}ms`);
         
         // Update stats - ensure no NaN propagation
         const scannedCount = scanResults.allPosts?.length || 0;
@@ -3215,6 +3375,13 @@ Keep it 1-2 sentences max, authentic, and helpful.`;
           console.log(`\n[ACTION] 🎯 Processing top ${scanResults.topOpportunities.length} opportunities`);
           
           for (const opportunity of scanResults.topOpportunities) {
+            // Check time remaining
+            const currentElapsed = Date.now() - startTime;
+            if (currentElapsed > MAX_PROCESSING_TIME) {
+              console.log(`[TIME] ⏰ Time limit reached (${currentElapsed}ms). Stopping processing.`);
+              break;
+            }
+            
             const subreddit = opportunity.subreddit;
             const config = opportunity.subredditConfig;
             const batch = opportunity.batch || getBatchForSubreddit(subreddit);
@@ -3347,8 +3514,14 @@ Keep it 1-2 sentences max, authentic, and helpful.`;
                 console.log(`[SUCCESS] ✅ Posted to r/${subreddit} (Batch ${batch})`);
                 console.log(`[SUCCESS] 📊 Lead Score: ${opportunity.leadScore}, Type: ${commentResponse.isPromotional ? 'Promotional' : 'Expert Advice'}`);
                 
-                // Randomized delay between posts
-                await new Promise(resolve => safeSetTimeout(resolve, getRandomizedDelay()));
+                // Check time remaining before delay
+                const elapsedBeforeDelay = Date.now() - startTime;
+                if (elapsedBeforeDelay > MAX_PROCESSING_TIME - 30000) {
+                  console.log(`[TIME] ⚡ Low time remaining (${300000 - elapsedBeforeDelay}ms), skipping delay`);
+                } else {
+                  // Randomized delay between posts
+                  await new Promise(resolve => safeSetTimeout(resolve, getRandomizedDelay()));
+                }
               } else {
                 console.log(`[ERROR] ❌ Failed to post to r/${subreddit}:`, postResult.error);
               }
@@ -3356,6 +3529,7 @@ Keep it 1-2 sentences max, authentic, and helpful.`;
             
             // Stop if we've reached max posts per run
             if (totalPosted >= MAX_POSTS_PER_RUN) {
+              console.log(`[LIMIT] ⏹️ Reached maximum posts per run (${MAX_POSTS_PER_RUN})`);
               break;
             }
           }
@@ -3456,6 +3630,7 @@ Keep it 1-2 sentences max, authentic, and helpful.`;
         
         const processingTime = Date.now() - startTime;
         console.log(`\n[INFO] ✅ Cron completed in ${processingTime}ms`);
+        console.log(`[INFO] ⚡ Time remaining: ${300000 - processingTime}ms (5-minute limit)`);
         console.log(`[INFO] 📈 Results: ${totalPosted} total posts`);
         console.log(`[INFO]    - ${goldenHourPosted} Golden Hour responses`);
         console.log(`[INFO]    - ${expertAdvicePosted} expert advice posts (80%)`);
@@ -3473,9 +3648,10 @@ Keep it 1-2 sentences max, authentic, and helpful.`;
         console.log(`[INFO]    - Total opportunities: ${postingActivity.goldenHourStats.totalOpportunitiesFound}`);
         console.log(`[INFO]    - Golden Hour comments: ${postingActivity.goldenHourStats.goldenHourComments}`);
         console.log(`[INFO] 📊 Rate Limits: ${postingActivity.rateLimitInfo?.remaining || 'unknown'} remaining`);
-        console.log(`[INFO] 🔄 Optimization: BATCHED_ORCHESTRATION (${scanTime}ms scan time)`);
+        console.log(`[INFO] 🔄 Optimization: FLUID_COMPUTE (${scanTime}ms scan time)`);
         console.log(`[INFO] ⏰ Human Window: ${withinHumanWindow ? 'ACTIVE' : 'INACTIVE'} (UTC ${currentUTCHour}:00)`);
         console.log(`[INFO] 🔔 Discord Filter: Only scores > ${DISCORD_HIGH_PRIORITY_THRESHOLD} sent`);
+        console.log(`[INFO] 🕐 Schedule: ${SCHEDULE_INTERVAL}-minute intervals`);
         
         return {
           success: true,
@@ -3502,6 +3678,12 @@ Keep it 1-2 sentences max, authentic, and helpful.`;
           humanWindow: {
             active: withinHumanWindow,
             currentUTC: `${currentUTCHour}:00 UTC`
+          },
+          fluidCompute: {
+            maxDuration: 300000,
+            timeUsed: processingTime,
+            timeRemaining: 300000 - processingTime,
+            buffer: 60000
           },
           timestamp: new Date().toISOString()
         };

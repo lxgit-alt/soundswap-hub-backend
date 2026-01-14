@@ -1,5 +1,9 @@
 import express from 'express';
 import DodoPayments from 'dodopayments';
+import nodemailer from 'nodemailer';
+import handlebars from 'handlebars';
+import fs from 'fs/promises';
+import path from 'path';
 
 const router = express.Router();
 
@@ -89,6 +93,80 @@ const PRODUCT_CATALOG = {
   }
 };
 
+// ==================== PAYMENT STATUS EMAIL FUNCTION ====================
+
+const getClientURL = () => {
+  if (process.env.NODE_ENV === 'production') {
+    return 'https://soundswap.live';
+  }
+  return process.env.CLIENT_URL || 'https://soundswap.live';
+};
+
+const sendPaymentStatusEmail = async (email, data) => {
+  try {
+    console.log('[INFO] 📧 Preparing to send payment status email:', { email, status: data.status });
+    
+    if (!process.env.GMAIL_USER || !process.env.GMAIL_PASS) {
+      console.warn('[WARN] ⚠️ Email credentials not configured - skipping email');
+      return false;
+    }
+
+    // Load and render template
+    const templatePath = path.join(process.cwd(), 'templates', 'payment-status.hbs');
+    const source = await fs.readFile(templatePath, 'utf8');
+    const template = handlebars.compile(source);
+    
+    // Prepare data
+    const templateData = {
+      ...data,
+      dashboardUrl: `${getClientURL()}/dashboard`,
+      studioUrl: `${getClientURL()}/studio`,
+      supportUrl: `${getClientURL()}/support`,
+      settingsUrl: `${getClientURL()}/settings`,
+      twitterUrl: 'https://twitter.com/soundswap',
+      facebookUrl: 'https://facebook.com/soundswap',
+      instagramUrl: 'https://instagram.com/soundswap_official',
+      youtubeUrl: 'https://youtube.com/soundswap',
+      statusClass: data.status === 'success' ? 'status-success' : 
+                   data.status === 'failed' ? 'status-failed' : 'status-pending',
+      title: data.status === 'success' ? 'Payment Successful - SoundSwap' : 
+             data.status === 'failed' ? 'Payment Failed - SoundSwap' : 'Payment Processing - SoundSwap'
+    };
+
+    const html = template(templateData);
+
+    // Send email
+    const transporter = nodemailer.createTransport({
+      service: 'gmail',
+      auth: {
+        user: process.env.GMAIL_USER,
+        pass: process.env.GMAIL_PASS,
+      },
+    });
+
+    const subject = data.status === 'success' 
+      ? `🎉 Payment Successful! ${data.credits?.amount || ''} ${data.credits?.type || 'Credits'} Added`
+      : data.status === 'failed'
+      ? '⚠️ Payment Failed - SoundSwap'
+      : '⏳ Payment Processing - SoundSwap';
+
+    const mailOptions = {
+      from: { name: 'SoundSwap Payments', address: process.env.GMAIL_USER },
+      to: email,
+      subject: subject,
+      html: html
+    };
+
+    console.log('[INFO] 📤 Sending payment status email to:', email);
+    const result = await transporter.sendMail(mailOptions);
+    console.log('[INFO] ✅ Payment status email sent successfully:', result.messageId);
+    return true;
+  } catch (error) {
+    console.error('[ERROR] ❌ Error sending payment status email:', error);
+    return false;
+  }
+};
+
 // ==================== LAZY LOAD HELPER ====================
 
 const loadFirebaseAuth = async () => {
@@ -161,6 +239,97 @@ const getDodoClient = () => {
     environment: env
   });
   return dodoClient;
+};
+
+// ==================== CREDIT MANAGEMENT FUNCTIONS ====================
+
+// Add credits to user function (reusable)
+const addCreditsToUser = async (userId, productKey) => {
+  try {
+    const product = PRODUCT_CATALOG[productKey];
+    if (!product) {
+      throw new Error(`Product ${productKey} not found in catalog`);
+    }
+
+    const adminModule = await import('firebase-admin');
+    const admin = adminModule.default;
+    
+    const userRef = admin.firestore().doc(`users/${userId}`);
+    const userDoc = await userRef.get();
+    
+    if (!userDoc.exists) {
+      throw new Error('User profile not found');
+    }
+    
+    const userData = userDoc.data();
+    const creditField = `${product.creditType}Credits`;
+    const currentCredits = userData[creditField] || 0;
+    const newCredits = currentCredits + product.credits;
+    
+    // Create transaction record
+    const transactionRef = admin.firestore().collection('credit_transactions').doc();
+    
+    await userRef.update({
+      [creditField]: newCredits,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      lastActive: admin.firestore.FieldValue.serverTimestamp()
+    });
+    
+    await transactionRef.set({
+      userId,
+      type: 'credit_addition',
+      creditType: product.creditType,
+      amount: product.credits,
+      previousBalance: currentCredits,
+      newBalance: newCredits,
+      productKey,
+      price: product.price,
+      date: admin.firestore.FieldValue.serverTimestamp(),
+      timestamp: new Date().toISOString()
+    });
+    
+    // Send payment success email
+    if (userData.email) {
+      await sendPaymentStatusEmail(userData.email, {
+        status: 'success',
+        success: true,
+        name: userData.name || userData.email.split('@')[0],
+        credits: {
+          amount: product.credits,
+          type: product.creditType === 'coverArt' ? 'Cover Art' : 'Lyric Video',
+          newBalance: newCredits
+        },
+        product: {
+          name: product.name,
+          description: product.description
+        },
+        amount: `$${(product.price / 100).toFixed(2)}`,
+        date: new Date().toLocaleDateString('en-US', {
+          year: 'numeric',
+          month: 'long',
+          day: 'numeric',
+          hour: '2-digit',
+          minute: '2-digit'
+        }),
+        orderId: transactionRef.id.slice(0, 8),
+        helpText: 'Your credits are ready to use in the studio! Create something amazing.'
+      });
+    }
+    
+    console.log(`✅ Added ${product.credits} ${product.creditType} credits to user ${userId}. New total: ${newCredits}`);
+    
+    return {
+      success: true,
+      previousBalance: currentCredits,
+      newBalance: newCredits,
+      creditType: product.creditType,
+      productName: product.name,
+      emailSent: !!userData.email
+    };
+  } catch (error) {
+    console.error('❌ Error adding credits to user:', error);
+    throw error;
+  }
 };
 
 // ==================== ADD /api/payments/status ENDPOINT ====================
@@ -311,87 +480,6 @@ router.get('/status', (req, res) => {
     });
   }
 });
-
-// ==================== CREDIT MANAGEMENT FUNCTIONS ====================
-
-// Add credits to user function (reusable)
-const addCreditsToUser = async (userId, productKey) => {
-  try {
-    const product = PRODUCT_CATALOG[productKey];
-    if (!product) {
-      throw new Error(`Product ${productKey} not found in catalog`);
-    }
-
-    const adminModule = await import('firebase-admin');
-    const admin = adminModule.default;
-    
-    const userRef = admin.firestore().doc(`users/${userId}`);
-    const userDoc = await userRef.get();
-    
-    if (!userDoc.exists) {
-      throw new Error('User profile not found');
-    }
-    
-    const userData = userDoc.data();
-    const creditField = `${product.creditType}Credits`;
-    const currentCredits = userData[creditField] || 0;
-    const newCredits = currentCredits + product.credits;
-    
-    // Create transaction record
-    const transactionRef = admin.firestore().collection('credit_transactions').doc();
-    
-    await userRef.update({
-      [creditField]: newCredits,
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-      lastActive: admin.firestore.FieldValue.serverTimestamp()
-    });
-    
-    await transactionRef.set({
-      userId,
-      type: 'credit_addition',
-      creditType: product.creditType,
-      amount: product.credits,
-      previousBalance: currentCredits,
-      newBalance: newCredits,
-      productKey,
-      price: product.price,
-      date: admin.firestore.FieldValue.serverTimestamp(),
-      timestamp: new Date().toISOString()
-    });
-    
-    // Update credits history
-    const historyUpdate = {
-      date: admin.firestore.FieldValue.serverTimestamp(),
-      type: 'credit_addition',
-      creditType: product.creditType,
-      amount: product.credits,
-      source: 'purchase',
-      productKey,
-      price: product.price,
-      remaining: newCredits
-    };
-    
-    const currentHistory = userData.creditsHistory || [];
-    const updatedHistory = [...currentHistory.slice(-49), historyUpdate];
-    
-    await userRef.update({
-      creditsHistory: updatedHistory
-    });
-    
-    console.log(`✅ Added ${product.credits} ${product.creditType} credits to user ${userId}. New total: ${newCredits}`);
-    
-    return {
-      success: true,
-      previousBalance: currentCredits,
-      newBalance: newCredits,
-      creditType: product.creditType,
-      productName: product.name
-    };
-  } catch (error) {
-    console.error('❌ Error adding credits to user:', error);
-    throw error;
-  }
-};
 
 // ==================== CHECKOUT ENDPOINT WITH TIMEOUT PROTECTION ====================
 
@@ -914,6 +1002,34 @@ router.post('/test-fast-checkout', async (req, res) => {
     
     console.log(`[TEST] 🧪 Fast checkout test - Product: ${product.name}, Email: ${email}`);
     
+    // Send test payment success email
+    if (email && process.env.GMAIL_USER && process.env.GMAIL_PASS) {
+      await sendPaymentStatusEmail(email, {
+        status: 'success',
+        success: true,
+        name: email.split('@')[0],
+        credits: {
+          amount: product.credits,
+          type: product.creditType === 'coverArt' ? 'Cover Art' : 'Lyric Video',
+          newBalance: product.credits
+        },
+        product: {
+          name: product.name,
+          description: product.description
+        },
+        amount: `$${(product.price / 100).toFixed(2)}`,
+        date: new Date().toLocaleDateString('en-US', {
+          year: 'numeric',
+          month: 'long',
+          day: 'numeric',
+          hour: '2-digit',
+          minute: '2-digit'
+        }),
+        orderId: `test_${Date.now().toString(36)}`,
+        helpText: 'This is a test payment. No actual credits were added.'
+      });
+    }
+    
     res.json({
       success: true,
       checkoutUrl: mockCheckoutUrl,
@@ -964,11 +1080,32 @@ router.post('/webhook', async (req, res) => {
       
       // Add credits to user
       try {
-        await addCreditsToUser(user_id, productKey);
-        console.log(`[INFO] ✅ Credits added to user ${user_id}`);
+        const result = await addCreditsToUser(user_id, productKey);
+        console.log(`[INFO] ✅ Credits added to user ${user_id}, email sent: ${result.emailSent}`);
       } catch (creditError) {
         console.error('[ERROR] ❌ Failed to add credits:', creditError);
-        // Don't fail the webhook, but log the error
+        // Send payment failed email
+        const adminModule = await import('firebase-admin');
+        const admin = adminModule.default;
+        const userRef = admin.firestore().doc(`users/${user_id}`);
+        const userDoc = await userRef.get();
+        
+        if (userDoc.exists) {
+          const userData = userDoc.data();
+          if (userData.email) {
+            await sendPaymentStatusEmail(userData.email, {
+              status: 'failed',
+              success: false,
+              name: userData.name || userData.email.split('@')[0],
+              message: 'We encountered an issue adding your credits. Our team has been notified and will resolve this within 24 hours.',
+              product: {
+                name: PRODUCT_CATALOG[productKey]?.name || 'Unknown Product'
+              },
+              amount: session.amount_total ? `$${(session.amount_total / 100).toFixed(2)}` : 'Unknown',
+              helpText: 'Please contact support@soundswap.live if you have any questions.'
+            });
+          }
+        }
       }
     }
     
@@ -1184,6 +1321,38 @@ router.post('/test-webhook', async (req, res) => {
     
     console.log(`[INFO] 🔄 Simulating webhook event: ${eventType}`);
     
+    // Simulate sending payment success email for testing
+    if (eventType === 'checkout.session.completed' && data?.email) {
+      try {
+        await sendPaymentStatusEmail(data.email, {
+          status: 'success',
+          success: true,
+          name: data.name || data.email.split('@')[0],
+          credits: {
+            amount: data.credits || 10,
+            type: data.creditType || 'Cover Art',
+            newBalance: data.newBalance || 10
+          },
+          product: {
+            name: data.productName || 'Test Product',
+            description: data.productDescription || 'Test product description'
+          },
+          amount: data.amount || '$9.99',
+          date: new Date().toLocaleDateString('en-US', {
+            year: 'numeric',
+            month: 'long',
+            day: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit'
+          }),
+          orderId: data.orderId || `test_${Date.now().toString(36)}`,
+          helpText: 'This is a test email from the webhook simulation.'
+        });
+      } catch (emailError) {
+        console.log('[TEST] ⚠️ Email simulation skipped or failed:', emailError.message);
+      }
+    }
+    
     res.json({
       success: true,
       message: `Simulated ${eventType} event`,
@@ -1210,5 +1379,6 @@ console.log('[INFO] ⏱️  Timeout protection: 8s request timeout, 5s API timeo
 console.log('[INFO] ⚠️  NOTE: Subscriptions have been removed - only one-time purchases available');
 console.log('[INFO] 💳 Credit management endpoints added: /credits, /deduct-credits, /webhook');
 console.log('[INFO] 📊 Status endpoint added: GET /api/create-checkout/status');
+console.log('[INFO] 📧 Payment status email integration: ENABLED (template: payment-status.hbs)');
 
 export default router;
