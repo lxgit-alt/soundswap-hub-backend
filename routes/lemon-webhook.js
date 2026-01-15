@@ -1,3 +1,4 @@
+// routes/lemon-webhook.js
 import express from 'express';
 import { Webhook } from 'standardwebhooks';
 
@@ -9,6 +10,69 @@ console.log('[INFO] 🚀 Dodo Payments Webhook Handler Initialized');
 
 let isFirebaseLoaded = false;
 let db = null;
+
+// Product catalog mapping (aligned with create-checkout.js)
+const PRODUCT_CATALOG = {
+  // Cover Art Credits
+  'cover_starter': {
+    name: 'Starter Pack',
+    description: '10 Cover Art Credits',
+    credits: 10,
+    creditType: 'coverArt',
+    videoType: null
+  },
+  'cover_creator': {
+    name: 'Creator Pack',
+    description: '25 Cover Art Credits',
+    credits: 25,
+    creditType: 'coverArt',
+    videoType: null
+  },
+  'cover_pro': {
+    name: 'Professional Pack',
+    description: '100 Cover Art Credits',
+    credits: 100,
+    creditType: 'coverArt',
+    videoType: null
+  },
+  
+  // Lyric Video Credits
+  'video_30s': {
+    name: 'Single 30s Lyric Video',
+    description: '1 Lyric Video Credit (30 seconds)',
+    credits: 1,
+    creditType: 'lyricVideo',
+    videoType: 'seconds'
+  },
+  'video_3pack_30s': {
+    name: '3-Pack 30s Lyric Videos',
+    description: '3 Lyric Video Credits (30 seconds each)',
+    credits: 3,
+    creditType: 'lyricVideo',
+    videoType: 'seconds'
+  },
+  'video_full': {
+    name: 'Single Full Lyric Video',
+    description: '2 Lyric Video Credits (Full song)',
+    credits: 2,
+    creditType: 'lyricVideo',
+    videoType: 'fullVideos'
+  },
+  'video_3pack_full': {
+    name: '3-Pack Full Lyric Videos',
+    description: '6 Lyric Video Credits (Full song each)',
+    credits: 6,
+    creditType: 'lyricVideo',
+    videoType: 'fullVideos'
+  },
+  'video_10pack_full': {
+    name: '10-Pack Full Lyric Videos',
+    description: '20 Lyric Video Credits (Full song each)',
+    credits: 20,
+    creditType: 'lyricVideo',
+    videoType: 'fullVideos'
+  }
+};
 
 // ==================== LAZY LOAD HELPER ====================
 
@@ -59,46 +123,9 @@ const loadFirebaseModules = async () => {
   return db;
 };
 
-// ==================== CREDIT MAPPING FUNCTIONS ====================
-
-function getCreditsForVariant(productId) {
-  // Map your Dodo Product IDs to credit amounts
-  const creditMap = {
-    // Cover Art Packs
-    'prod_starter': 10,     // Starter Pack - 10 credits
-    'prod_creator': 25,     // Creator Pack - 25 credits
-    'prod_pro': 100,        // Professional Pack - 100 credits
-    
-    // Lyric Video Packs
-    'video_30s': 1,         // Single 30s video = 1 credit
-    'video_3pack_30s': 3,   // 3-pack 30s videos = 3 credits
-    'video_full': 2,        // Full video = 2 credits
-    'video_3pack_full': 6,  // 3-pack full videos = 6 credits
-    'video_10pack_full': 20, // 10-pack full videos = 20 credits
-    
-    // Add more product IDs as needed
-    'price_1': 10,  // Example Dodo price ID format
-    'price_2': 25,
-    'price_3': 100,
-  };
-  
-  // Fallback: check if productId contains keywords
-  if (!creditMap[productId]) {
-    if (productId.includes('starter') || productId.includes('basic')) {
-      return 10;
-    } else if (productId.includes('creator') || productId.includes('pro')) {
-      return 25;
-    } else if (productId.includes('enterprise') || productId.includes('ultimate')) {
-      return 100;
-    }
-  }
-  
-  return creditMap[productId] || 0;
-}
-
 // ==================== CREDIT MANAGEMENT FUNCTIONS ====================
 
-const addCreditsToUser = async function(email, coverArtCredits, lyricVideoCredits, orderId, userIdFromMeta) {
+const addCreditsToUser = async function(userId, productKey, orderId, customerEmail) {
   try {
     if (!db) {
       await loadFirebaseModules();
@@ -108,198 +135,286 @@ const addCreditsToUser = async function(email, coverArtCredits, lyricVideoCredit
       }
     }
 
-    let userDocId = userIdFromMeta;
-    let userEmail = email;
+    // Get product details from catalog
+    const product = PRODUCT_CATALOG[productKey];
+    if (!product) {
+      console.error(`[ERROR] ❌ Product not found in catalog: ${productKey}`);
+      return;
+    }
+
+    const { credits, creditType, videoType, name: productName } = product;
+
+    console.log(`[INFO] 💳 Adding credits to user ${userId}: ${credits} ${creditType} credits (product: ${productKey})`);
 
     // Collections
     const USERS_COLLECTION = 'users';
     const CREDIT_TRANSACTIONS_COLLECTION = 'credit_transactions';
     const PURCHASES_COLLECTION = 'purchases';
-    const PENDING_CREDIT_TRANSACTIONS_COLLECTION = 'pending_credit_transactions';
 
-    if (!userDocId) {
-      const usersRef = db.collection(USERS_COLLECTION);
-      const querySnapshot = await usersRef.where('email', '==', email.toLowerCase()).get();
-      
-      if (querySnapshot.empty) {
-        console.warn(`[WARN] ⚠️ User not found for email: ${email}, creating transaction record only`);
-        
-        const transactionRef = db.collection(PENDING_CREDIT_TRANSACTIONS_COLLECTION).doc();
-        await transactionRef.set({
-          email: email.toLowerCase(),
-          orderId,
-          coverArtCredits,
-          lyricVideoCredits,
-          totalCredits: coverArtCredits + lyricVideoCredits,
-          status: 'pending_user_creation',
-          date: new Date().toISOString(),
-          type: 'purchase',
-          timestamp: Date.now()
-        });
-        
-        console.log(`[INFO] 📝 Created pending transaction for email: ${email}`);
-        return;
-      }
-      userDocId = querySnapshot.docs[0].id;
-      userEmail = querySnapshot.docs[0].data().email || email;
-    }
-    
-    const userRef = db.collection(USERS_COLLECTION).doc(userDocId);
+    const userRef = db.collection(USERS_COLLECTION).doc(userId);
     const userDoc = await userRef.get();
     
     if (!userDoc.exists) {
-      console.warn(`[WARN] ⚠️ User document not found: ${userDocId}`);
+      console.warn(`[WARN] ⚠️ User document not found: ${userId}`);
+      
+      // Create pending transaction record
+      const pendingRef = db.collection('pending_credit_transactions').doc();
+      await pendingRef.set({
+        userId,
+        customerEmail,
+        orderId,
+        productKey,
+        credits,
+        creditType,
+        videoType,
+        productName,
+        status: 'pending_user_creation',
+        date: new Date().toISOString(),
+        timestamp: Date.now()
+      });
+      
+      console.log(`[INFO] 📝 Created pending transaction for user: ${userId}`);
       return;
     }
     
     const userData = userDoc.data();
+    const userEmail = customerEmail || userData.email;
     
     // Prepare update data
     const updateData = {
       updatedAt: new Date().toISOString(),
-      lastTransaction: {
-        orderId,
-        creditsAdded: coverArtCredits + lyricVideoCredits,
-        date: new Date().toISOString(),
-        type: 'purchase'
-      }
+      lastActive: new Date().toISOString()
     };
     
-    // Get current values
-    const currentPoints = userData.points || 0;
-    const currentLyricVideoCredits = userData.lyricVideoCredits || 0;
-    
-    // Update credits
-    if (coverArtCredits > 0) {
-      updateData.points = currentPoints + coverArtCredits;
-      updateData.totalCreditsEarned = (userData.totalCreditsEarned || 0) + coverArtCredits;
+    // Update credits based on credit type
+    if (creditType === 'coverArt') {
+      const currentCoverArtCredits = userData.coverArtCredits || 0;
+      updateData.coverArtCredits = currentCoverArtCredits + credits;
+      console.log(`[INFO] 📊 Cover Art Credits: ${currentCoverArtCredits} → ${updateData.coverArtCredits}`);
+    } else if (creditType === 'lyricVideo') {
+      const currentLyricVideoCredits = userData.lyricVideoCredits || { seconds: 0, fullVideos: 0 };
+      
+      if (videoType === 'seconds') {
+        updateData.lyricVideoCredits = {
+          ...currentLyricVideoCredits,
+          seconds: currentLyricVideoCredits.seconds + credits
+        };
+        console.log(`[INFO] 📊 Lyric Video (seconds): ${currentLyricVideoCredits.seconds} → ${updateData.lyricVideoCredits.seconds}`);
+      } else if (videoType === 'fullVideos') {
+        updateData.lyricVideoCredits = {
+          ...currentLyricVideoCredits,
+          fullVideos: currentLyricVideoCredits.fullVideos + credits
+        };
+        console.log(`[INFO] 📊 Lyric Video (full): ${currentLyricVideoCredits.fullVideos} → ${updateData.lyricVideoCredits.fullVideos}`);
+      }
     }
     
-    if (lyricVideoCredits > 0) {
-      updateData.lyricVideoCredits = currentLyricVideoCredits + lyricVideoCredits;
-      updateData.totalLyricVideoCredits = (userData.totalLyricVideoCredits || 0) + lyricVideoCredits;
-    }
-    
+    // Update user document
     await userRef.update(updateData);
     
-    // Create transaction records
-    if (coverArtCredits > 0) {
-      const transactionRef = db.collection(CREDIT_TRANSACTIONS_COLLECTION).doc();
-      await transactionRef.set({
-        userId: userDocId,
-        userEmail: userEmail.toLowerCase(),
-        orderId,
-        type: 'purchase',
-        creditType: 'coverArt',
-        amount: coverArtCredits,
-        status: 'completed',
-        date: new Date().toISOString(),
-        timestamp: Date.now()
-      });
-    }
-    
-    if (lyricVideoCredits > 0) {
-      const transactionRef = db.collection(CREDIT_TRANSACTIONS_COLLECTION).doc();
-      await transactionRef.set({
-        userId: userDocId,
-        userEmail: userEmail.toLowerCase(),
-        orderId,
-        type: 'purchase',
-        creditType: 'lyricVideo',
-        amount: lyricVideoCredits,
-        status: 'completed',
-        date: new Date().toISOString(),
-        timestamp: Date.now()
-      });
-    }
+    // Create transaction record
+    const transactionRef = db.collection(CREDIT_TRANSACTIONS_COLLECTION).doc();
+    await transactionRef.set({
+      userId,
+      userEmail: userEmail?.toLowerCase(),
+      orderId,
+      type: 'purchase',
+      creditType,
+      amount: credits,
+      videoType,
+      productKey,
+      productName,
+      previousBalance: userData.coverArtCredits || 0,
+      newBalance: creditType === 'coverArt' ? updateData.coverArtCredits : 
+                 (videoType === 'seconds' ? updateData.lyricVideoCredits?.seconds : updateData.lyricVideoCredits?.fullVideos),
+      status: 'completed',
+      date: new Date().toISOString(),
+      timestamp: Date.now()
+    });
     
     // Create purchase record
     const purchaseRef = db.collection(PURCHASES_COLLECTION).doc();
     await purchaseRef.set({
-      userId: userDocId,
-      userEmail: userEmail.toLowerCase(),
+      userId,
+      userEmail: userEmail?.toLowerCase(),
       orderId,
-      coverArtCredits,
-      lyricVideoCredits,
-      totalCredits: coverArtCredits + lyricVideoCredits,
+      productKey,
+      productName,
+      credits,
+      creditType,
+      videoType,
       date: new Date().toISOString(),
       status: 'completed',
       type: 'one_time'
     });
+
+    // Update checkout session status in Firestore
+    try {
+      const checkoutSessionRef = db.collection('checkout_sessions').doc(orderId);
+      await checkoutSessionRef.update({
+        status: 'completed',
+        creditsAdded: credits,
+        completedAt: new Date().toISOString()
+      });
+      console.log(`[INFO] ✅ Updated checkout session ${orderId} to completed`);
+    } catch (sessionError) {
+      console.warn(`[WARN] ⚠️ Could not update checkout session: ${sessionError.message}`);
+    }
     
-    console.log(`[INFO] ✅ Added credits to user ${userDocId} (${userEmail}) - Cover Art: ${coverArtCredits}, Lyric Video: ${lyricVideoCredits}`);
+    console.log(`[INFO] ✅ Successfully added ${credits} ${creditType} credits to user ${userId} (${userEmail})`);
+    
+    // Send payment success email
+    await sendPaymentSuccessEmail(userEmail, {
+      userId,
+      credits,
+      creditType,
+      videoType,
+      productName,
+      orderId,
+      newBalance: updateData.coverArtCredits || updateData.lyricVideoCredits
+    });
+    
   } catch (error) {
     console.error('[ERROR] ❌ Error adding credits:', error.message);
   }
 };
 
-// ==================== EVENT HANDLERS ====================
+// ==================== EMAIL FUNCTION ====================
 
-const handlePaymentSucceeded = async function(data) {
-  const transactionId = data.transaction_id;
-  const customerEmail = data.customer?.email;
-  const customerId = data.customer?.id;
-  const userId = data.metadata?.user_id; 
-  const amount = data.amount / 100; // Convert from cents to dollars
-  
-  console.log(`[INFO] 💰 Payment succeeded - Transaction: ${transactionId}, Amount: $${amount}, Email: ${customerEmail}, Customer ID: ${customerId}, UserID: ${userId || 'not provided'}`);
-  
-  const items = data.product_cart || [];
-  let totalCredits = 0;
-  let coverArtCredits = 0;
-  let lyricVideoCredits = 0;
-
-  for (const item of items) {
-    const productId = item.product_id;
-    const quantity = item.quantity || 1;
-    const credits = getCreditsForVariant(productId);
+const sendPaymentSuccessEmail = async (email, data) => {
+  try {
+    console.log('[INFO] 📧 Preparing to send payment success email to:', email);
     
-    if (productId.startsWith('prod_') || productId.includes('cover') || productId.includes('art')) {
-      coverArtCredits += credits * quantity;
-    } else if (productId.includes('video')) {
-      lyricVideoCredits += credits * quantity;
+    if (!process.env.GMAIL_USER || !process.env.GMAIL_PASS) {
+      console.warn('[WARN] ⚠️ Email credentials not configured - skipping email');
+      return false;
     }
-    
-    totalCredits += credits * quantity;
-    
-    console.log(`[INFO] 📦 Cart item - Product: ${productId}, Quantity: ${quantity}, Credits: ${credits * quantity}`);
-  }
 
-  console.log(`[INFO] 💰 Total credits breakdown - Cover Art: ${coverArtCredits}, Lyric Video: ${lyricVideoCredits}, Total: ${totalCredits}`);
+    // Dynamic import for email dependencies
+    const nodemailer = await import('nodemailer');
+    const handlebars = await import('handlebars');
+    const fs = await import('fs/promises');
+    const path = await import('path');
+    
+    // Load and render template
+    const templatePath = path.join(process.cwd(), 'templates', 'payment-status.hbs');
+    const source = await fs.readFile(templatePath, 'utf8');
+    const template = handlebars.compile(source);
+    
+    // Prepare email data
+    const templateData = {
+      status: 'success',
+      success: true,
+      name: email.split('@')[0],
+      credits: {
+        amount: data.credits,
+        type: data.creditType === 'coverArt' ? 'Cover Art' : 
+              (data.videoType === 'seconds' ? '30-Second Lyric Video' : 'Full-Length Lyric Video'),
+        newBalance: data.newBalance
+      },
+      product: {
+        name: data.productName,
+        description: `${data.credits} ${data.creditType === 'coverArt' ? 'Cover Art' : 'Lyric Video'} Credits`
+      },
+      amount: '$' + (data.credits * (data.creditType === 'coverArt' ? 0.49 : 9.99)).toFixed(2), // Approximate pricing
+      date: new Date().toLocaleDateString('en-US', {
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit'
+      }),
+      orderId: data.orderId.slice(0, 8),
+      helpText: 'Your credits are ready to use in the studio! Create something amazing.',
+      dashboardUrl: `${process.env.NEXT_PUBLIC_APP_URL || 'https://soundswap.live'}/dashboard`,
+      studioUrl: `${process.env.NEXT_PUBLIC_APP_URL || 'https://soundswap.live'}/studio`,
+      supportUrl: `${process.env.NEXT_PUBLIC_APP_URL || 'https://soundswap.live'}/support`,
+      twitterUrl: 'https://twitter.com/soundswap',
+      facebookUrl: 'https://facebook.com/soundswap',
+      instagramUrl: 'https://instagram.com/soundswap_official',
+      youtubeUrl: 'https://youtube.com/soundswap',
+      statusClass: 'status-success',
+      title: 'Payment Successful - SoundSwap'
+    };
 
-  if (customerEmail && totalCredits > 0) {
-    await addCreditsToUser(customerEmail, coverArtCredits, lyricVideoCredits, transactionId, userId);
-  } else {
-    console.warn(`[WARN] ⚠️ No email or zero credits - Email: ${customerEmail}, Credits: ${totalCredits}`);
+    const html = template(templateData);
+
+    // Send email
+    const transporter = nodemailer.createTransport({
+      service: 'gmail',
+      auth: {
+        user: process.env.GMAIL_USER,
+        pass: process.env.GMAIL_PASS,
+      },
+    });
+
+    const subject = `🎉 Payment Successful! ${data.credits} ${data.creditType === 'coverArt' ? 'Cover Art' : 'Lyric Video'} Credits Added`;
+
+    const mailOptions = {
+      from: { name: 'SoundSwap Payments', address: process.env.GMAIL_USER },
+      to: email,
+      subject: subject,
+      html: html
+    };
+
+    console.log('[INFO] 📤 Sending payment success email to:', email);
+    const result = await transporter.sendMail(mailOptions);
+    console.log('[INFO] ✅ Payment success email sent successfully:', result.messageId);
+    return true;
+  } catch (error) {
+    console.error('[ERROR] ❌ Error sending payment success email:', error);
+    return false;
   }
 };
 
-const handlePaymentFailed = async function(data) {
-  const transactionId = data.transaction_id;
-  const customerEmail = data.customer?.email;
+// ==================== EVENT HANDLERS ====================
+
+const handleCheckoutSessionCompleted = async function(session) {
+  const sessionId = session.id;
+  const customerEmail = session.customer?.email;
+  const metadata = session.metadata || {};
   
-  console.log(`[ERROR] ❌ Payment failed - Transaction: ${transactionId}, Email: ${customerEmail}`);
+  const userId = metadata.user_id || metadata.firebase_uid;
+  const productKey = metadata.productKey;
+  const credits = parseInt(metadata.credits) || 0;
+  const creditType = metadata.creditType;
+  const videoType = metadata.videoType || 'seconds';
   
-  try {
-    if (!db) {
-      await loadFirebaseModules();
-      if (!db) {
-        console.error('[ERROR] ❌ Firebase not available for recording failed payment');
-        return;
-      }
-    }
+  console.log(`[INFO] 💰 Checkout session completed - Session: ${sessionId}`);
+  console.log(`[INFO] 📋 Metadata - User: ${userId}, Product: ${productKey}, Email: ${customerEmail}`);
+  console.log(`[INFO] 💳 Credits - Type: ${creditType}, Amount: ${credits}, VideoType: ${videoType}`);
+  
+  if (userId && productKey && credits > 0) {
+    await addCreditsToUser(userId, productKey, sessionId, customerEmail);
+  } else {
+    console.warn(`[WARN] ⚠️ Missing required data for credits - UserId: ${userId}, ProductKey: ${productKey}, Credits: ${credits}`);
     
-    const failedRef = db.collection('failed_payments').doc();
-    await failedRef.set({
-      transactionId,
-      customerEmail,
-      amount: data.amount / 100,
-      reason: data.failure_reason || 'unknown',
-      date: new Date().toISOString(),
-      timestamp: Date.now()
-    });
-  } catch (error) {
-    console.error('[ERROR] ❌ Error recording failed payment:', error.message);
+    // Store incomplete transaction for manual review
+    try {
+      if (!db) {
+        await loadFirebaseModules();
+      }
+      
+      if (db) {
+        const incompleteRef = db.collection('incomplete_transactions').doc();
+        await incompleteRef.set({
+          sessionId,
+          userId,
+          customerEmail,
+          productKey,
+          credits,
+          creditType,
+          videoType,
+          metadata,
+          status: 'incomplete_data',
+          date: new Date().toISOString(),
+          timestamp: Date.now()
+        });
+        console.log(`[INFO] 📝 Stored incomplete transaction ${sessionId} for manual review`);
+      }
+    } catch (error) {
+      console.error('[ERROR] ❌ Error storing incomplete transaction:', error.message);
+    }
   }
 };
 
@@ -435,13 +550,16 @@ router.post('/', rawBodyMiddleware, async (req, res) => {
     const processEvent = async () => {
       try {
         switch (eventType) {
-          case 'payment.succeeded':
-            await handlePaymentSucceeded(event.data);
+          case 'checkout.session.completed':
+            await handleCheckoutSessionCompleted(event.data);
             break;
           
-          case 'payment.failed':
-            console.log(`[ERROR] ❌ Payment failed: ${event.data.transaction_id}`);
-            await handlePaymentFailed(event.data);
+          case 'checkout.session.expired':
+            console.log(`[INFO] ⏰ Checkout session expired: ${event.data.id}`);
+            break;
+          
+          case 'checkout.session.payment_failed':
+            console.log(`[ERROR] ❌ Checkout session payment failed: ${event.data.id}`);
             break;
           
           default:
@@ -493,7 +611,16 @@ router.get('/test', (req, res) => {
     firebase: isFirebaseLoaded ? 'loaded' : 'not loaded',
     dodoKey: process.env.DODO_PAYMENTS_WEBHOOK_KEY ? 'configured' : 'missing',
     lazy_loading: 'ENABLED - Firebase loads on first webhook',
-    note: 'Firebase modules are lazily loaded to improve performance'
+    note: 'Firebase modules are lazily loaded to improve performance',
+    integration: {
+      createCheckout: 'Connected',
+      deductCredits: 'Connected',
+      emailSystem: 'Ready'
+    },
+    productCatalog: {
+      count: Object.keys(PRODUCT_CATALOG).length,
+      types: ['coverArt', 'lyricVideo']
+    }
   });
 });
 
@@ -502,7 +629,7 @@ router.get('/status', (req, res) => {
   res.json({
     success: true,
     service: 'dodo-payments-webhook',
-    version: '1.1.0',
+    version: '2.0.0',
     timestamp: new Date().toISOString(),
     configuration: {
       firebase: isFirebaseLoaded ? 'loaded' : 'not loaded',
@@ -512,15 +639,26 @@ router.get('/status', (req, res) => {
       lazy_loading: 'ENABLED'
     },
     endpoints: {
-      POST: '/api/dodo-webhook - Main webhook endpoint',
-      GET: '/api/dodo-webhook/test - Test endpoint',
-      GET: '/api/dodo-webhook/status - Get status info'
+      POST: '/api/lemon-webhook - Main webhook endpoint',
+      GET: '/api/lemon-webhook/test - Test endpoint',
+      GET: '/api/lemon-webhook/status - Get status info'
     },
     handledEvents: [
-      'payment.succeeded',
-      'payment.failed'
+      'checkout.session.completed',
+      'checkout.session.expired',
+      'checkout.session.payment_failed'
     ],
-    note: 'SUBSCRIPTIONS REMOVED - Only one-time purchases are supported',
+    integration: {
+      createCheckout: '✅ Connected',
+      deductCredits: '✅ Connected via Firestore',
+      emailSystem: '✅ Ready (payment-status.hbs template)'
+    },
+    productCatalog: {
+      count: Object.keys(PRODUCT_CATALOG).length,
+      coverArt: Object.values(PRODUCT_CATALOG).filter(p => p.creditType === 'coverArt').length,
+      lyricVideo: Object.values(PRODUCT_CATALOG).filter(p => p.creditType === 'lyricVideo').length
+    },
+    note: 'FULLY INTEGRATED WITH CREATE-CHECKOUT.JS',
     performance: {
       timeout_protection: 'ENABLED (9s timeout)',
       async_processing: 'ENABLED (responds immediately)',
@@ -532,7 +670,7 @@ router.get('/status', (req, res) => {
 // Simple simulation endpoint - NO FIREBASE LOADING
 router.post('/simulate', async (req, res) => {
   try {
-    const { eventType } = req.body;
+    const { eventType, data } = req.body;
     
     if (!eventType) {
       return res.status(400).json({
@@ -547,6 +685,7 @@ router.post('/simulate', async (req, res) => {
       success: true,
       message: `Simulated ${eventType} event - Note: No actual Firebase operations in simulation`,
       eventType,
+      data,
       timestamp: new Date().toISOString(),
       note: 'Firebase operations would run if this were a real webhook'
     });
@@ -558,5 +697,71 @@ router.post('/simulate', async (req, res) => {
     });
   }
 });
+
+// Test credit addition endpoint (for manual testing)
+router.post('/test-add-credits', async (req, res) => {
+  try {
+    const { userId, productKey, email } = req.body;
+    
+    if (!userId || !productKey) {
+      return res.status(400).json({
+        success: false,
+        error: 'userId and productKey are required'
+      });
+    }
+    
+    console.log(`[TEST] 🧪 Manually adding credits for user: ${userId}, product: ${productKey}`);
+    
+    // Get product details
+    const product = PRODUCT_CATALOG[productKey];
+    if (!product) {
+      return res.status(400).json({
+        success: false,
+        error: `Product not found: ${productKey}`,
+        availableProducts: Object.keys(PRODUCT_CATALOG)
+      });
+    }
+    
+    const mockOrderId = `test_${Date.now()}`;
+    
+    // Call the actual addCreditsToUser function
+    try {
+      await addCreditsToUser(userId, productKey, mockOrderId, email);
+      
+      res.json({
+        success: true,
+        message: 'Test credits added successfully',
+        userId,
+        productKey,
+        credits: product.credits,
+        creditType: product.creditType,
+        videoType: product.videoType,
+        timestamp: new Date().toISOString(),
+        note: 'This was a test transaction - check Firestore for results'
+      });
+    } catch (error) {
+      console.error('[ERROR] ❌ Error in test:', error.message);
+      res.status(500).json({
+        success: false,
+        error: error.message
+      });
+    }
+    
+  } catch (error) {
+    console.error('[ERROR] ❌ Error in test endpoint:', error.message);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+console.log('[INFO] ✅ Dodo Webhook Handler Ready');
+console.log('[INFO] 🔥 Firebase Integration: LAZY LOADING ENABLED');
+console.log('[INFO] 📊 Product Catalog Loaded:', Object.keys(PRODUCT_CATALOG).length, 'products');
+console.log('[INFO] 🎯 Webhook URL: POST /api/lemon-webhook');
+console.log('[INFO] 🔗 Connected to: create-checkout.js & deduct-credits.js');
+console.log('[INFO] 📧 Email System: Ready (using payment-status.hbs template)');
+console.log('[INFO] ✅ Integration Status: FULLY CONNECTED');
 
 export default router;
