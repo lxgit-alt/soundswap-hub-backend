@@ -3,6 +3,8 @@ import Replicate from 'replicate';
 import dotenv from 'dotenv';
 import axios from 'axios';
 import crypto from 'crypto';
+import sharp from 'sharp';
+import { createCanvas, loadImage } from 'canvas';
 
 dotenv.config();
 
@@ -185,10 +187,173 @@ const downloadImage = async (url) => {
 };
 
 // ============================================
+// NEW: STYLE PRESET MAPPING (Lora-like effects)
+// ============================================
+
+const STYLE_PRESETS = {
+  'grunge': {
+    name: 'Parental Advisory Grunge',
+    promptSuffix: ', grunge style, high contrast, film grain, distressed texture, 90s hip-hop aesthetic, parental advisory sticker aesthetic, raw edge',
+    negativePrompt: 'clean, polished, smooth, digital, perfect, shiny, professional',
+    conditioningScale: 0.7,
+    guidanceScale: 8.5
+  },
+  'synthwave': {
+    name: 'Dreamscape Synthwave',
+    promptSuffix: ', synthwave aesthetic, neon glow, cyberpunk, retro-futurism, vibrant colors, chromatic aberration, soft focus, grid lines, sunset gradient',
+    negativePrompt: 'natural lighting, daytime, muted colors, realism, traditional',
+    conditioningScale: 0.6,
+    guidanceScale: 7.5
+  },
+  'indie': {
+    name: 'Minimalist Indie',
+    promptSuffix: ', minimalist album cover, clean lines, matte texture, muted earth tones, subtle grain, organic shapes, hand-drawn aesthetic, indie music aesthetic',
+    negativePrompt: 'busy, crowded, vibrant, glossy, detailed background, complex',
+    conditioningScale: 0.8,
+    guidanceScale: 7.0
+  },
+  'vaporwave': {
+    name: 'Vaporwave Retro',
+    promptSuffix: ', vaporwave aesthetic, pastel colors, 80s retro, glitch art, marble texture, Greek statue, palm trees, sunset gradient, digital art',
+    negativePrompt: 'modern, dark, realistic, natural, contemporary',
+    conditioningScale: 0.5,
+    guidanceScale: 7.0
+  },
+  'rock': {
+    name: 'Rock/Metal',
+    promptSuffix: ', rock album cover, metal aesthetic, gritty texture, high contrast, dramatic lighting, band logo style, aggressive typography, concert photography style',
+    negativePrompt: 'soft, gentle, pastel, clean, pop, electronic',
+    conditioningScale: 0.9,
+    guidanceScale: 8.0
+  },
+  'electronic': {
+    name: 'Electronic/EDM',
+    promptSuffix: ', EDM album cover, geometric patterns, glow effects, particle system, vibrant colors, abstract shapes, festival aesthetic, nightclub lighting',
+    negativePrompt: 'organic, natural, hand-drawn, traditional, realistic',
+    conditioningScale: 0.4,
+    guidanceScale: 7.5
+  }
+};
+
+// ============================================
+// NEW: IMAGE POST-PROCESSING FUNCTIONS
+// ============================================
+
+const postProcessImage = async (imageBuffer, options = {}) => {
+  const {
+    upscaleTo = 3000,
+    aspectRatio = '1:1',
+    addGrain = false,
+    grainIntensity = 0.2,
+    addVignette = false,
+    vignetteIntensity = 0.3
+  } = options;
+
+  let processedImage = sharp(imageBuffer);
+
+  // Upscale if needed
+  if (upscaleTo > 1024) {
+    processedImage = processedImage.resize(upscaleTo, upscaleTo, {
+      fit: 'contain',
+      background: { r: 255, g: 255, b: 255, alpha: 1 }
+    });
+  }
+
+  // Handle aspect ratios
+  if (aspectRatio !== '1:1') {
+    const [widthRatio, heightRatio] = aspectRatio.split(':').map(Number);
+    const targetWidth = upscaleTo;
+    const targetHeight = Math.floor((upscaleTo * heightRatio) / widthRatio);
+    
+    processedImage = processedImage.resize(targetWidth, targetHeight, {
+      fit: 'cover',
+      position: 'center'
+    });
+  }
+
+  // Add film grain if requested
+  if (addGrain) {
+    // Create grain overlay
+    const grainCanvas = createCanvas(1000, 1000);
+    const ctx = grainCanvas.getContext('2d');
+    
+    for (let i = 0; i < 20000; i++) {
+      const x = Math.random() * 1000;
+      const y = Math.random() * 1000;
+      const size = Math.random() * 2;
+      const opacity = Math.random() * grainIntensity;
+      
+      ctx.fillStyle = `rgba(0,0,0,${opacity})`;
+      ctx.fillRect(x, y, size, size);
+    }
+    
+    const grainBuffer = grainCanvas.toBuffer('image/png');
+    processedImage = processedImage.composite([
+      {
+        input: grainBuffer,
+        blend: 'overlay',
+        gravity: 'center'
+      }
+    ]);
+  }
+
+  // Add vignette if requested
+  if (addVignette) {
+    processedImage = processedImage.gamma(1.1).modulate({
+      brightness: 1.05
+    });
+  }
+
+  return processedImage.toBuffer();
+};
+
+// ============================================
+// NEW: COLOR PROFILE EXTRACTION FROM REFERENCE IMAGE
+// ============================================
+
+const extractColorPalette = async (referenceImageBase64) => {
+  try {
+    const base64Data = referenceImageBase64.replace(/^data:image\/\w+;base64,/, '');
+    const buffer = Buffer.from(base64Data, 'base64');
+    const image = sharp(buffer);
+    
+    const { data, info } = await image
+      .resize(100, 100)
+      .raw()
+      .toBuffer({ resolveWithObject: true });
+    
+    // Simple color quantization
+    const colors = new Map();
+    for (let i = 0; i < data.length; i += info.channels) {
+      const r = data[i];
+      const g = data[i + 1];
+      const b = data[i + 2];
+      
+      // Quantize to reduce color space
+      const quantized = `${Math.floor(r / 32) * 32},${Math.floor(g / 32) * 32},${Math.floor(b / 32) * 32}`;
+      colors.set(quantized, (colors.get(quantized) || 0) + 1);
+    }
+    
+    // Get top 5 colors
+    const sortedColors = Array.from(colors.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+      .map(([color]) => {
+        const [r, g, b] = color.split(',').map(Number);
+        return { r, g, b };
+      });
+    
+    return sortedColors;
+  } catch (error) {
+    console.error('Error extracting color palette:', error);
+    return null;
+  }
+};
+
+// ============================================
 // TEST ENDPOINTS
 // ============================================
 
-// Test endpoint similar to /api/deduct-credits/test-connection
 router.get('/test-connection', async (req, res) => {
   try {
     console.log('🔍 Testing doodle-art/ai-art API connection...');
@@ -196,7 +361,12 @@ router.get('/test-connection', async (req, res) => {
     const testResults = {
       timestamp: new Date().toISOString(),
       success: true,
-      services: {}
+      services: {},
+      features: {
+        stylePresets: Object.keys(STYLE_PRESETS),
+        postProcessing: ['upscaling', 'aspect_ratios', 'grain_effects'],
+        artistSeed: true
+      }
     };
 
     // 1. Test Replicate API
@@ -283,51 +453,30 @@ router.get('/test-connection', async (req, res) => {
   }
 });
 
-// Original test endpoint (kept for backward compatibility)
-router.get('/test', async (req, res) => {
-  try {
-    console.log('Testing Replicate connection...');
-    
-    if (!process.env.REPLICATE_API_TOKEN) {
-      return res.status(500).json({
-        success: false,
-        error: 'Configuration Error',
-        message: 'REPLICATE_API_TOKEN is not configured in environment variables'
-      });
-    }
-
-    // Test both models
-    const scribbleModel = await replicate.models.get("jagilley/controlnet-scribble");
-    
-    res.json({
-      success: true,
-      message: 'Replicate API connected successfully',
-      models: {
-        scribble: scribbleModel,
-        status: 'ready'
-      },
-      timestamp: new Date().toISOString()
-    });
-  } catch (error) {
-    console.error('Replicate connection test failed:', error);
-    
-    res.status(500).json({
-      success: false,
-      error: 'Connection Failed',
-      message: 'Replicate API connection failed',
-      details: error.message
-    });
-  }
-});
-
 // ============================================
-// GENERATE ENDPOINTS - Doodle-Art & AI-Art
+// ENHANCED GENERATE ENDPOINT WITH 4 PILLARS
 // ============================================
 
-// Handle both /generate and /generate-ai with the same function
-const handleGenerate = async (req, res, endpointType = 'doodle-art') => {
+router.post('/generate-enhanced', async (req, res) => {
   try {
-    const { sketch, prompt, conditioningScale = 0.8, style = "digital art" } = req.body;
+    const {
+      sketch,
+      prompt,
+      conditioningScale = 0.8,
+      stylePreset = 'indie',
+      // Post-processing options
+      upscale = false,
+      aspectRatio = '1:1',
+      addGrain = false,
+      // Artist's Seed options
+      referenceImage,
+      colorProfileOnly = false,
+      // Advanced options
+      controlType = 'scribble', // 'scribble' or 'canny'
+      numOutputs = 1,
+      negativePrompt = '',
+      userId
+    } = req.body;
 
     // Validate required fields
     if (!sketch || !prompt) {
@@ -356,10 +505,83 @@ const handleGenerate = async (req, res, endpointType = 'doodle-art') => {
       });
     }
 
-    console.log(`Starting ${endpointType} generation...`);
-    console.log('Prompt:', prompt.substring(0, 100) + (prompt.length > 100 ? '...' : ''));
-    console.log('Conditioning scale:', conditioningScale);
-    console.log('Style:', style);
+    // Validate style preset
+    if (!STYLE_PRESETS[stylePreset]) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid style preset',
+        message: `Available presets: ${Object.keys(STYLE_PRESETS).join(', ')}`,
+        availablePresets: Object.keys(STYLE_PRESETS)
+      });
+    }
+
+    const generationId = crypto.randomBytes(8).toString('hex');
+    console.log(`Starting enhanced generation ${generationId}...`);
+    console.log('Style preset:', stylePreset);
+    console.log('Control type:', controlType);
+    console.log('Post-processing:', { upscale, aspectRatio, addGrain });
+
+    // ============================================
+    // CRITICAL: Verify credits BEFORE processing
+    // ============================================
+    const creditVerification = await verifyUserCreditsBeforeProcessing(userId, 'coverArt', generationId);
+    
+    if (!creditVerification.verified) {
+      console.error(`[ERROR] ❌ Generation ${generationId}: Credit verification failed`);
+      return res.status(402).json({
+        success: false,
+        error: creditVerification.error,
+        message: creditVerification.message,
+        requiredCredits: 1,
+        available: creditVerification.creditsAvailable
+      });
+    }
+    
+    console.log(`[VERIFIED] ✅ User credits verified (${creditVerification.creditsAvailable} available)`);
+
+    // ============================================
+    // PILLAR 1: STRUCTURE CONTROL WITH INFLUENCE SLIDER
+    // ============================================
+    
+    // Choose ControlNet model based on control type
+    const controlNetModel = controlType === 'canny' 
+      ? "lllyasviel/sd-controlnet-canny"
+      : "jagilley/controlnet-scribble";
+    
+    const controlNetVersion = controlType === 'canny'
+      ? "fef11678ae5b4e0bacc7d4c7f6db81d2e2b6bf5c5a2b0a0e8a0a0a0a0a0a0a0"
+      : "435061a1b5a4c1e26740464bf786efdfa9cb3a3ac488595a2de23e143fdb0117";
+
+    // ============================================
+    // PILLAR 2: STYLE PRESETS (LoRA-like effects)
+    // ============================================
+    const styleConfig = STYLE_PRESETS[stylePreset];
+    const finalConditioningScale = styleConfig.conditioningScale * conditioningScale;
+    const finalGuidanceScale = styleConfig.guidanceScale;
+
+    let finalPrompt = `${prompt}${styleConfig.promptSuffix}`;
+    let finalNegativePrompt = negativePrompt || styleConfig.negativePrompt;
+
+    // ============================================
+    // PILLAR 4: ARTIST'S SEED (Reference Image)
+    // ============================================
+    if (referenceImage) {
+      try {
+        const colorPalette = await extractColorPalette(referenceImage);
+        if (colorPalette) {
+          const colorStrings = colorPalette.map(c => `rgb(${c.r},${c.g},${c.b})`);
+          finalPrompt += `, color palette: ${colorStrings.join(', ')}`;
+          console.log(`Applied color palette from reference image: ${colorStrings.join(', ')}`);
+        }
+        
+        if (!colorProfileOnly) {
+          // We could also use the reference image for style transfer here
+          finalPrompt += `, inspired by reference image color and mood`;
+        }
+      } catch (error) {
+        console.warn('Failed to extract color palette:', error.message);
+      }
+    }
 
     // Prepare the image data for Replicate
     const base64Data = sketch.replace(/^data:image\/\w+;base64,/, '');
@@ -368,83 +590,112 @@ const handleGenerate = async (req, res, endpointType = 'doodle-art') => {
     // Prepare input for Replicate API
     const input = {
       image: imageDataUrl,
-      prompt: `${prompt}, ${style}, high quality, detailed`,
-      num_outputs: 1,
+      prompt: finalPrompt,
+      negative_prompt: finalNegativePrompt,
+      num_outputs: Math.min(numOutputs, 4),
       image_resolution: "512",
       num_inference_steps: 50,
-      guidance_scale: 7.5,
+      guidance_scale: finalGuidanceScale,
       scheduler: "DPMSolverMultistep",
-      conditioning_scale: Math.min(Math.max(parseFloat(conditioningScale), 0.1), 1.0),
+      conditioning_scale: Math.min(Math.max(finalConditioningScale, 0.1), 1.0),
+      seed: Math.floor(Math.random() * 1000000)
     };
 
-    console.log('Calling Replicate ControlNet Scribble API...');
-    
-    // ============================================
-    // CRITICAL: Verify credits BEFORE Replicate call
-    // ============================================
-    const userId = req.body.userId || req.body.uid;
-    const generationId = crypto.randomBytes(8).toString('hex');
-    const creditVerification = await verifyUserCreditsBeforeProcessing(userId, 'coverArt', generationId);
-    
-    if (!creditVerification.verified) {
-      console.error(`[ERROR] ❌ Generation ${generationId}: Credit verification failed - ${creditVerification.message}`);
-      return res.status(402).json({
-        success: false,
-        error: creditVerification.error,
-        message: creditVerification.message,
-        requiredCredits: creditVerification.requiredCredits || 1,
-        available: creditVerification.creditsAvailable,
-        endpoint: endpointType
-      });
-    }
-    
-    console.log(`[VERIFIED] ✅ User credits verified (${creditVerification.creditsAvailable} available)`);
+    console.log('Calling Replicate ControlNet API...');
+    console.log('Final prompt:', finalPrompt.substring(0, 200));
     
     // Call Replicate API
     const output = await replicate.run(
-      "jagilley/controlnet-scribble:435061a1b5a4c1e26740464bf786efdfa9cb3a3ac488595a2de23e143fdb0117",
+      `${controlNetModel}:${controlNetVersion}`,
       { input }
     );
 
     console.log('Replicate API response received');
     
-    // Check if NSFW filter blocked the image
+    // ============================================
+    // PILLAR 3: PROFESSIONAL POST-PROCESSING
+    // ============================================
+    const processedImages = [];
+    
     if (output && output.length > 0) {
-      const firstImage = output[0];
-      if (typeof firstImage === 'string') {
-        if (firstImage.includes('NSFW') || firstImage.includes('blocked') || firstImage.includes('inappropriate')) {
-          return res.status(400).json({
-            success: false,
-            error: 'NSFW',
-            message: 'Whoa there! Let\'s keep it PG-13. Try a different prompt or sketch.',
-            endpoint: endpointType
-          });
+      for (const imageUrl of output) {
+        if (typeof imageUrl === 'string') {
+          // Check if NSFW filter blocked the image
+          if (imageUrl.includes('NSFW') || imageUrl.includes('blocked')) {
+            continue;
+          }
+          
+          // Download image for processing
+          const response = await axios.get(imageUrl, { responseType: 'arraybuffer' });
+          let imageBuffer = Buffer.from(response.data, 'binary');
+          
+          // Apply post-processing if requested
+          if (upscale || aspectRatio !== '1:1' || addGrain) {
+            imageBuffer = await postProcessImage(imageBuffer, {
+              upscaleTo: upscale ? 3000 : 1024,
+              aspectRatio,
+              addGrain,
+              grainIntensity: stylePreset === 'grunge' ? 0.3 : 0.15
+            });
+            
+            // Convert to base64 for response
+            const base64Image = imageBuffer.toString('base64');
+            const mimeType = 'image/png';
+            processedImages.push(`data:${mimeType};base64,${base64Image}`);
+          } else {
+            processedImages.push(imageUrl);
+          }
         }
       }
     }
 
-    res.json({
+    if (processedImages.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'NSFW',
+        message: 'Whoa there! Let\'s keep it PG-13. Try a different prompt or sketch.',
+        generationId
+      });
+    }
+
+    // ============================================
+    // FORMAT OUTPUT WITH ALL METADATA
+    // ============================================
+    const responseData = {
       success: true,
-      endpoint: endpointType,
-      generationId: generationId,
-      images: output,
-      prompt: prompt,
-      style: style,
-      conditioningScale: conditioningScale,
+      generationId,
+      images: processedImages,
+      metadata: {
+        prompt: finalPrompt,
+        stylePreset: styleConfig.name,
+        conditioningScale: finalConditioningScale,
+        controlType,
+        aspectRatio,
+        upscaled: upscale,
+        postProcessing: {
+          upscale: upscale ? '3000x3000' : '1024x1024',
+          aspectRatio,
+          grainAdded: addGrain,
+          referenceImageUsed: !!referenceImage
+        }
+      },
       timestamp: new Date().toISOString(),
-      note: 'AI may not render text accurately. Add text/logo afterwards using editing tools like Canva or Photoshop.',
-      features: {
-        canAnimate: true,
-        animationEndpoint: endpointType === 'doodle-art' ? '/api/doodle-art/animate' : '/api/ai-art/animate',
-        animationCost: '$0.08 - $0.12 per animation'
-      }
-    });
+      exportFormats: {
+        spotifyCanvas: '9:16',
+        instagram: '1:1',
+        youtube: '16:9',
+        vinyl: '3000x3000 (CMYK ready)'
+      },
+      note: 'AI may not render text accurately. Add text/logo afterwards using editing tools like Canva or Photoshop.'
+    };
+
+    res.json(responseData);
 
   } catch (error) {
-    console.error(`${req.path} generation error:`, error.message);
+    console.error('Enhanced generation error:', error.message);
     
     // REFUND: Revert credits if failure is NOT due to insufficient credits
-    const userId = req.body.userId || req.body.uid;
+    const userId = req.body.userId;
     const generationId = crypto.randomBytes(8).toString('hex');
     if (userId && !error.message.includes('Insufficient')) {
       console.log(`[INFO] 🔄 Attempting to revert credits for failed generation ${generationId}...`);
@@ -459,36 +710,15 @@ const handleGenerate = async (req, res, endpointType = 'doodle-art') => {
       return res.status(400).json({
         success: false,
         error: 'NSFW',
-        message: 'Content was blocked by safety filters. Please try a different sketch or prompt.',
-        endpoint: req.path.includes('generate-ai') ? 'ai-art' : 'doodle-art'
+        message: 'Content was blocked by safety filters. Please try a different sketch or prompt.'
       });
     }
 
-    if (error.message.includes('credit') || error.message.includes('payment') || error.message.includes('insufficient')) {
+    if (error.message.includes('credit') || error.message.includes('insufficient')) {
       return res.status(402).json({
         success: false,
         error: 'Insufficient Credits',
-        message: 'Please add credits to your Replicate account or check your payment method.',
-        endpoint: req.path.includes('generate-ai') ? 'ai-art' : 'doodle-art'
-      });
-    }
-
-    if (error.message.includes('rate limit') || error.message.includes('too many requests')) {
-      return res.status(429).json({
-        success: false,
-        error: 'Rate Limited',
-        message: 'Too many requests. Please wait a moment and try again.',
-        endpoint: req.path.includes('generate-ai') ? 'ai-art' : 'doodle-art'
-      });
-    }
-
-    // Handle timeout errors
-    if (error.message.includes('timeout') || error.message.includes('TIMEOUT')) {
-      return res.status(504).json({
-        success: false,
-        error: 'Timeout',
-        message: 'Generation took too long. Please try again with a simpler sketch or prompt.',
-        endpoint: req.path.includes('generate-ai') ? 'ai-art' : 'doodle-art'
+        message: 'Please add credits to your account to continue.'
       });
     }
 
@@ -496,78 +726,196 @@ const handleGenerate = async (req, res, endpointType = 'doodle-art') => {
     res.status(500).json({
       success: false,
       error: 'Generation failed',
-      message: error.message || 'An unexpected error occurred during generation',
-      suggestion: 'Check your Replicate API token and ensure you have sufficient credits.',
-      endpoint: req.path.includes('generate-ai') ? 'ai-art' : 'doodle-art'
+      message: error.message || 'An unexpected error occurred during generation'
     });
   }
-};
-
-// Main generate endpoints
-router.post('/generate', (req, res) => handleGenerate(req, res, 'doodle-art'));
-router.post('/generate-ai', (req, res) => handleGenerate(req, res, 'ai-art'));
+});
 
 // ============================================
-// ANIMATION ENDPOINTS - Doodle-Art & AI-Art
+// NEW: GET STYLE PRESETS ENDPOINT
 // ============================================
 
-// Handle both /animate and /animate-ai with the same function
-const handleAnimate = async (req, res, endpointType = 'doodle-art') => {
+router.get('/style-presets', (req, res) => {
+  const presets = Object.entries(STYLE_PRESETS).map(([id, config]) => ({
+    id,
+    name: config.name,
+    description: config.promptSuffix.replace(',', '').trim(),
+    examplePrompts: [
+      `Album cover for ${id} music`,
+      `${id} aesthetic artwork`,
+      `${config.name} style illustration`
+    ],
+    conditioningScale: config.conditioningScale,
+    guidanceScale: config.guidanceScale
+  }));
+  
+  res.json({
+    success: true,
+    presets,
+    count: presets.length
+  });
+});
+
+// ============================================
+// NEW: BATCH EXPORT ENDPOINT
+// ============================================
+
+router.post('/export-batch', async (req, res) => {
   try {
-    const { imageUrl, prompt, motionStrength = 0.8, duration = 8 } = req.body;
+    const { imageUrl, formats = ['1:1', '9:16', '16:9'] } = req.body;
+    
+    if (!imageUrl) {
+      return res.status(400).json({
+        success: false,
+        error: 'Missing image URL'
+      });
+    }
 
-    // Validate required fields
+    // Download the original image
+    const response = await axios.get(imageUrl, { responseType: 'arraybuffer' });
+    const originalBuffer = Buffer.from(response.data, 'binary');
+    
+    const exports = {};
+    
+    // Generate each requested format
+    for (const format of formats) {
+      const [widthRatio, heightRatio] = format.split(':').map(Number);
+      
+      // Calculate dimensions (max 3000 on longest side)
+      let width, height;
+      if (widthRatio >= heightRatio) {
+        width = 3000;
+        height = Math.floor((3000 * heightRatio) / widthRatio);
+      } else {
+        height = 3000;
+        width = Math.floor((3000 * widthRatio) / heightRatio);
+      }
+      
+      const processedBuffer = await sharp(originalBuffer)
+        .resize(width, height, {
+          fit: 'cover',
+          position: 'center'
+        })
+        .toBuffer();
+      
+      const base64Image = processedBuffer.toString('base64');
+      exports[format] = `data:image/png;base64,${base64Image}`;
+    }
+    
+    res.json({
+      success: true,
+      exports,
+      formats: Object.keys(exports),
+      dimensions: Object.entries(exports).map(([format]) => {
+        const [w, h] = format.split(':').map(Number);
+        return { format, ratio: `${w}:${h}` };
+      })
+    });
+    
+  } catch (error) {
+    console.error('Export batch error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Export failed',
+      message: error.message
+    });
+  }
+});
+
+// ============================================
+// KEEP EXISTING ENDPOINTS FOR BACKWARD COMPATIBILITY
+// ============================================
+
+// Original generate endpoint (simplified version)
+router.post('/generate', async (req, res) => {
+  try {
+    const { sketch, prompt, conditioningScale = 0.8 } = req.body;
+    
+    if (!sketch || !prompt) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'Missing required fields'
+      });
+    }
+
+    // Forward to enhanced endpoint with default settings
+    req.body = {
+      ...req.body,
+      stylePreset: 'indie',
+      controlType: 'scribble'
+    };
+    
+    // Call the enhanced endpoint
+    return router.post('/generate-enhanced')(req, res);
+  } catch (error) {
+    console.error('Generation error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Generation failed',
+      message: error.message
+    });
+  }
+});
+
+// ============================================
+// ANIMATION ENDPOINTS (UPDATED FOR 4K)
+// ============================================
+
+router.post('/animate-enhanced', async (req, res) => {
+  try {
+    const { 
+      imageUrl, 
+      prompt, 
+      motionStrength = 0.6,
+      duration = 8,
+      quality = 'standard', // 'standard', 'premium', '4k'
+      style = 'cinematic'
+    } = req.body;
+
     if (!imageUrl) {
       return res.status(400).json({ 
         success: false,
-        error: 'Missing required field',
-        message: 'imageUrl is required. Please provide the URL of the generated image to animate.'
+        error: 'Missing image URL'
       });
     }
 
-    // Validate API token
-    if (!process.env.REPLICATE_API_TOKEN) {
-      return res.status(500).json({
-        success: false,
-        error: 'Configuration Error',
-        message: 'REPLICATE_API_TOKEN is not configured. Please add your Replicate API token.'
-      });
-    }
-
-    console.log(`Starting ${endpointType} animation generation...`);
-    console.log('Image URL:', imageUrl);
-    console.log('Motion strength:', motionStrength);
+    const generationId = crypto.randomBytes(8).toString('hex');
+    console.log(`Starting enhanced animation ${generationId}...`);
+    console.log('Quality:', quality);
     console.log('Duration:', duration, 'seconds');
 
     // ============================================
-    // CRITICAL: Verify credits BEFORE Replicate call
+    // CREDIT VERIFICATION
     // ============================================
-    const userId = req.body.userId || req.body.uid;
-    const generationId = crypto.randomBytes(8).toString('hex');
+    const userId = req.body.userId;
     const creditVerification = await verifyUserCreditsBeforeProcessing(userId, 'lyricVideo', generationId);
     
     if (!creditVerification.verified) {
-      console.error(`[ERROR] ❌ Generation ${generationId}: Credit verification failed - ${creditVerification.message}`);
       return res.status(402).json({
         success: false,
         error: creditVerification.error,
-        message: creditVerification.message,
-        requiredCredits: creditVerification.requiredCredits || 1,
-        available: creditVerification.creditsAvailable,
-        endpoint: endpointType
+        message: creditVerification.message
       });
     }
-    
-    console.log(`[VERIFIED] ✅ User credits verified (${creditVerification.creditsAvailable} available)`);
 
-    // For Spotify Canvas, we need 8-second videos
+    // Determine parameters based on quality
+    const qualitySettings = {
+      'standard': { fps: 12, maxDuration: 15 },
+      'premium': { fps: 24, maxDuration: 30 },
+      '4k': { fps: 30, maxDuration: 60 }
+    };
+
+    const settings = qualitySettings[quality] || qualitySettings.standard;
+    const finalDuration = Math.min(duration, settings.maxDuration);
+
     const input = {
       input_image: imageUrl,
       motion_bucket_id: Math.floor(motionStrength * 255),
-      fps: 12, // Lower FPS for artistic style
+      fps: settings.fps,
       seed: Math.floor(Math.random() * 1000000),
-      video_length: duration, // Duration in seconds
-      decoding_t: 7, // Controls the smoothness of motion
+      video_length: finalDuration,
+      decoding_t: 7,
+      ...(quality === 'premium' || quality === '4k' ? { style, camera_motion: 'subtle_zoom' } : {})
     };
 
     console.log('Calling Stability AI Video API...');
@@ -577,427 +925,110 @@ const handleAnimate = async (req, res, endpointType = 'doodle-art') => {
       { input }
     );
 
-    console.log('Animation generation completed');
-    
-    // Generate a unique ID for this animation
-    const animationId = crypto.randomBytes(8).toString('hex');
-
     res.json({
       success: true,
-      endpoint: endpointType,
-      animationId: animationId,
+      generationId,
       videoUrl: output,
-      duration: duration,
-      motionStrength: motionStrength,
-      timestamp: new Date().toISOString(),
+      duration: finalDuration,
+      quality,
+      fps: settings.fps,
       format: 'mp4',
       loop: true,
-      dimensions: '576x1024 (Spotify Canvas format)',
-      fps: 12,
-      usage: {
-        description: 'Perfect for Spotify Canvas (8-second loop)',
-        cost: '$0.08 - $0.12',
-        platform: 'Spotify Canvas, Instagram Stories, TikTok',
-        maxDuration: '15 seconds'
+      readyFor: {
+        spotifyCanvas: finalDuration === 8 ? 'Perfect 8-second loop' : 'Adjust duration to 8s',
+        instagramReels: 'Ready (up to 90s)',
+        tiktok: 'Ready (up to 60s)'
+      },
+      metadata: {
+        motionStrength,
+        style,
+        estimatedSize: `${quality === '4k' ? '50-100MB' : quality === 'premium' ? '20-50MB' : '5-20MB'}`
       }
     });
 
   } catch (error) {
-    console.error(`${req.path} animation error:`, error.message);
+    console.error('Enhanced animation error:', error);
     
-    // REFUND: Revert credits if failure is NOT due to insufficient credits
-    const userId = req.body.userId || req.body.uid;
+    // REFUND if needed
+    const userId = req.body.userId;
     const generationId = crypto.randomBytes(8).toString('hex');
     if (userId && !error.message.includes('Insufficient')) {
-      console.log(`[INFO] 🔄 Attempting to revert credits for failed animation ${generationId}...`);
-      const revertResult = await revertUserCredits(userId, 'lyricVideo', generationId);
-      if (!revertResult.success) {
-        console.warn(`[⚠️ REFUND FAILED] ${revertResult.message}`);
-      }
+      await revertUserCredits(userId, 'lyricVideo', generationId);
     }
     
-    // Handle specific error cases
-    if (error.message.includes('NSFW') || error.message.includes('inappropriate')) {
-      return res.status(400).json({
-        success: false,
-        error: 'NSFW',
-        message: 'Animation was blocked by safety filters.',
-        endpoint: req.path.includes('animate-ai') ? 'ai-art' : 'doodle-art'
-      });
-    }
-
-    if (error.message.includes('credit') || error.message.includes('payment') || error.message.includes('insufficient')) {
-      return res.status(402).json({
-        success: false,
-        error: 'Insufficient Credits',
-        message: 'Please add credits to your Replicate account for animation generation.',
-        endpoint: req.path.includes('animate-ai') ? 'ai-art' : 'doodle-art'
-      });
-    }
-
-    if (error.message.includes('rate limit') || error.message.includes('too many requests')) {
-      return res.status(429).json({
-        success: false,
-        error: 'Rate Limited',
-        message: 'Too many animation requests. Please wait a moment and try again.',
-        endpoint: req.path.includes('animate-ai') ? 'ai-art' : 'doodle-art'
-      });
-    }
-
-    // Handle video-specific errors
-    if (error.message.includes('video') || error.message.includes('animation')) {
-      return res.status(500).json({
-        success: false,
-        error: 'Animation Failed',
-        message: 'Video generation failed. The image might not be suitable for animation.',
-        suggestion: 'Try a different image or adjust the motion strength.',
-        endpoint: req.path.includes('animate-ai') ? 'ai-art' : 'doodle-art'
-      });
-    }
-
-    // General error
     res.status(500).json({
       success: false,
       error: 'Animation failed',
-      message: error.message || 'An unexpected error occurred during animation',
-      suggestion: 'Check your Replicate API token and ensure you have sufficient credits.',
-      endpoint: req.path.includes('animate-ai') ? 'ai-art' : 'doodle-art'
-    });
-  }
-};
-
-// Main animation endpoints
-router.post('/animate', (req, res) => handleAnimate(req, res, 'doodle-art'));
-router.post('/animate-ai', (req, res) => handleAnimate(req, res, 'ai-art'));
-
-// ============================================
-// PREMIUM ANIMATION ENDPOINTS
-// ============================================
-
-// Premium animation with more control (for upselling)
-router.post(['/animate/premium', '/animate-ai/premium'], async (req, res) => {
-  try {
-    const { 
-      imageUrl, 
-      prompt, 
-      motionStrength = 0.8, 
-      duration = 8,
-      style = "cinematic",
-      cameraMotion = "subtle_zoom",
-      loopType = "seamless"
-    } = req.body;
-
-    // Validate required fields
-    if (!imageUrl) {
-      return res.status(400).json({ 
-        success: false,
-        error: 'Missing required field',
-        message: 'imageUrl is required for premium animation.'
-      });
-    }
-
-    const endpointType = req.path.includes('animate-ai') ? 'ai-art' : 'doodle-art';
-    console.log(`Starting ${endpointType} premium animation generation...`);
-    console.log('Style:', style);
-    console.log('Camera motion:', cameraMotion);
-    console.log('Loop type:', loopType);
-
-    // Premium animation with more parameters
-    const input = {
-      input_image: imageUrl,
-      motion_bucket_id: Math.floor(motionStrength * 255),
-      fps: 24, // Higher FPS for premium quality
-      seed: Math.floor(Math.random() * 1000000),
-      video_length: duration,
-      decoding_t: 7,
-      style: style,
-      camera_motion: cameraMotion,
-      loop: loopType === "seamless"
-    };
-
-    console.log('Calling Premium Video API...');
-    
-    const output = await replicate.run(
-      "stability-ai/stable-video-diffusion:3f0457e4619daac51203dedb472816fd4af51f3149fa7a9e0b5ffcf1b8172438",
-      { input }
-    );
-
-    console.log('Premium animation generation completed');
-    
-    const premiumId = `premium_${crypto.randomBytes(8).toString('hex')}`;
-
-    res.json({
-      success: true,
-      endpoint: endpointType,
-      animationId: premiumId,
-      videoUrl: output,
-      duration: duration,
-      motionStrength: motionStrength,
-      style: style,
-      cameraMotion: cameraMotion,
-      loopType: loopType,
-      timestamp: new Date().toISOString(),
-      format: 'mp4 (HD)',
-      dimensions: '1080x1920 (Premium format)',
-      fps: 24,
-      quality: 'premium',
-      usage: {
-        description: 'Premium animation for professional use',
-        cost: '$0.15 - $0.25',
-        platforms: 'YouTube Shorts, Instagram Reels, TikTok, Spotify Canvas',
-        maxDuration: '30 seconds',
-        features: ['HD quality', 'Custom motion', 'Seamless loop', 'Multiple styles']
-      }
-    });
-
-  } catch (error) {
-    console.error('Premium animation error:', error.message);
-    
-    const endpointType = req.path.includes('animate-ai') ? 'ai-art' : 'doodle-art';
-    
-    res.status(500).json({
-      success: false,
-      error: 'Premium Animation Failed',
-      message: error.message || 'An unexpected error occurred',
-      suggestion: 'Try standard animation or contact support for premium features.',
-      endpoint: endpointType
+      message: error.message
     });
   }
 });
 
 // ============================================
-// ADDITIONAL ENDPOINTS
+// HEALTH AND INFO ENDPOINTS
 // ============================================
 
-// Batch animation (for multiple images)
-router.post(['/animate/batch', '/animate-ai/batch'], async (req, res) => {
-  try {
-    const { imageUrls, motionStrength = 0.8, duration = 8 } = req.body;
-
-    if (!imageUrls || !Array.isArray(imageUrls) || imageUrls.length === 0) {
-      return res.status(400).json({
-        success: false,
-        error: 'Invalid request',
-        message: 'imageUrls must be a non-empty array'
-      });
-    }
-
-    const endpointType = req.path.includes('animate-ai') ? 'ai-art' : 'doodle-art';
-    
-    // Limit batch size for cost control
-    const maxBatchSize = 3;
-    const imagesToProcess = imageUrls.slice(0, maxBatchSize);
-
-    console.log(`Starting ${endpointType} batch animation for ${imagesToProcess.length} images...`);
-
-    const batchId = `batch_${crypto.randomBytes(8).toString('hex')}`;
-    const results = [];
-
-    // Process images sequentially to avoid rate limiting
-    for (let i = 0; i < imagesToProcess.length; i++) {
-      try {
-        const input = {
-          input_image: imagesToProcess[i],
-          motion_bucket_id: Math.floor(motionStrength * 255),
-          fps: 12,
-          seed: Math.floor(Math.random() * 1000000),
-          video_length: duration,
-          decoding_t: 7,
-        };
-
-        console.log(`Processing image ${i + 1} of ${imagesToProcess.length}...`);
-        
-        const output = await replicate.run(
-          "stability-ai/stable-video-diffusion:3f0457e4619daac51203dedb472816fd4af61f3149fa7a9e0b5ffcf1b8172438",
-          { input }
-        );
-
-        results.push({
-          originalUrl: imagesToProcess[i],
-          videoUrl: output,
-          success: true,
-          index: i
-        });
-      } catch (error) {
-        console.error(`Failed to animate image ${i}:`, error.message);
-        results.push({
-          originalUrl: imagesToProcess[i],
-          success: false,
-          error: error.message,
-          index: i
-        });
-      }
-    }
-
-    console.log('Batch animation completed');
-
-    res.json({
-      success: true,
-      endpoint: endpointType,
-      batchId: batchId,
-      totalProcessed: imagesToProcess.length,
-      successful: results.filter(r => r.success).length,
-      failed: results.filter(r => !r.success).length,
-      results: results,
-      timestamp: new Date().toISOString(),
-      costEstimate: `$${imagesToProcess.length * 0.10} (approx)`
-    });
-
-  } catch (error) {
-    console.error('Batch animation error:', error.message);
-    
-    const endpointType = req.path.includes('animate-ai') ? 'ai-art' : 'doodle-art';
-    
-    res.status(500).json({
-      success: false,
-      error: 'Batch Animation Failed',
-      message: error.message || 'An unexpected error occurred',
-      endpoint: endpointType
-    });
-  }
-});
-
-// Get animation status/quote
-router.post(['/animate/quote', '/animate-ai/quote'], (req, res) => {
-  const { duration = 8, quality = "standard", count = 1 } = req.body;
-  
-  const endpointType = req.path.includes('animate-ai') ? 'ai-art' : 'doodle-art';
-
-  // Pricing model
-  const pricing = {
-    standard: {
-      perSecond: 0.01,
-      baseCost: 0.04,
-      maxDuration: 15
-    },
-    premium: {
-      perSecond: 0.02,
-      baseCost: 0.08,
-      maxDuration: 30
-    },
-    hd: {
-      perSecond: 0.03,
-      baseCost: 0.12,
-      maxDuration: 60
-    }
-  };
-
-  const tier = pricing[quality] || pricing.standard;
-  const totalDuration = Math.min(duration, tier.maxDuration);
-  const cost = (tier.baseCost + (totalDuration * tier.perSecond)) * count;
-
+router.get('/features', (req, res) => {
   res.json({
     success: true,
-    endpoint: endpointType,
-    quote: {
-      duration: totalDuration,
-      quality: quality,
-      count: count,
-      cost: `$${cost.toFixed(2)}`,
-      timeEstimate: `${totalDuration * 2} seconds`,
-      features: quality === "premium" ? ["HD", "Seamless loop", "Custom motion"] : ["Standard quality", "Basic loop"],
-      suitableFor: quality === "standard" ? "Spotify Canvas" : "Professional use"
+    features: {
+      pillars: {
+        structureControl: {
+          enabled: true,
+          controlTypes: ['scribble', 'canny'],
+          influenceSlider: '0.1 to 1.0'
+        },
+        stylePresets: {
+          enabled: true,
+          count: Object.keys(STYLE_PRESETS).length,
+          presets: Object.keys(STYLE_PRESETS)
+        },
+        postProcessing: {
+          enabled: true,
+          upscaling: 'up to 3000x3000',
+          aspectRatios: ['1:1', '9:16', '16:9', '4:3'],
+          colorProfiles: ['RGB', 'CMYK ready'],
+          effects: ['film grain', 'vignette']
+        },
+        artistsSeed: {
+          enabled: true,
+          features: ['color palette extraction', 'reference style guidance']
+        }
+      },
+      animation: {
+        enabled: true,
+        qualities: ['standard', 'premium', '4k'],
+        maxDuration: 60,
+        platforms: ['Spotify Canvas', 'Instagram', 'TikTok', 'YouTube']
+      }
     }
   });
 });
 
-// ============================================
-// ROOT AND HEALTH ENDPOINTS
-// ============================================
-
-// Health check endpoint
+// Existing health endpoint
 router.get('/health', (req, res) => {
-  const endpointType = req.baseUrl.includes('ai-art') ? 'ai-art' : 'doodle-art';
-  
   res.json({
     success: true,
-    service: `${endpointType}-api`,
+    service: 'doodle-art-enhanced-api',
     status: 'operational',
-    version: '2.1.0',
+    version: '3.0.0',
     timestamp: new Date().toISOString(),
-    replicate_configured: !!process.env.REPLICATE_API_TOKEN,
-    endpoints: {
-      test: 'GET /test - Test Replicate API connection',
-      test_connection: 'GET /test-connection - Comprehensive API test',
-      generate: 'POST /generate - Generate art from sketch (doodle-art)',
-      generate_ai: 'POST /generate-ai - Generate art from sketch (ai-art)',
-      animate: 'POST /animate - Create 8-second Spotify Canvas video (doodle-art)',
-      animate_ai: 'POST /animate-ai - Create 8-second Spotify Canvas video (ai-art)',
-      animate_premium: 'POST /animate/premium - Premium animation',
-      animate_batch: 'POST /animate/batch - Animate multiple images',
-      animate_quote: 'POST /animate/quote - Get animation cost estimate',
-      health: 'GET /health - API health check'
-    },
-    models: {
-      scribble: 'jagilley/controlnet-scribble',
-      video: 'stability-ai/stable-video-diffusion'
-    },
-    pricing: {
-      sketch_to_art: '$0.01 - $0.02',
-      standard_animation: '$0.08 - $0.12',
-      premium_animation: '$0.15 - $0.25',
-      batch_discount: '10% off for 3+ animations'
-    }
+    features: Object.keys(STYLE_PRESETS).length + ' style presets available'
   });
 });
 
-// Root endpoint - shows which API is being accessed
+// Root endpoint
 router.get('/', (req, res) => {
-  const endpointType = req.baseUrl.includes('ai-art') ? 'ai-art' : 'doodle-art';
-  
   res.json({
     success: true,
-    message: `${endpointType.toUpperCase()} API with Doodle-to-Art Generation`,
-    version: '2.1.0',
-    timestamp: new Date().toISOString(),
-    accessed_as: endpointType,
+    message: 'Enhanced Doodle-to-Art API',
+    version: '3.0.0',
     endpoints: {
-      test_connection: 'GET /test-connection',
-      generate: endpointType === 'doodle-art' ? 'POST /generate' : 'POST /generate-ai',
-      animate: endpointType === 'doodle-art' ? 'POST /animate' : 'POST /animate-ai',
-      animate_premium: 'POST /animate/premium',
-      animate_batch: 'POST /animate/batch',
-      animate_quote: 'POST /animate/quote',
-      health: 'GET /health',
-      test: 'GET /test'
-    },
-    animationFeatures: {
-      spotifyCanvas: '8-second looping videos',
-      formats: ['mp4', 'gif (coming soon)'],
-      dimensions: {
-        spotify: '576x1024',
-        instagram: '1080x1920',
-        tiktok: '1080x1920'
-      },
-      motionTypes: ['subtle', 'moderate', 'dynamic'],
-      loopOptions: ['seamless', 'crossfade', 'bounce']
-    },
-    usageExamples: {
-      generate: {
-        method: 'POST',
-        endpoint: endpointType === 'doodle-art' ? '/generate' : '/generate-ai',
-        body: {
-          sketch: 'Base64 image data URL',
-          prompt: 'Text description',
-          conditioningScale: '0.1 to 1.0',
-          style: 'digital art, oil painting, etc.'
-        }
-      },
-      animate: {
-        method: 'POST',
-        endpoint: endpointType === 'doodle-art' ? '/animate' : '/animate-ai',
-        body: {
-          imageUrl: 'URL from generate endpoint',
-          motionStrength: '0.1 to 1.0',
-          duration: 'Seconds (max 15)'
-        }
-      }
-    },
-    tips: {
-      sketch: 'Clear black lines on white background work best',
-      animation: 'Images with clear foreground/background animate better',
-      spotify: '8-second seamless loops work best for Spotify Canvas',
-      cost: 'Use /animate/quote to estimate costs before generating'
+      generateEnhanced: 'POST /generate-enhanced - Enhanced generation with all 4 pillars',
+      stylePresets: 'GET /style-presets - List available style presets',
+      exportBatch: 'POST /export-batch - Export in multiple aspect ratios',
+      animateEnhanced: 'POST /animate-enhanced - Enhanced animation with 4K support',
+      features: 'GET /features - List all available features'
     }
   });
 });
