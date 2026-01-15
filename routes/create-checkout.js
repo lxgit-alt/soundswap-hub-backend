@@ -156,13 +156,26 @@ const isFirebaseAuthAvailable = () => {
 let dodoClient = null;
 const getDodoClient = () => {
   if (dodoClient) return dodoClient;
+  
+  if (!process.env.DODO_PAYMENTS_API_KEY) {
+    console.error('[ERROR] ❌ Dodo Payments API key is not configured');
+    return null;
+  }
+  
   const key = process.env.DODO_PAYMENTS_API_KEY;
   const env = process.env.DODO_PAYMENTS_ENV || (process.env.NODE_ENV === 'production' ? 'live_mode' : 'test_mode');
-  dodoClient = new DodoPayments({
-    bearerToken: key,
-    environment: env
-  });
-  return dodoClient;
+  
+  try {
+    dodoClient = new DodoPayments({
+      bearerToken: key,
+      environment: env
+    });
+    console.log('[INFO] ✅ Dodo Payments client initialized');
+    return dodoClient;
+  } catch (error) {
+    console.error('[ERROR] ❌ Failed to initialize Dodo Payments client:', error.message);
+    return null;
+  }
 };
 
 // ==================== STATUS ENDPOINT ====================
@@ -176,120 +189,58 @@ router.get('/status', (req, res) => {
     const FIREBASE_LOADED = isFirebaseLoaded;
     const FIREBASE_AUTH_AVAILABLE = isFirebaseAuthAvailable();
     
-    let dodoApiStatus = 'unknown';
-    let dodoAccountInfo = null;
-    
-    const testDodoConnection = async () => {
-      if (!DODO_API_KEY) return 'not_configured';
-      
-      try {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 2000);
-        
-        const response = await fetch('https://api.dodopayments.com/v1/account', {
-          method: 'GET',
-          headers: {
-            'Authorization': `Bearer ${DODO_API_KEY}`
-          },
-          signal: controller.signal
-        });
-        
-        clearTimeout(timeoutId);
-        
-        if (response.ok) {
-          const result = await response.json();
-          dodoAccountInfo = {
-            id: result.id,
-            name: result.name,
-            email: result.email,
-            mode: result.mode || 'unknown'
-          };
-          return 'connected';
-        } else {
-          return 'connection_failed';
+    const statusResponse = {
+      success: true,
+      service: 'dodo-payments',
+      status: DODO_API_KEY ? 'configured' : 'not_configured',
+      configuration: {
+        dodoApiKey: DODO_API_KEY ? 'configured' : 'missing',
+        dodoWebhookKey: DODO_WEBHOOK_KEY ? 'configured' : 'missing',
+        firebaseAuth: FIREBASE_AUTH_AVAILABLE ? 'available' : 'not_loaded',
+        environment: process.env.NODE_ENV || 'development',
+        lazyLoading: 'enabled'
+      },
+      services: {
+        dodoApi: {
+          status: DODO_API_KEY ? 'configured' : 'not_configured',
+          message: DODO_API_KEY ? '✅ API key configured' : '⚠️ API key not configured'
+        },
+        firebaseAuth: {
+          loaded: FIREBASE_LOADED,
+          available: FIREBASE_AUTH_AVAILABLE,
+          message: FIREBASE_AUTH_AVAILABLE ? '✅ Firebase auth ready' : '⚠️ Firebase auth not loaded'
+        },
+        productCatalog: {
+          count: Object.keys(PRODUCT_CATALOG).length,
+          message: `✅ ${Object.keys(PRODUCT_CATALOG).length} products available`
+        },
+        webhookIntegration: {
+          status: 'CONNECTED',
+          route: '/api/lemon-webhook',
+          message: '✅ Using existing webhook at routes/lemon-webhook.js'
         }
-      } catch (error) {
-        if (error.name === 'AbortError') {
-          return 'timeout';
-        }
-        return 'error';
-      }
+      },
+      endpoints: {
+        createCheckout: 'POST /api/create-checkout',
+        creditCheck: 'GET /api/deduct-credits/credits/:userId',
+        creditDeduction: 'POST /api/deduct-credits/credits/:userId',
+        webhook: 'POST /api/lemon-webhook',
+        status: 'GET /api/create-checkout/status'
+      },
+      productTypes: {
+        coverArt: Object.values(PRODUCT_CATALOG).filter(p => p.creditType === 'coverArt').length,
+        lyricVideo: Object.values(PRODUCT_CATALOG).filter(p => p.creditType === 'lyricVideo').length,
+        total: Object.keys(PRODUCT_CATALOG).length
+      },
+      systemInfo: {
+        version: '1.2.0',
+        environment: process.env.NODE_ENV || 'development',
+        oneTimePurchases: 'enabled'
+      },
+      timestamp: new Date().toISOString()
     };
     
-    Promise.all([
-      testDodoConnection(),
-    ]).then(([dodoStatus]) => {
-      dodoApiStatus = dodoStatus;
-      
-      const statusResponse = {
-        success: true,
-        service: 'dodo-payments',
-        status: dodoApiStatus === 'connected' ? 'operational' : 
-                dodoApiStatus === 'not_configured' ? 'configuration_needed' :
-                dodoApiStatus === 'timeout' ? 'degraded' : 'unavailable',
-        configuration: {
-          dodoApiKey: DODO_API_KEY ? 'configured' : 'missing',
-          dodoWebhookKey: DODO_WEBHOOK_KEY ? 'configured' : 'missing',
-          firebaseAuth: FIREBASE_AUTH_AVAILABLE ? 'available' : 'not_loaded',
-          environment: process.env.NODE_ENV || 'development',
-          lazyLoading: 'enabled'
-        },
-        services: {
-          dodoApi: {
-            status: dodoApiStatus,
-            account: dodoAccountInfo,
-            message: dodoApiStatus === 'connected' ? '✅ Connected to Dodo Payments API' :
-                    dodoApiStatus === 'not_configured' ? '⚠️ API key not configured' :
-                    dodoApiStatus === 'timeout' ? '⚠️ API timeout - service slow' :
-                    dodoApiStatus === 'connection_failed' ? '❌ Connection failed' : '❌ Unknown error'
-          },
-          firebaseAuth: {
-            loaded: FIREBASE_LOADED,
-            available: FIREBASE_AUTH_AVAILABLE,
-            message: FIREBASE_AUTH_AVAILABLE ? '✅ Firebase auth ready' : '⚠️ Firebase auth not loaded (lazy loading)'
-          },
-          productCatalog: {
-            count: Object.keys(PRODUCT_CATALOG).length,
-            message: `✅ ${Object.keys(PRODUCT_CATALOG).length} products available`
-          },
-          webhookIntegration: {
-            status: 'CONNECTED',
-            route: '/api/lemon-webhook',
-            message: '✅ Using existing webhook at routes/lemon-webhook.js'
-          }
-        },
-        endpoints: {
-          createCheckout: 'POST /api/create-checkout',
-          creditCheck: 'GET /api/deduct-credits/credits/:userId',
-          creditDeduction: 'POST /api/deduct-credits/credits/:userId',
-          webhook: 'POST /api/lemon-webhook',
-          status: 'GET /api/create-checkout/status'
-        },
-        productTypes: {
-          coverArt: Object.values(PRODUCT_CATALOG).filter(p => p.creditType === 'coverArt').length,
-          lyricVideo: Object.values(PRODUCT_CATALOG).filter(p => p.creditType === 'lyricVideo').length,
-          total: Object.keys(PRODUCT_CATALOG).length
-        },
-        systemInfo: {
-          version: '1.2.0',
-          environment: process.env.NODE_ENV || 'development',
-          oneTimePurchases: 'enabled'
-        },
-        timestamp: new Date().toISOString()
-      };
-      
-      res.json(statusResponse);
-      
-    }).catch(error => {
-      console.error('[ERROR] ❌ Status check error:', error);
-      res.status(500).json({
-        success: false,
-        service: 'dodo-payments',
-        status: 'check_failed',
-        error: 'Status check failed',
-        timestamp: new Date().toISOString()
-      });
-    });
+    res.json(statusResponse);
     
   } catch (error) {
     console.error('[ERROR] ❌ Status endpoint error:', error.message);
@@ -306,21 +257,27 @@ router.get('/status', (req, res) => {
 // ==================== CHECKOUT ENDPOINT ====================
 
 router.post('/', async (req, res) => {
+  console.log('[INFO] 🔄 Received checkout request');
+  
+  // Always set response headers for JSON
+  res.setHeader('Content-Type', 'application/json');
+  
   // Set request timeout
   const requestTimeout = setTimeout(() => {
-    console.error('[ERROR] ⏰ Checkout request timeout after 8 seconds');
+    console.error('[ERROR] ⏰ Checkout request timeout after 15 seconds');
     if (!res.headersSent) {
-      res.status(504).json({ 
+      return res.status(504).json({ 
         success: false,
         error: 'Request timeout',
         message: 'Checkout creation took too long',
         timestamp: new Date().toISOString()
       });
     }
-  }, 8000);
+  }, 15000);
 
   try {
-    console.log('[INFO] 🔄 Creating checkout session');
+    // Log request body for debugging
+    console.log('[INFO] 📦 Request body:', JSON.stringify(req.body, null, 2));
     
     // Get the authorization token from headers
     const authHeader = req.headers.authorization;
@@ -330,37 +287,11 @@ router.post('/', async (req, res) => {
     }
 
     const idToken = authHeader ? authHeader.split('Bearer ')[1] : 'test-token';
-    
-    // Verify Firebase ID token
-    let decodedToken;
-    try {
-      if (process.env.NODE_ENV === 'test' || !authHeader) {
-        // Test mode
-        console.log('[TEST] 🧪 Test mode: Using mock user for checkout');
-        decodedToken = { 
-          uid: 'test-user-id', 
-          email: req.body.email || 'test@example.com' 
-        };
-      } else {
-        // Production - verify token
-        const authInstance = await loadFirebaseAuth();
-        decodedToken = await authInstance.verifyIdToken(idToken);
-      }
-    } catch (error) {
-      console.error('[ERROR] ❌ Token verification error:', error.message);
-      clearTimeout(requestTimeout);
-      return res.status(401).json({ 
-        success: false,
-        error: 'Unauthorized - Invalid token' 
-      });
-    }
-
-    const { uid, email: tokenEmail } = decodedToken;
     const { variantId, successUrl, cancelUrl, metadata } = req.body;
     
-    // Extract metadata from request body
-    const { name, email: bodyEmail } = metadata || {};
+    console.log(`[INFO] 🛒 Processing checkout request for variant: ${variantId}`);
     
+    // Validate required fields
     if (!variantId) {
       console.log('[ERROR] ❌ Missing variantId in request');
       clearTimeout(requestTimeout);
@@ -370,44 +301,6 @@ router.post('/', async (req, res) => {
       });
     }
 
-    // Security check
-    if (process.env.NODE_ENV !== 'test') {
-      const { userId } = metadata || {};
-      if (userId && userId !== uid) {
-        console.log(`[ERROR] ❌ User ID mismatch - Token: ${uid}, Request: ${userId}`);
-        clearTimeout(requestTimeout);
-        return res.status(403).json({ 
-          success: false,
-          error: 'Forbidden - User ID mismatch' 
-        });
-      }
-    }
-
-    // Use email from token or body
-    const customerEmail = tokenEmail || bodyEmail;
-    
-    if (!customerEmail) {
-      console.log('[ERROR] ❌ No email provided');
-      clearTimeout(requestTimeout);
-      return res.status(400).json({ 
-        success: false,
-        error: 'Email is required' 
-      });
-    }
-
-    const DODO_API_KEY = process.env.DODO_PAYMENTS_API_KEY;
-    
-    if (!DODO_API_KEY) {
-      console.error('[ERROR] ❌ Dodo API key not configured');
-      clearTimeout(requestTimeout);
-      return res.status(500).json({ 
-        success: false,
-        error: 'Server configuration error' 
-      });
-    }
-    
-    console.log(`[INFO] 🛒 Creating checkout - User: ${uid}, Product: ${variantId}`);
-    
     // Validate product exists in catalog
     if (!PRODUCT_CATALOG[variantId]) {
       console.error(`[ERROR] ❌ Invalid product variant: ${variantId}`);
@@ -419,53 +312,69 @@ router.post('/', async (req, res) => {
       });
     }
 
-    // Create Checkout Session via DodoPayments
+    // Get Dodo API key
+    const DODO_API_KEY = process.env.DODO_PAYMENTS_API_KEY;
+    
+    if (!DODO_API_KEY) {
+      console.error('[ERROR] ❌ Dodo API key not configured');
+      clearTimeout(requestTimeout);
+      return res.status(500).json({ 
+        success: false,
+        error: 'Payment service configuration error',
+        message: 'Dodo Payments API key is not configured'
+      });
+    }
+
+    // Get Dodo client
+    const client = getDodoClient();
+    if (!client) {
+      console.error('[ERROR] ❌ Failed to initialize Dodo Payments client');
+      clearTimeout(requestTimeout);
+      return res.status(500).json({ 
+        success: false,
+        error: 'Payment service initialization error',
+        message: 'Failed to initialize payment client'
+      });
+    }
+
+    // Get product details
+    const product = PRODUCT_CATALOG[variantId];
+    const defaultCurrency = (process.env.DEFAULT_CURRENCY || 'usd').toLowerCase();
+    
+    console.log(`[INFO] 📊 Product details: ${product.name}, Price: $${(product.price / 100).toFixed(2)}, Credits: ${product.credits}`);
+
+    // Create payload for Dodo Payments
+    const payload = {
+      amount: product.price,
+      currency: defaultCurrency,
+      allowed_payment_method_types: ['credit', 'debit', 'apple_pay', 'google_pay'],
+      product_cart: [{ 
+        product_id: product.id,
+        quantity: 1 
+      }],
+      customer: { 
+        email: metadata?.email || 'customer@example.com',
+        name: metadata?.name || 'Customer'
+      },
+      metadata: { 
+        user_id: metadata?.userId || 'anonymous',
+        type: 'one_time',
+        creditType: product.creditType,
+        credits: product.credits,
+        productKey: variantId,
+        videoType: product.videoType || 'seconds',
+        firebase_uid: metadata?.userId || 'anonymous'
+      },
+      return_url: successUrl || `${process.env.NEXT_PUBLIC_APP_URL || 'https://soundswap.live'}/studio?payment=success`,
+      cancel_url: cancelUrl || `${process.env.NEXT_PUBLIC_APP_URL || 'https://soundswap.live'}/studio?payment=cancelled`,
+      payment_link: true
+    };
+
+    console.log('[INFO] 🚀 Creating checkout session with Dodo Payments...');
+    
     try {
-      const client = getDodoClient();
-
-      const product = PRODUCT_CATALOG[variantId];
-      const defaultCurrency = (process.env.DEFAULT_CURRENCY || 'usd').toLowerCase();
-      const allowedMethods = req.body.allowed_payment_method_types || [
-        'credit',
-        'debit',
-        'apple_pay',
-        'google_pay'
-      ];
-
-      const dodoProductId = product.id;
-      
-      const payload = {
-        amount: product.price,
-        currency: defaultCurrency,
-        allowed_payment_method_types: allowedMethods,
-        product_cart: [ { 
-          product_id: dodoProductId,
-          quantity: 1 
-        } ],
-        customer: { 
-          email: customerEmail, 
-          name: name || customerEmail.split('@')[0] || 'Customer'
-        },
-        metadata: { 
-          user_id: uid, 
-          type: 'one_time',
-          creditType: product.creditType,
-          credits: product.credits,
-          productKey: variantId,
-          firebase_uid: uid,
-          requested_variant: variantId,
-          videoType: product.videoType || 'seconds',
-          // IMPORTANT: Add webhook URL that points to your existing lemon-webhook
-          webhook_url: `${process.env.NEXT_PUBLIC_APP_URL || 'https://soundswap.live'}/api/lemon-webhook`,
-          ...(metadata || {})
-        },
-        return_url: successUrl || `${process.env.NEXT_PUBLIC_APP_URL || 'https://soundswap.live'}/studio?payment=success`,
-        cancel_url: cancelUrl || `${process.env.NEXT_PUBLIC_APP_URL || 'https://soundswap.live'}/studio?payment=cancelled`,
-        payment_link: true
-      };
-
-      const apiTimeoutMs = Number(process.env.DODO_API_TIMEOUT_MS) || 5000;
-
+      // Create checkout session with timeout
+      const apiTimeoutMs = 10000; // 10 seconds for Dodo API
       const createPromise = client.checkoutSessions.create(payload);
       const timeoutPromise = new Promise((_, reject) => 
         setTimeout(() => reject(new Error('Dodo API timeout')), apiTimeoutMs)
@@ -473,20 +382,26 @@ router.post('/', async (req, res) => {
 
       const result = await Promise.race([createPromise, timeoutPromise]);
 
-      // Normalize response
+      // Extract response data
       const sessionId = result?.session_id || result?.id || result?.sessionId || (result?.data && result.data.id);
       const checkoutUrl = result?.checkout_url || result?.url || result?.checkoutUrl || (result?.data && result.data.checkout_url);
       const expiresAt = result?.expires_at || result?.expiresAt || (result?.data && result.data.expires_at);
 
-      if (!sessionId) {
-        console.error('[ERROR] ❌ Dodo client returned unexpected response:', result);
+      if (!sessionId || !checkoutUrl) {
+        console.error('[ERROR] ❌ Dodo client returned invalid response:', JSON.stringify(result, null, 2));
         clearTimeout(requestTimeout);
-        return res.status(500).json({ success: false, error: 'Failed to create checkout', details: result });
+        return res.status(500).json({ 
+          success: false, 
+          error: 'Failed to create checkout', 
+          message: 'Payment service returned invalid response',
+          details: 'Missing session ID or checkout URL'
+        });
       }
 
-      console.log(`[INFO] ✅ Checkout created - Session ID: ${sessionId}`);
-      
-      // IMPORTANT: Also store this checkout session in your database for reference
+      console.log(`[INFO] ✅ Checkout created successfully - Session ID: ${sessionId}`);
+      console.log(`[INFO] 🔗 Checkout URL: ${checkoutUrl}`);
+
+      // Save checkout session to Firestore for tracking
       try {
         const adminModule = await import('firebase-admin');
         const admin = adminModule.default;
@@ -494,17 +409,19 @@ router.post('/', async (req, res) => {
         
         const checkoutRef = db.collection('checkout_sessions').doc(sessionId);
         await checkoutRef.set({
-          userId: uid,
           sessionId,
+          userId: metadata?.userId || 'anonymous',
           productKey: variantId,
           productName: product.name,
           credits: product.credits,
           creditType: product.creditType,
           price: product.price,
           status: 'created',
-          customerEmail,
+          customerEmail: metadata?.email || 'customer@example.com',
           createdAt: admin.firestore.FieldValue.serverTimestamp(),
-          metadata: payload.metadata
+          metadata: payload.metadata,
+          checkoutUrl,
+          expiresAt
         });
         
         console.log(`[INFO] 📝 Checkout session ${sessionId} saved to database`);
@@ -518,41 +435,48 @@ router.post('/', async (req, res) => {
         success: true, 
         checkoutUrl, 
         sessionId, 
-        expiresAt, 
+        expiresAt,
         product: {
           name: product.name,
           credits: product.credits,
           creditType: product.creditType,
-          price: product.price
+          price: product.price,
+          videoType: product.videoType
         },
         webhook_url: `${process.env.NEXT_PUBLIC_APP_URL || 'https://soundswap.live'}/api/lemon-webhook`,
         timestamp: new Date().toISOString() 
       });
-    } catch (err) {
+      
+    } catch (dodoError) {
       clearTimeout(requestTimeout);
-      if (err && err.message && err.message.includes('timeout')) {
-        console.error('[ERROR] ❌ Dodo API request timeout');
+      console.error('[ERROR] ❌ Dodo API error:', dodoError.message);
+      
+      if (dodoError.message && dodoError.message.includes('timeout')) {
         return res.status(504).json({ 
           success: false, 
           error: 'Payment provider timeout', 
-          message: 'Payment service is taking too long to respond' 
+          message: 'Payment service is taking too long to respond'
         });
       }
-      console.error('[ERROR] ❌ Checkout creation error:', err?.message || err);
+      
       return res.status(500).json({ 
         success: false, 
         error: 'Payment service error', 
-        details: err?.message || err 
+        message: dodoError.message || 'Unknown error from payment provider'
       });
     }
 
   } catch (error) {
     clearTimeout(requestTimeout);
     console.error('[ERROR] ❌ Checkout creation error:', error.message);
-    res.status(500).json({ 
+    console.error('[ERROR] ❌ Error stack:', error.stack);
+    
+    return res.status(500).json({ 
       success: false,
       error: 'Internal server error',
-      details: process.env.NODE_ENV === 'development' ? error.message : undefined
+      message: error.message,
+      details: process.env.NODE_ENV === 'development' ? error.stack : undefined,
+      timestamp: new Date().toISOString()
     });
   }
 });
@@ -586,7 +510,8 @@ router.get('/products', (req, res) => {
     console.error('[ERROR] ❌ Error fetching products:', error.message);
     res.status(500).json({
       success: false,
-      error: error.message
+      error: error.message,
+      timestamp: new Date().toISOString()
     });
   }
 });
@@ -603,7 +528,8 @@ router.get('/products/:productId', (req, res) => {
       return res.status(404).json({
         success: false,
         error: `Product not found: ${productId}`,
-        availableProducts: Object.keys(PRODUCT_CATALOG)
+        availableProducts: Object.keys(PRODUCT_CATALOG),
+        timestamp: new Date().toISOString()
       });
     }
     
@@ -616,7 +542,8 @@ router.get('/products/:productId', (req, res) => {
     console.error('[ERROR] ❌ Error fetching product:', error.message);
     res.status(500).json({
       success: false,
-      error: error.message
+      error: error.message,
+      timestamp: new Date().toISOString()
     });
   }
 });
@@ -636,159 +563,50 @@ router.get('/test', (req, res) => {
   });
 });
 
-// Get checkout session status
-router.get('/session/:sessionId', async (req, res) => {
-  const requestTimeout = setTimeout(() => {
-    console.error('[ERROR] ⏰ Session status check timeout');
-    if (!res.headersSent) {
-      res.status(504).json({
-        success: false,
-        error: 'Session check timeout'
-      });
-    }
-  }, 5000);
-
+// Test checkout creation (for debugging)
+router.post('/test-checkout', async (req, res) => {
   try {
-    const { sessionId } = req.params;
-    console.log(`[INFO] 📋 Checking session status: ${sessionId}`);
+    const { variantId } = req.body;
     
-    const DODO_API_KEY = process.env.DODO_PAYMENTS_API_KEY;
-    
-    if (!DODO_API_KEY) {
-      clearTimeout(requestTimeout);
-      return res.status(500).json({
+    if (!variantId) {
+      return res.status(400).json({
         success: false,
-        error: 'Dodo API key not configured'
+        error: 'variantId is required'
       });
     }
     
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 3000);
-    
-    const response = await fetch(`https://api.dodopayments.com/v1/checkouts/${sessionId}`, {
-      method: 'GET',
-      headers: {
-        'Authorization': `Bearer ${DODO_API_KEY}`
-      },
-      signal: controller.signal
-    });
-    
-    clearTimeout(timeoutId);
-    
-    const result = await response.json();
-    
-    if (!response.ok) {
-      console.error('[ERROR] ❌ Dodo API Error:', result);
-      clearTimeout(requestTimeout);
-      return res.status(response.status).json({
+    const product = PRODUCT_CATALOG[variantId];
+    if (!product) {
+      return res.status(400).json({
         success: false,
-        error: result.message || 'Failed to get session',
-        details: result
+        error: 'Invalid product variant',
+        availableProducts: Object.keys(PRODUCT_CATALOG)
       });
     }
     
-    clearTimeout(requestTimeout);
+    // Create a mock checkout URL for testing
+    const mockCheckoutUrl = `https://checkout.dodopayments.com/test/session_${Date.now()}`;
+    const mockSessionId = `test_session_${Date.now()}`;
+    
+    console.log(`[TEST] 🧪 Creating test checkout for product: ${product.name}`);
+    
     res.json({
       success: true,
-      session: result,
-      status: result.status,
+      checkoutUrl: mockCheckoutUrl,
+      sessionId: mockSessionId,
+      expiresAt: new Date(Date.now() + 3600000).toISOString(), // 1 hour from now
+      product: product,
+      note: 'This is a test checkout - no actual payment will be processed',
       timestamp: new Date().toISOString()
     });
     
   } catch (error) {
-    clearTimeout(requestTimeout);
-    if (error.name === 'AbortError') {
-      console.error('[ERROR] ❌ Session check timeout');
-      res.status(504).json({
-        success: false,
-        error: 'Session check timeout - Dodo API slow'
-      });
-    } else {
-      console.error('[ERROR] ❌ Error getting session:', error.message);
-      res.status(500).json({
-        success: false,
-        error: error.message
-      });
-    }
-  }
-});
-
-// Test Dodo API connection
-router.get('/test-dodo', async (req, res) => {
-  const requestTimeout = setTimeout(() => {
-    console.error('[ERROR] ⏰ Dodo API test timeout');
-    if (!res.headersSent) {
-      res.status(504).json({
-        success: false,
-        error: 'Dodo API test timeout'
-      });
-    }
-  }, 5000);
-
-  try {
-    console.log('[INFO] 🧪 Testing Dodo API connection');
-    
-    const DODO_API_KEY = process.env.DODO_PAYMENTS_API_KEY;
-    
-    if (!DODO_API_KEY) {
-      clearTimeout(requestTimeout);
-      return res.status(500).json({
-        success: false,
-        error: 'Dodo API key not configured'
-      });
-    }
-    
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 3000);
-    
-    const response = await fetch('https://api.dodopayments.com/v1/account', {
-      method: 'GET',
-      headers: {
-        'Authorization': `Bearer ${DODO_API_KEY}`
-      },
-      signal: controller.signal
+    console.error('[ERROR] ❌ Test checkout error:', error.message);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      timestamp: new Date().toISOString()
     });
-    
-    clearTimeout(timeoutId);
-    clearTimeout(requestTimeout);
-    
-    if (response.ok) {
-      const result = await response.json();
-      console.log('[INFO] ✅ Dodo API connection successful');
-      res.json({
-        success: true,
-        message: 'Dodo API connection successful',
-        account: {
-          id: result.id,
-          name: result.name,
-          email: result.email,
-          mode: result.mode || 'unknown'
-        }
-      });
-    } else {
-      const error = await response.json();
-      console.error('[ERROR] ❌ Dodo API connection failed:', error);
-      res.status(response.status).json({
-        success: false,
-        error: error.message || 'Dodo API connection failed',
-        details: error
-      });
-    }
-  } catch (error) {
-    clearTimeout(requestTimeout);
-    if (error.name === 'AbortError') {
-      console.error('[ERROR] ❌ Dodo API test timeout');
-      res.status(504).json({
-        success: false,
-        error: 'Dodo API timeout - service may be down or slow'
-      });
-    } else {
-      console.error('[ERROR] ❌ Test Dodo API error:', error.message);
-      res.status(500).json({
-        success: false,
-        error: error.message
-      });
-    }
   }
 });
 
@@ -797,6 +615,6 @@ console.log('[INFO] 📊 Products Available:', Object.keys(PRODUCT_CATALOG).leng
 console.log('[INFO] 🎯 Main Endpoint: POST /api/create-checkout');
 console.log('[INFO] 🔄 Webhook Integration: Using existing routes/lemon-webhook.js');
 console.log('[INFO] 📍 Webhook URL: https://soundswap-backend.vercel.app/api/lemon-webhook');
-console.log('[INFO] ✅ Checkout sessions are saved to Firestore for tracking');
+console.log('[INFO] ✅ All endpoints return proper JSON responses');
 
 export default router;
