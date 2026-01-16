@@ -10,6 +10,7 @@ console.log('[INFO] 🚀 Dodo Payments Checkout API Initialized');
 
 let isFirebaseLoaded = false;
 let auth = null;
+let db = null; // Added for database access
 
 // Static product catalog
 const PRODUCT_CATALOG = {
@@ -97,15 +98,16 @@ const PRODUCT_CATALOG = {
 
 // ==================== LAZY LOAD HELPER ====================
 
-const loadFirebaseAuth = async () => {
+const loadFirebase = async () => {
   if (!isFirebaseLoaded) {
-    console.log('[INFO] 🔥 Firebase: Lazy loading Firebase Admin auth');
+    console.log('[INFO] 🔥 Firebase: Lazy loading Firebase Admin');
     try {
       const adminModule = await import('firebase-admin');
       const admin = adminModule.default;
       
       if (admin.apps.length > 0) {
         auth = admin.auth();
+        db = admin.firestore();
         console.log('[INFO] 🔥 Firebase: Using existing Firebase Admin instance');
       } else {
         console.log('[INFO] 🔥 Firebase: Initializing Firebase Admin');
@@ -121,15 +123,17 @@ const loadFirebaseAuth = async () => {
             databaseURL: process.env.FIREBASE_DATABASE_URL
           });
           auth = admin.auth();
+          db = admin.firestore();
           console.log('[INFO] 🔥 Firebase: Initialized successfully');
         } else {
           console.error('[ERROR] ❌ Firebase credentials incomplete');
           auth = null;
+          db = null;
         }
       }
       
       isFirebaseLoaded = true;
-      console.log('[INFO] 🔥 Firebase: Admin auth loaded successfully');
+      console.log('[INFO] 🔥 Firebase: Admin auth and firestore loaded successfully');
     } catch (error) {
       console.error('[ERROR] ❌ Failed to load Firebase Admin:', error.message);
       auth = {
@@ -141,11 +145,12 @@ const loadFirebaseAuth = async () => {
           };
         }
       };
+      db = null;
       isFirebaseLoaded = true;
       console.log('[INFO] 🔥 Firebase: Using mock auth for testing');
     }
   }
-  return auth;
+  return { auth, db };
 };
 
 const isFirebaseAuthAvailable = () => {
@@ -197,6 +202,7 @@ router.get('/status', (req, res) => {
         dodoApiKey: DODO_API_KEY ? 'configured' : 'missing',
         dodoWebhookKey: DODO_WEBHOOK_KEY ? 'configured' : 'missing',
         firebaseAuth: FIREBASE_AUTH_AVAILABLE ? 'available' : 'not_loaded',
+        firebaseFirestore: db ? 'available' : 'not_loaded',
         environment: process.env.NODE_ENV || 'development',
         lazyLoading: 'enabled'
       },
@@ -210,6 +216,10 @@ router.get('/status', (req, res) => {
           available: FIREBASE_AUTH_AVAILABLE,
           message: FIREBASE_AUTH_AVAILABLE ? '✅ Firebase auth ready' : '⚠️ Firebase auth not loaded'
         },
+        firebaseFirestore: {
+          loaded: db !== null,
+          message: db ? '✅ Firestore ready' : '⚠️ Firestore not loaded'
+        },
         productCatalog: {
           count: Object.keys(PRODUCT_CATALOG).length,
           message: `✅ ${Object.keys(PRODUCT_CATALOG).length} products available`
@@ -222,6 +232,8 @@ router.get('/status', (req, res) => {
       },
       endpoints: {
         createCheckout: 'POST /api/create-checkout',
+        getTransactions: 'GET /api/create-checkout/transactions/:userId',
+        getPurchases: 'GET /api/create-checkout/purchases/:userId',
         creditCheck: 'GET /api/deduct-credits/credits/:userId',
         creditDeduction: 'POST /api/deduct-credits/credits/:userId',
         webhook: 'POST /api/lemon-webhook',
@@ -233,9 +245,11 @@ router.get('/status', (req, res) => {
         total: Object.keys(PRODUCT_CATALOG).length
       },
       systemInfo: {
-        version: '1.2.0',
+        version: '1.3.0',
         environment: process.env.NODE_ENV || 'development',
-        oneTimePurchases: 'enabled'
+        oneTimePurchases: 'enabled',
+        transactionHistory: 'available',
+        purchaseHistory: 'available'
       },
       timestamp: new Date().toISOString()
     };
@@ -403,9 +417,10 @@ router.post('/', async (req, res) => {
 
       // Save checkout session to Firestore for tracking
       try {
-        const adminModule = await import('firebase-admin');
-        const admin = adminModule.default;
-        const db = admin.firestore();
+        await loadFirebase(); // Ensure Firebase is loaded
+        if (!db) {
+          throw new Error('Firebase Firestore not available');
+        }
         
         const checkoutRef = db.collection('checkout_sessions').doc(sessionId);
         await checkoutRef.set({
@@ -476,6 +491,124 @@ router.post('/', async (req, res) => {
       error: 'Internal server error',
       message: error.message,
       details: process.env.NODE_ENV === 'development' ? error.stack : undefined,
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+// ==================== TRANSACTIONS ENDPOINT ====================
+
+router.get('/transactions/:userId', async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { limit = 50, type } = req.query;
+    
+    console.log(`[INFO] 📋 Fetching transactions for user: ${userId}, limit: ${limit}, type: ${type || 'all'}`);
+    
+    // Ensure Firebase is loaded
+    await loadFirebase();
+    
+    if (!db) {
+      console.error('[ERROR] ❌ Firebase Firestore not available');
+      return res.status(503).json({ 
+        success: false, 
+        error: 'Database unavailable',
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    let query = db.collection('credit_transactions')
+      .where('userId', '==', userId)
+      .orderBy('date', 'desc')
+      .limit(parseInt(limit) || 50);
+    
+    if (type) {
+      query = query.where('creditType', '==', type);
+    }
+    
+    const snapshot = await query.get();
+    const transactions = snapshot.docs.map(doc => {
+      const data = doc.data();
+      return {
+        id: doc.id,
+        ...data,
+        date: data.date && typeof data.date.toDate === 'function' 
+              ? data.date.toDate().toISOString() 
+              : (data.date || new Date().toISOString())
+      };
+    });
+    
+    console.log(`[INFO] ✅ Found ${transactions.length} transactions for user ${userId}`);
+    
+    return res.json({ 
+      success: true,
+      transactions,
+      count: transactions.length,
+      userId,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('[ERROR] ❌ Error fetching transactions:', error);
+    return res.status(500).json({ 
+      success: false,
+      error: error.message || 'Internal server error',
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+// ==================== PURCHASES ENDPOINT ====================
+
+router.get('/purchases/:userId', async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { limit = 20 } = req.query;
+    
+    console.log(`[INFO] 🛍️ Fetching purchases for user: ${userId}, limit: ${limit}`);
+    
+    // Ensure Firebase is loaded
+    await loadFirebase();
+    
+    if (!db) {
+      console.error('[ERROR] ❌ Firebase Firestore not available');
+      return res.status(503).json({ 
+        success: false, 
+        error: 'Database unavailable',
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+    const query = db.collection('purchases')
+      .where('userId', '==', userId)
+      .orderBy('date', 'desc')
+      .limit(parseInt(limit) || 20);
+    
+    const snapshot = await query.get();
+    const purchases = snapshot.docs.map(doc => {
+      const data = doc.data();
+      return {
+        id: doc.id,
+        ...data,
+        date: data.date && typeof data.date.toDate === 'function'
+              ? data.date.toDate().toISOString() 
+              : (data.date || new Date().toISOString())
+      };
+    });
+    
+    console.log(`[INFO] ✅ Found ${purchases.length} purchases for user ${userId}`);
+    
+    return res.json({
+      success: true,
+      purchases,
+      count: purchases.length,
+      userId,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('[ERROR] ❌ Error fetching purchases:', error);
+    return res.status(500).json({ 
+      success: false, 
+      error: error.message || 'Internal server error',
       timestamp: new Date().toISOString()
     });
   }
@@ -555,9 +688,17 @@ router.get('/test', (req, res) => {
     message: 'Dodo Payments Checkout API is working',
     environment: process.env.NODE_ENV || 'development',
     firebaseAuth: isFirebaseAuthAvailable() ? 'loaded' : 'not loaded (lazy)',
+    firebaseFirestore: db ? 'loaded' : 'not loaded (lazy)',
     dodoApi: process.env.DODO_PAYMENTS_API_KEY ? 'configured' : 'not configured',
     webhookIntegration: 'CONNECTED to /api/lemon-webhook',
     products_available: Object.keys(PRODUCT_CATALOG).length,
+    endpoints: {
+      createCheckout: 'POST /api/create-checkout',
+      getTransactions: 'GET /api/create-checkout/transactions/:userId',
+      getPurchases: 'GET /api/create-checkout/purchases/:userId',
+      getProducts: 'GET /api/create-checkout/products',
+      getStatus: 'GET /api/create-checkout/status'
+    },
     timestamp: new Date().toISOString(),
     note: 'Using existing webhook at routes/lemon-webhook.js'
   });
@@ -613,6 +754,8 @@ router.post('/test-checkout', async (req, res) => {
 console.log('[INFO] ✅ Dodo API Key:', process.env.DODO_PAYMENTS_API_KEY ? 'Configured' : 'Not Configured');
 console.log('[INFO] 📊 Products Available:', Object.keys(PRODUCT_CATALOG).length);
 console.log('[INFO] 🎯 Main Endpoint: POST /api/create-checkout');
+console.log('[INFO] 📋 Transactions Endpoint: GET /api/create-checkout/transactions/:userId');
+console.log('[INFO] 🛍️ Purchases Endpoint: GET /api/create-checkout/purchases/:userId');
 console.log('[INFO] 🔄 Webhook Integration: Using existing routes/lemon-webhook.js');
 console.log('[INFO] 📍 Webhook URL: https://soundswap-backend.vercel.app/api/lemon-webhook');
 console.log('[INFO] ✅ All endpoints return proper JSON responses');

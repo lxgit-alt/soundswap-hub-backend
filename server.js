@@ -444,55 +444,6 @@ app.post('/api/deduct-credits', bodyParser.json({ limit: '10mb' }), async (req, 
   }
 });
 
-// Get transaction history
-app.get('/api/transactions/:userId', async (req, res) => {
-  try {
-    const { userId } = req.params;
-    const { limit = 50, type } = req.query;
-    
-    // Ensure DB is ready
-    if (!db) {
-        return res.status(503).json({ success: false, error: 'Database unavailable' });
-    }
-
-    let query = db.collection('credit_transactions')
-      .where('userId', '==', userId)
-      .orderBy('date', 'desc')
-      .limit(parseInt(limit) || 50);
-    
-    if (type) {
-      query = query.where('creditType', '==', type);
-    }
-    
-    const snapshot = await query.get();
-    const transactions = snapshot.docs.map(doc => {
-      const data = doc.data();
-      return {
-        id: doc.id,
-        ...data,
-        date: data.date && typeof data.date.toDate === 'function' 
-              ? data.date.toDate().toISOString() 
-              : (data.date || new Date().toISOString())
-      };
-    });
-    
-    return res.json({ 
-      success: true,
-      transactions,
-      count: transactions.length,
-      userId,
-      timestamp: new Date().toISOString()
-    });
-  } catch (error) {
-    console.error('[ERROR] ❌ Error fetching transactions:', error);
-    return res.status(500).json({ 
-      success: false,
-      error: error.message,
-      timestamp: new Date().toISOString()
-    });
-  }
-});
-
 // Get credit balance
 app.get('/api/deduct-credits/credits/:userId', async (req, res) => {
   try {
@@ -534,44 +485,6 @@ app.get('/api/deduct-credits/credits/:userId', async (req, res) => {
   }
 });
 
-// Get user's purchases
-app.get('/api/purchases/:userId', async (req, res) => {
-  try {
-    const { userId } = req.params;
-    const { limit = 20 } = req.query;
-    
-    if (!db) return res.status(503).json({ error: 'Database unavailable' });
-    
-    const query = db.collection('purchases')
-      .where('userId', '==', userId)
-      .orderBy('date', 'desc')
-      .limit(parseInt(limit) || 20);
-    
-    const snapshot = await query.get();
-    const purchases = snapshot.docs.map(doc => {
-      const data = doc.data();
-      return {
-        id: doc.id,
-        ...data,
-        date: data.date && typeof data.date.toDate === 'function'
-              ? data.date.toDate().toISOString() 
-              : (data.date || new Date().toISOString())
-      };
-    });
-    
-    return res.json({
-      success: true,
-      purchases,
-      count: purchases.length,
-      userId,
-      timestamp: new Date().toISOString()
-    });
-  } catch (error) {
-    console.error('[ERROR] ❌ Error fetching purchases:', error);
-    return res.status(500).json({ success: false, error: error.message });
-  }
-});
-
 // ==================== DODO PAYMENTS STATUS ENDPOINTS ====================
 
 app.get('/api/create-checkout/status', (req, res) => {
@@ -587,6 +500,11 @@ app.get('/api/create-checkout/status', (req, res) => {
       environment: process.env.NODE_ENV || 'development'
     },
     endpoints: {
+      create_checkout: 'POST /api/create-checkout',
+      checkout_status: 'GET /api/create-checkout/status',
+      checkout_products: 'GET /api/create-checkout/products',
+      transactions: 'GET /api/create-checkout/transactions/:userId',
+      purchases: 'GET /api/create-checkout/purchases/:userId',
       createCheckout: 'POST /api/create-checkout',
       webhook: 'POST /api/lemon-webhook',
       testWebhook: 'POST /api/lemon-webhook/simulate',
