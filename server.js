@@ -163,6 +163,39 @@ app.use(cors({
 // Handle preflight requests
 app.options('*', cors());
 
+// ==================== DODO PAYMENTS CONFIGURATION ====================
+// Validate Dodo Payments configuration on startup
+const validateDodoPaymentsConfig = () => {
+  const config = {
+    apiKey: process.env.DODO_PAYMENTS_API_KEY,
+    webhookKey: process.env.DODO_PAYMENTS_WEBHOOK_KEY,
+    webhookSecret: process.env.DODO_PAYMENTS_WEBHOOK_SECRET,
+    environment: process.env.DODO_PAYMENTS_ENV || (process.env.NODE_ENV === 'production' ? 'live' : 'test'),
+    publicKey: process.env.DODO_PAYMENTS_PUBLIC_KEY || process.env.REACT_APP_DODO_PUBLIC_KEY || process.env.VITE_DODO_PUBLIC_KEY
+  };
+
+  console.log('🔐 Dodo Payments Configuration:');
+  console.log(`   - API Key: ${config.apiKey ? '✅ Configured' : '❌ Missing'}`);
+  console.log(`   - Webhook Key: ${config.webhookKey ? '✅ Configured' : '⚠️  Missing'}`);
+  console.log(`   - Webhook Secret: ${config.webhookSecret ? '✅ Configured' : '⚠️  Missing'}`);
+  console.log(`   - Environment: ${config.environment}`);
+  console.log(`   - Public Key: ${config.publicKey ? '✅ Configured' : '❌ Missing (Frontend may fail)'}`);
+
+  if (!config.apiKey) {
+    console.error('❌ CRITICAL: DODO_PAYMENTS_API_KEY is required for checkout functionality');
+  }
+
+  if (!config.publicKey) {
+    console.warn('⚠️ WARNING: Dodo Payments Public Key not configured. Frontend checkout may fail.');
+    console.warn('   Set DODO_PAYMENTS_PUBLIC_KEY in your .env file');
+  }
+
+  return config;
+};
+
+// Validate on startup
+const dodoConfig = validateDodoPaymentsConfig();
+
 // ==================== LAZY ROUTE LOADERS (DEFINED EARLY FOR WEBHOOK) ====================
 const createLazyRouter = (modulePath, moduleName) => {
   let router = null;
@@ -279,6 +312,114 @@ app.use('/api/generate-video', createLazyRouter('./routes/generate-video.js', 'l
 // Doodle-to-Art API - LAZY LOADED
 app.use('/api/doodle-art', createLazyRouter('./routes/doodle-art.js', 'doodleArt'));
 app.use('/api/ai-art', createLazyRouter('./routes/doodle-art.js', 'doodleArt'));
+
+// ==================== DODO PAYMENTS CONFIGURATION ENDPOINTS ====================
+
+// Public endpoint for frontend to get Dodo Payments configuration
+app.get('/api/dodo-config', (req, res) => {
+  try {
+    const isDevelopment = process.env.NODE_ENV === 'development';
+    
+    // Public configuration for frontend (safe to expose)
+    const publicConfig = {
+      success: true,
+      mode: dodoConfig.environment,
+      publicKey: dodoConfig.publicKey,
+      isTestMode: dodoConfig.environment === 'test' || isDevelopment,
+      sdkUrl: dodoConfig.environment === 'live' 
+        ? 'https://checkout.dodopayments.com/v1/checkout.js' 
+        : 'https://checkout-test.dodopayments.com/v1/checkout.js',
+      apiBaseUrl: dodoConfig.environment === 'live'
+        ? 'https://api.dodopayments.com/v1'
+        : 'https://api-test.dodopayments.com/v1',
+      allowedPaymentMethods: ['card', 'apple_pay', 'google_pay'],
+      supportedCurrencies: ['USD'],
+      environment: process.env.NODE_ENV || 'development',
+      timestamp: new Date().toISOString()
+    };
+
+    console.log('[DODO-CONFIG] 📋 Providing public Dodo configuration to frontend');
+    console.log(`   - Mode: ${publicConfig.mode}`);
+    console.log(`   - Public Key: ${publicConfig.publicKey ? 'Provided' : 'Missing'}`);
+    console.log(`   - SDK URL: ${publicConfig.sdkUrl}`);
+    
+    res.json(publicConfig);
+  } catch (error) {
+    console.error('[DODO-CONFIG] ❌ Error providing configuration:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to load payment configuration',
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+// Private endpoint for admin/status checks
+app.get('/api/dodo-config/internal', (req, res) => {
+  try {
+    // Check for admin authorization
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({
+        success: false,
+        error: 'Unauthorized',
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    const token = authHeader.split('Bearer ')[1];
+    const adminToken = process.env.ADMIN_API_TOKEN;
+    
+    if (!adminToken || token !== adminToken) {
+      return res.status(401).json({
+        success: false,
+        error: 'Invalid authorization token',
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    // Internal configuration (includes more details)
+    const internalConfig = {
+      success: true,
+      configuration: {
+        apiKey: dodoConfig.apiKey ? 'Configured' : 'Missing',
+        webhookKey: dodoConfig.webhookKey ? 'Configured' : 'Missing',
+        webhookSecret: dodoConfig.webhookSecret ? 'Configured' : 'Missing',
+        publicKey: dodoConfig.publicKey ? 'Configured' : 'Missing',
+        environment: dodoConfig.environment,
+        nodeEnv: process.env.NODE_ENV || 'development'
+      },
+      endpoints: {
+        createCheckout: '/api/create-checkout',
+        webhook: '/api/lemon-webhook',
+        status: '/api/create-checkout/status',
+        test: '/api/payments/test',
+        publicConfig: '/api/dodo-config'
+      },
+      services: {
+        firebase: db ? 'Connected' : 'Disconnected',
+        webhookValidation: 'Enabled',
+        productCatalog: 'Available'
+      },
+      webhookConfiguration: {
+        url: `${process.env.NEXT_PUBLIC_APP_URL || 'https://soundswap.live'}/api/lemon-webhook`,
+        events: ['checkout.session.completed', 'checkout.session.expired', 'checkout.session.cancelled'],
+        secret: dodoConfig.webhookSecret ? 'Configured' : 'Not configured'
+      },
+      timestamp: new Date().toISOString()
+    };
+
+    console.log('[DODO-CONFIG] 🔐 Providing internal Dodo configuration');
+    res.json(internalConfig);
+  } catch (error) {
+    console.error('[DODO-CONFIG] ❌ Error providing internal configuration:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to load internal configuration',
+      timestamp: new Date().toISOString()
+    });
+  }
+});
 
 // ==================== CREDIT MANAGEMENT ENDPOINTS ====================
 
@@ -492,13 +633,15 @@ app.get('/api/create-checkout/status', (req, res) => {
   res.json({
     success: true,
     service: 'dodo-payments',
-    status: 'active',
+    status: dodoConfig.apiKey ? 'active' : 'inactive',
     configuration: {
-      dodoApiKey: process.env.DODO_PAYMENTS_API_KEY ? 'configured' : 'missing',
-      dodoWebhookKey: process.env.DODO_PAYMENTS_WEBHOOK_KEY ? 'configured' : 'missing',
-      firebase: db ? 'connected' : 'disconnected',
-      environment: process.env.NODE_ENV || 'development'
+      dodoApiKey: dodoConfig.apiKey ? 'configured' : 'missing',
+      dodoWebhookKey: dodoConfig.webhookKey ? 'configured' : 'missing',
+      dodoPublicKey: dodoConfig.publicKey ? 'configured' : 'missing',
+      environment: dodoConfig.environment,
+      firebase: db ? 'connected' : 'disconnected'
     },
+    publicConfigEndpoint: '/api/dodo-config',
     endpoints: {
       create_checkout: 'POST /api/create-checkout',
       checkout_status: 'GET /api/create-checkout/status',
@@ -532,7 +675,11 @@ app.get('/api/payments/test', async (req, res) => {
       });
     }
     
-    const response = await fetch('https://api.dodopayments.com/v1/account', {
+    const apiUrl = dodoConfig.environment === 'live' 
+      ? 'https://api.dodopayments.com/v1/account' 
+      : 'https://api-test.dodopayments.com/v1/account';
+    
+    const response = await fetch(apiUrl, {
       method: 'GET',
       headers: {
         'Authorization': `Bearer ${DODO_API_KEY}`
@@ -549,7 +696,7 @@ app.get('/api/payments/test', async (req, res) => {
           id: result.id,
           name: result.name,
           email: result.email,
-          mode: result.mode || 'test'
+          mode: result.mode || dodoConfig.environment
         },
         timestamp: new Date().toISOString()
       });
@@ -869,14 +1016,16 @@ app.get('/api/health', (req, res) => {
     timezone: APP_TIMEZONE,
     currentTime: currentTime,
     currentDay: currentDay,
-    version: '2.2.0',
+    version: '2.3.0',
     cronSafe: true,
     moduleLoading: 'isolated',
+    paymentGateway: dodoConfig.apiKey ? 'Dodo Payments (Active)' : 'Dodo Payments (Inactive)',
     services: {
       reddit_automation: 'available',
       cron_scheduler: 'running',
       module_isolation: 'active',
-      batched_orchestration: 'enabled'
+      batched_orchestration: 'enabled',
+      payment_processing: dodoConfig.apiKey ? 'enabled' : 'disabled'
     },
     batched_automation: {
       strategy: '4-Batch Rotation',
@@ -902,15 +1051,22 @@ app.get('/api/status', (req, res) => {
     success: true,
     service: 'soundswap-backend',
     status: 'operational',
-    version: '2.2.0',
+    version: '2.3.0',
     environment: process.env.NODE_ENV || 'development',
     timezone: APP_TIMEZONE,
     currentTime: currentTime,
     currentDay: currentDay,
     timestamp: new Date().toISOString(),
+    paymentConfiguration: {
+      gateway: 'Dodo Payments',
+      status: dodoConfig.apiKey ? 'configured' : 'not configured',
+      mode: dodoConfig.environment,
+      publicConfigEndpoint: '/api/dodo-config'
+    },
     endpoints: {
       health: '/api/health',
       status: '/api/status',
+      dodo_config: '/api/dodo-config',
       isolated_cron: 'POST /api/cron-reddit (For GitHub Actions)',
       shadow_check: 'GET /api/shadow-check (Manual verification)',
       health_monitor: 'GET /api/reddit-admin/health-monitor (System monitoring)',
@@ -929,6 +1085,10 @@ app.get('/api/status', (req, res) => {
       optimized_schedule: '/api/reddit-admin/optimized-schedule',
       post_premium_feature: '/api/reddit-admin/post-premium-feature',
       reset_daily: '/api/reddit-admin/reset-daily',
+      create_checkout: 'POST /api/create-checkout',
+      lemon_webhook: 'POST /api/lemon-webhook',
+      checkout_status: 'GET /api/create-checkout/status',
+      payment_test: 'GET /api/payments/test',
       check_credits: 'POST /api/deduct-credits/check',
       deduct_credits: 'POST /api/deduct-credits',
       get_transactions: 'GET /api/deduct-credits/transactions/:userId',
@@ -941,6 +1101,14 @@ app.get('/api/status', (req, res) => {
       batch_targets: 'GET /api/reddit-admin/targets',
       today_schedule: 'GET /api/reddit-admin/schedule/today',
       cron_status: 'GET /api/reddit-admin/cron-status'
+    },
+    payment_api_endpoints: {
+      create_checkout: 'POST /api/create-checkout - Create a checkout session',
+      checkout_status: 'GET /api/create-checkout/status - Check payment service status',
+      dodo_config: 'GET /api/dodo-config - Get public payment configuration',
+      payment_test: 'GET /api/payments/test - Test Dodo API connection',
+      webhook: 'POST /api/lemon-webhook - Payment webhook endpoint',
+      products: 'GET /api/create-checkout/products - Get available products'
     },
     video_generation_api: {
       generate_video: 'POST /api/generate-video',
@@ -993,7 +1161,8 @@ app.get('/api/status', (req, res) => {
       chart_notifications: 'active',
       reddit_api: 'live',
       premium_feature_focus: 'active',
-      credit_system: 'active'
+      credit_system: 'active',
+      payment_processing: dodoConfig.apiKey ? 'active' : 'inactive'
     },
     batched_orchestration_features: {
       version: '8.0.0',
@@ -1011,7 +1180,8 @@ app.get('/api/status', (req, res) => {
       shadow_delete_checks: 'Weekly manual verification recommended',
       batch_c_focus: 'Prioritize Batch C comment verification',
       rate_limit_monitoring: 'Automatic exponential backoff',
-      discord_signal_noise: 'High-priority leads only (Score > 85)'
+      discord_signal_noise: 'High-priority leads only (Score > 85)',
+      payment_gateway: dodoConfig.apiKey ? 'Active - Monitor webhooks' : 'Inactive - Configuration required'
     }
   });
 });
@@ -1024,7 +1194,7 @@ app.get('/', (req, res) => {
   res.json({
     success: true,
     message: 'SoundSwap API - Backend service is running',
-    version: '2.2.0',
+    version: '2.3.0',
     environment: 'production',
     timezone: APP_TIMEZONE,
     currentTime: currentTime,
@@ -1033,6 +1203,7 @@ app.get('/', (req, res) => {
     endpoints: {
       health: '/api/health',
       status: '/api/status',
+      dodo_config: '/api/dodo-config',
       isolated_cron: 'POST /api/cron-reddit (GitHub Actions)',
       shadow_check: 'GET /api/shadow-check (Critical monitoring)',
       health_monitor: 'GET /api/reddit-admin/health-monitor (System health)',
@@ -1051,6 +1222,10 @@ app.get('/', (req, res) => {
       optimized_schedule: '/api/reddit-admin/optimized-schedule',
       post_premium_feature: '/api/reddit-admin/post-premium-feature',
       reset_daily: '/api/reddit-admin/reset-daily',
+      create_checkout: 'POST /api/create-checkout',
+      lemon_webhook: 'POST /api/lemon-webhook',
+      checkout_status: 'GET /api/create-checkout/status',
+      payment_test: 'GET /api/payments/test',
       check_credits: 'POST /api/deduct-credits/check',
       deduct_credits: 'POST /api/deduct-credits',
       get_transactions: 'GET /api/deduct-credits/transactions/:userId',
@@ -1074,6 +1249,12 @@ app.get('/', (req, res) => {
         'Human Window Enforcement (12:00-22:00 UTC)'
       ]
     },
+    payment_system: {
+      gateway: 'Dodo Payments',
+      status: dodoConfig.apiKey ? 'Active' : 'Configuration required',
+      mode: dodoConfig.environment,
+      public_config: 'GET /api/dodo-config'
+    },
     video_generation_api: {
       generate_video: 'POST /api/generate-video',
       generate_video_optimized: 'POST /api/generate-video/optimized',
@@ -1125,7 +1306,8 @@ app.get('/', (req, res) => {
       chart_notifications: 'active',
       reddit_api: 'live',
       premium_feature_focus: 'active',
-      credit_system: 'active'
+      credit_system: 'active',
+      payment_processing: dodoConfig.apiKey ? 'active' : 'inactive'
     }
   });
 });
@@ -1146,6 +1328,7 @@ app.use('*', (req, res) => {
       '/api/health',
       '/health',
       '/api/status',
+      '/api/dodo-config',
       '/api/cron-reddit (POST)',
       '/api/shadow-check (Critical monitoring)',
       '/api/reddit-admin/health-monitor (System health)',
@@ -1167,6 +1350,7 @@ app.use('*', (req, res) => {
       '/api/create-checkout',
       '/api/lemon-webhook',
       '/api/create-checkout/status',
+      '/api/payments/test',
       '/api/deduct-credits/check (POST)',
       '/api/deduct-credits (POST)',
       '/api/deduct-credits/transactions/:userId',
@@ -1208,7 +1392,15 @@ if (process.env.NODE_ENV !== 'production' || process.env.VERCEL !== '1') {
     console.log(`👁️  Shadow-check: GET http://localhost:${PORT}/api/shadow-check`);
     console.log(`📊 Health monitor: GET http://localhost:${PORT}/api/reddit-admin/health-monitor`);
     console.log(`🔧 Module status: GET http://localhost:${PORT}/api/module-status`);
+    console.log(`💰 Payment config: GET http://localhost:${PORT}/api/dodo-config`);
     console.log(`🌐 CORS enabled for: localhost:3000, localhost:3001, soundswap.live`);
     console.log(`🎭 Batched Orchestration: 20 subreddits, 4 batches, Discord threshold: Score > 85`);
+    
+    // Log Dodo Payments configuration status
+    console.log('\n🔐 Dodo Payments Configuration:');
+    console.log(`   - API Key: ${dodoConfig.apiKey ? '✅ Configured' : '❌ Missing'}`);
+    console.log(`   - Public Key: ${dodoConfig.publicKey ? '✅ Configured' : '❌ Missing'}`);
+    console.log(`   - Environment: ${dodoConfig.environment}`);
+    console.log(`   - Configuration endpoint: http://localhost:${PORT}/api/dodo-config`);
   });
 }
