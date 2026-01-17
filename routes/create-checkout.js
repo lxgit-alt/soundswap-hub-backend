@@ -1,4 +1,3 @@
-// routes/create-checkout.js
 import express from 'express';
 import DodoPayments from 'dodopayments';
 
@@ -445,8 +444,8 @@ router.post('/', async (req, res) => {
         // Continue anyway - this is not critical
       }
       
-      clearTimeout(requestTimeout);
-      return res.status(200).json({ 
+      // Ensure response is sent with proper structure
+      const responseData = { 
         success: true, 
         checkoutUrl, 
         sessionId, 
@@ -460,11 +459,17 @@ router.post('/', async (req, res) => {
         },
         webhook_url: `${process.env.NEXT_PUBLIC_APP_URL || 'https://soundswap.live'}/api/lemon-webhook`,
         timestamp: new Date().toISOString() 
-      });
+      };
+      
+      console.log('[INFO] 📤 Sending response:', JSON.stringify(responseData, null, 2));
+      
+      clearTimeout(requestTimeout);
+      return res.status(200).json(responseData);
       
     } catch (dodoError) {
       clearTimeout(requestTimeout);
       console.error('[ERROR] ❌ Dodo API error:', dodoError.message);
+      console.error('[ERROR] ❌ Dodo API error stack:', dodoError.stack);
       
       if (dodoError.message && dodoError.message.includes('timeout')) {
         return res.status(504).json({ 
@@ -477,7 +482,8 @@ router.post('/', async (req, res) => {
       return res.status(500).json({ 
         success: false, 
         error: 'Payment service error', 
-        message: dodoError.message || 'Unknown error from payment provider'
+        message: dodoError.message || 'Unknown error from payment provider',
+        details: process.env.NODE_ENV === 'development' ? dodoError.stack : undefined
       });
     }
 
@@ -493,6 +499,8 @@ router.post('/', async (req, res) => {
       details: process.env.NODE_ENV === 'development' ? error.stack : undefined,
       timestamp: new Date().toISOString()
     });
+  } finally {
+    clearTimeout(requestTimeout);
   }
 });
 
@@ -749,6 +757,17 @@ router.post('/test-checkout', async (req, res) => {
       timestamp: new Date().toISOString()
     });
   }
+});
+
+// Health check endpoint
+router.get('/health', (req, res) => {
+  res.json({
+    success: true,
+    status: 'healthy',
+    timestamp: new Date().toISOString(),
+    environment: process.env.NODE_ENV || 'development',
+    service: 'dodo-checkout'
+  });
 });
 
 console.log('[INFO] ✅ Dodo API Key:', process.env.DODO_PAYMENTS_API_KEY ? 'Configured' : 'Not Configured');

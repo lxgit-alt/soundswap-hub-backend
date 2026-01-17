@@ -752,7 +752,8 @@ router.get('/style-presets', (req, res) => {
   res.json({
     success: true,
     presets,
-    count: presets.length
+    count: presets.length,
+    timestamp: new Date().toISOString()
   });
 });
 
@@ -823,13 +824,12 @@ router.post('/export-batch', async (req, res) => {
 });
 
 // ============================================
-// KEEP EXISTING ENDPOINTS FOR BACKWARD COMPATIBILITY
+// ORIGINAL GENERATE ENDPOINT (BACKWARD COMPATIBILITY)
 // ============================================
 
-// Original generate endpoint (simplified version)
 router.post('/generate', async (req, res) => {
   try {
-    const { sketch, prompt, conditioningScale = 0.8 } = req.body;
+    const { sketch, prompt, conditioningScale = 0.8, userId } = req.body;
     
     if (!sketch || !prompt) {
       return res.status(400).json({ 
@@ -842,16 +842,119 @@ router.post('/generate', async (req, res) => {
     req.body = {
       ...req.body,
       stylePreset: 'indie',
-      controlType: 'scribble'
+      controlType: 'scribble',
+      numOutputs: 1
     };
     
-    // Call the enhanced endpoint
-    return router.post('/generate-enhanced')(req, res);
+    // Call the enhanced endpoint handler directly
+    const enhancedHandler = router.stack.find(layer => layer.route && layer.route.path === '/generate-enhanced' && layer.route.methods.post);
+    
+    if (enhancedHandler) {
+      return enhancedHandler.route.stack[0].handle(req, res);
+    } else {
+      // Fallback to original implementation
+      const generationId = crypto.randomBytes(8).toString('hex');
+      
+      // Verify credits
+      const creditVerification = await verifyUserCreditsBeforeProcessing(userId, 'coverArt', generationId);
+      
+      if (!creditVerification.verified) {
+        return res.status(402).json({
+          success: false,
+          error: creditVerification.error,
+          message: creditVerification.message
+        });
+      }
+
+      const base64Data = sketch.replace(/^data:image\/\w+;base64,/, '');
+      const imageDataUrl = `data:image/png;base64,${base64Data}`;
+
+      const input = {
+        image: imageDataUrl,
+        prompt: prompt,
+        num_outputs: 1,
+        image_resolution: "512",
+        num_inference_steps: 50,
+        guidance_scale: 7.5,
+        scheduler: "DPMSolverMultistep",
+        conditioning_scale: conditioningScale,
+        seed: Math.floor(Math.random() * 1000000)
+      };
+
+      const output = await replicate.run(
+        "jagilley/controlnet-scribble:435061a1b5a4c1e26740464bf786efdfa9cb3a3ac488595a2de23e143fdb0117",
+        { input }
+      );
+
+      if (output && output.length > 0) {
+        const imageUrl = output[0];
+        
+        if (imageUrl.includes('NSFW') || imageUrl.includes('blocked')) {
+          return res.status(400).json({
+            success: false,
+            error: 'NSFW',
+            message: 'Content blocked by safety filters'
+          });
+        }
+        
+        res.json({
+          success: true,
+          image: imageUrl,
+          generationId,
+          timestamp: new Date().toISOString()
+        });
+      } else {
+        res.status(400).json({
+          success: false,
+          error: 'No output generated'
+        });
+      }
+    }
   } catch (error) {
     console.error('Generation error:', error);
+    
+    // Refund credits on error
+    const userId = req.body.userId;
+    const generationId = crypto.randomBytes(8).toString('hex');
+    if (userId && !error.message.includes('Insufficient')) {
+      await revertUserCredits(userId, 'coverArt', generationId);
+    }
+    
     res.status(500).json({
       success: false,
       error: 'Generation failed',
+      message: error.message
+    });
+  }
+});
+
+// ============================================
+// AI ART GENERATION ENDPOINT (ALIAS)
+// ============================================
+
+router.post('/generate-ai', async (req, res) => {
+  try {
+    // Just call the enhanced endpoint with default settings
+    req.body = {
+      ...req.body,
+      stylePreset: req.body.stylePreset || 'indie',
+      controlType: 'scribble'
+    };
+    
+    // Call the enhanced endpoint handler directly
+    const enhancedHandler = router.stack.find(layer => layer.route && layer.route.path === '/generate-enhanced' && layer.route.methods.post);
+    
+    if (enhancedHandler) {
+      return enhancedHandler.route.stack[0].handle(req, res);
+    } else {
+      // Fallback to calling generate
+      return router.post('/generate')(req, res);
+    }
+  } catch (error) {
+    console.error('AI Art generation error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'AI Art generation failed',
       message: error.message
     });
   }
@@ -869,7 +972,8 @@ router.post('/animate-enhanced', async (req, res) => {
       motionStrength = 0.6,
       duration = 8,
       quality = 'standard', // 'standard', 'premium', '4k'
-      style = 'cinematic'
+      style = 'cinematic',
+      userId
     } = req.body;
 
     if (!imageUrl) {
@@ -887,7 +991,6 @@ router.post('/animate-enhanced', async (req, res) => {
     // ============================================
     // CREDIT VERIFICATION
     // ============================================
-    const userId = req.body.userId;
     const creditVerification = await verifyUserCreditsBeforeProcessing(userId, 'lyricVideo', generationId);
     
     if (!creditVerification.verified) {
@@ -1005,7 +1108,7 @@ router.get('/features', (req, res) => {
   });
 });
 
-// Existing health endpoint
+// Health endpoint
 router.get('/health', (req, res) => {
   res.json({
     success: true,
@@ -1017,6 +1120,25 @@ router.get('/health', (req, res) => {
   });
 });
 
+// Test endpoint
+router.get('/test', (req, res) => {
+  res.json({
+    success: true,
+    message: 'Doodle-to-Art API is working',
+    endpoints: {
+      generate: 'POST /generate - Basic generation',
+      generateEnhanced: 'POST /generate-enhanced - Enhanced generation with all features',
+      generateAi: 'POST /generate-ai - AI art generation',
+      stylePresets: 'GET /style-presets - List style presets',
+      exportBatch: 'POST /export-batch - Export in multiple formats',
+      animateEnhanced: 'POST /animate-enhanced - Animate images',
+      testConnection: 'GET /test-connection - Test API connections',
+      features: 'GET /features - List all features'
+    },
+    timestamp: new Date().toISOString()
+  });
+});
+
 // Root endpoint
 router.get('/', (req, res) => {
   res.json({
@@ -1024,12 +1146,16 @@ router.get('/', (req, res) => {
     message: 'Enhanced Doodle-to-Art API',
     version: '3.0.0',
     endpoints: {
+      generate: 'POST /generate - Basic generation',
       generateEnhanced: 'POST /generate-enhanced - Enhanced generation with all 4 pillars',
+      generateAi: 'POST /generate-ai - AI art generation (alias)',
       stylePresets: 'GET /style-presets - List available style presets',
       exportBatch: 'POST /export-batch - Export in multiple aspect ratios',
       animateEnhanced: 'POST /animate-enhanced - Enhanced animation with 4K support',
+      testConnection: 'GET /test-connection - Test API connections',
       features: 'GET /features - List all available features'
-    }
+    },
+    timestamp: new Date().toISOString()
   });
 });
 
