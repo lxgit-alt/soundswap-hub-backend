@@ -164,30 +164,24 @@ app.use(cors({
 app.options('*', cors());
 
 // ==================== DODO PAYMENTS CONFIGURATION ====================
-// Validate Dodo Payments configuration on startup
 const validateDodoPaymentsConfig = () => {
   const config = {
     apiKey: process.env.DODO_PAYMENTS_API_KEY,
     webhookKey: process.env.DODO_PAYMENTS_WEBHOOK_KEY,
     webhookSecret: process.env.DODO_PAYMENTS_WEBHOOK_SECRET,
     environment: process.env.DODO_PAYMENTS_ENV || (process.env.NODE_ENV === 'production' ? 'live' : 'test'),
-    publicKey: process.env.DODO_PAYMENTS_PUBLIC_KEY || process.env.REACT_APP_DODO_PUBLIC_KEY || process.env.VITE_DODO_PUBLIC_KEY
+    publicKey: process.env.DODO_PAYMENTS_PUBLIC_KEY || process.env.NEXT_PUBLIC_DODO_PUBLIC_KEY
   };
 
   console.log('🔐 Dodo Payments Configuration:');
   console.log(`   - API Key: ${config.apiKey ? '✅ Configured' : '❌ Missing'}`);
-  console.log(`   - Webhook Key: ${config.webhookKey ? '✅ Configured' : '⚠️  Missing'}`);
-  console.log(`   - Webhook Secret: ${config.webhookSecret ? '✅ Configured' : '⚠️  Missing'}`);
+  console.log(`   - Webhook Key: ${config.webhookKey ? '✅ Configured' : '⚠️ Missing'}`);
   console.log(`   - Environment: ${config.environment}`);
-  console.log(`   - Public Key: ${config.publicKey ? '✅ Configured' : '❌ Missing (Frontend may fail)'}`);
+  console.log(`   - Public Key: ${config.publicKey ? '✅ Configured' : '❌ Missing (Frontend will use CDN)'}`);
 
   if (!config.apiKey) {
     console.error('❌ CRITICAL: DODO_PAYMENTS_API_KEY is required for checkout functionality');
-  }
-
-  if (!config.publicKey) {
-    console.warn('⚠️ WARNING: Dodo Payments Public Key not configured. Frontend checkout may fail.');
-    console.warn('   Set DODO_PAYMENTS_PUBLIC_KEY in your .env file');
+    console.error('   Get your API key from: https://dashboard.dodopayments.com');
   }
 
   return config;

@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>New AI Features on SoundSwap!</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            background-color: #f8f9fa;
+            color: #333;
+            line-height: 1.6;
+        }
+        .email-container {
+            max-width: 600px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 12px;
+            overflow: hidden;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+        }
+        .header {
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            padding: 40px 30px;
+            text-align: center;
+            color: white;
+        }
+        .header h1 {
+            margin: 0;
+            font-size: 32px;
+            font-weight: bold;
+        }
+        .header p {
+            margin: 10px 0 0;
+            font-size: 18px;
+            opacity: 0.9;
+        }
+        .content {
+            padding: 40px 30px;
+        }
+        .greeting {
+            font-size: 20px;
+            font-weight: 600;
+            margin-bottom: 20px;
+            color: #333;
+        }
+        .message {
+            font-size: 16px;
+            margin-bottom: 30px;
+            color: #555;
+        }
+        .feature-card {
+            background: #f8f9fa;
+            border-radius: 8px;
+            padding: 25px;
+            margin: 20px 0;
+            border-left: 4px solid #667eea;
+            transition: transform 0.3s ease;
+        }
+        .feature-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+        }
+        .feature-card h3 {
+            margin: 0 0 15px;
+            color: #333;
+            font-size: 18px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .feature-list {
+            list-style: none;
+            padding: 0;
+            margin: 0;
+        }
+        .feature-list li {
+            display: flex;
+            align-items: center;
+            margin-bottom: 12px;
+            font-size: 15px;
+            color: #555;
+        }
+        .feature-list li:before {
+            content: "✨";
+            margin-right: 12px;
+            font-size: 16px;
+        }
+        .ai-badge {
+            display: inline-block;
+            background: linear-gradient(135deg, #fd4e2f, #ff6b47);
+            color: white;
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: 600;
+            margin-left: 8px;
+        }
+        .cta-button {
+            display: inline-block;
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            color: white;
+            padding: 14px 30px;
+            text-decoration: none;
+            border-radius: 8px;
+            font-weight: 600;
+            font-size: 16px;
+            text-align: center;
+            margin: 20px 0;
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+        }
+        .cta-button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+        }
+        .subscription-upgrade {
+            background: linear-gradient(135deg, rgba(253, 78, 47, 0.1), rgba(255, 107, 53, 0.1));
+            border: 2px solid rgba(253, 78, 47, 0.3);
+            border-radius: 8px;
+            padding: 20px;
+            margin: 25px 0;
+            text-align: center;
+        }
+        .subscription-upgrade h4 {
+            margin: 0 0 10px;
+            color: #fd4e2f;
+            font-size: 18px;
+        }
+        .subscription-upgrade p {
+            margin: 0;
+            color: #333;
+            font-size: 14px;
+        }
+        .premium-features {
+            background: linear-gradient(135deg, rgba(255, 215, 0, 0.1), rgba(255, 187, 0, 0.1));
+            border: 2px solid rgba(255, 215, 0, 0.3);
+            border-radius: 8px;
+            padding: 20px;
+            margin: 25px 0;
+        }
+        .premium-features h4 {
+            margin: 0 0 10px;
+            color: #b8860b;
+            font-size: 18px;
+        }
+        .tool-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 20px;
+            margin: 30px 0;
+        }
+        .tool-card {
+            background: white;
+            border: 1px solid #e9ecef;
+            border-radius: 8px;
+            padding: 20px;
+            transition: all 0.3s ease;
+        }
+        .tool-card:hover {
+            border-color: #667eea;
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.1);
+        }
+        .tool-icon {
+            font-size: 32px;
+            margin-bottom: 15px;
+        }
+        .footer {
+            background: #f8f9fa;
+            padding: 30px;
+            text-align: center;
+            font-size: 14px;
+            color: #666;
+            border-top: 1px solid #eee;
+        }
+        .footer a {
+            color: #667eea;
+            text-decoration: none;
+        }
+        .footer a:hover {
+            text-decoration: underline;
+        }
+        .social-links {
+            margin: 20px 0;
+        }
+        .social-links a {
+            display: inline-block;
+            margin: 0 10px;
+            color: #666;
+            font-size: 20px;
+            text-decoration: none;
+        }
+        @media (max-width: 600px) {
+            .email-container {
+                margin: 0;
+                border-radius: 0;
+            }
+            .header, .content, .footer {
+                padding: 20px;
+            }
+            .header h1 {
+                font-size: 28px;
+            }
+            .tool-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="email-container">
+        <div class="header">
+            <h1>🎵 New AI Features on SoundSwap!</h1>
+            <p>Transform your creative workflow with our latest AI tools</p>
+        </div>
+        
+        <div class="content">
+            <div class="greeting">
+                Hey {{name}}!
+            </div>
+            
+            <div class="message">
+                We're excited to announce two powerful new AI tools designed to help you create stunning visual content for your music. These tools are now available to all SoundSwap members!
+            </div>
+
+            <div class="tool-grid">
+                <div class="tool-card">
+                    <div class="tool-icon">🎨</div>
+                    <h3>Doodle Art Generator</h3>
+                    <p>Turn simple sketches into professional artwork with AI, and create animated videos perfect for Spotify Canvas.</p>
+                    <div class="feature-list">
+                        <li>AI-powered sketch-to-art conversion</li>
+                        <li>Create Spotify Canvas videos</li>
+                        <li>Multiple art styles</li>
+                        <li>Animation options</li>
+                    </div>
+                </div>
+                
+                <div class="tool-card">
+                    <div class="tool-icon">🎬</div>
+                    <h3>Lyric Video Generator</h3>
+                    <p>Create professional lyric videos synchronized with your music, featuring AI-recommended visual styles.</p>
+                    <div class="feature-list">
+                        <li>Automatic lyric timing</li>
+                        <li>10+ visual styles</li>
+                        <li>BPM-based recommendations</li>
+                        <li>Physics-based animations</li>
+                    </div>
+                </div>
+            </div>
+
+            <div class="feature-card">
+                <h3><span>🤖</span> What's New in AI Features <span class="ai-badge">NEW</span></h3>
+                <ul class="feature-list">
+                    <li><strong>Smart Style Matching:</strong> AI analyzes your music and suggests perfect visual styles</li>
+                    <li><strong>Automatic Timing:</strong> Lyrics sync automatically with your track's BPM</li>
+                    <li><strong>Spotify Canvas Ready:</strong> Export optimized 8-second loops for Spotify</li>
+                    <li><strong>Advanced Animation:</strong> Physics-based text animations for professional results</li>
+                    <li><strong>Real-time Preview:</strong> See your creations come to life as you work</li>
+                </ul>
+            </div>
+
+            {{#unless isPremium}}
+            <div class="subscription-upgrade">
+                <h4>🎁 Special Offer for Existing Users</h4>
+                <p>Upgrade to Premium within the next 7 days and get <strong>50% off your first month</strong> plus early access to all new AI features!</p>
+            </div>
+            {{/unless}}
+
+            {{#if isPremium}}
+            <div class="premium-features">
+                <h4>🌟 Premium Exclusive</h4>
+                <p>As a Premium member, you get <strong>unlimited AI generations</strong>, <strong>priority processing</strong>, and <strong>exclusive animation styles</strong>!</p>
+            </div>
+            {{/if}}
+
+            <div style="text-align: center;">
+                <a href="{{aiToolsUrl}}" class="cta-button">
+                    🚀 Try AI Tools Now
+                </a>
+                <p style="font-size: 14px; color: #666; margin-top: 10px;">
+                    No setup required - start creating immediately!
+                </p>
+            </div>
+
+            <div class="message">
+                <strong>Pro tip:</strong> These AI tools work best when you combine them with your existing SoundSwap tracks. Try generating visuals for your most popular songs first!
+            </div>
+
+            <div style="background: #f0f8ff; border-radius: 8px; padding: 20px; margin: 30px 0; border-left: 4px solid #0077b6;">
+                <h4 style="margin: 0 0 10px 0; color: #0077b6;">Need Inspiration?</h4>
+                <p style="margin: 0; color: #333; font-size: 14px;">
+                    Check out our <a href="{{inspirationUrl}}" style="color: #0077b6; font-weight: 600;">AI Showcase Gallery</a> to see what other artists are creating with these tools.
+                </p>
+            </div>
+        </div>
+
+        <div class="footer">
+            <div class="social-links">
+                <a href="{{twitterUrl}}" title="Follow us on Twitter">🐦</a>
+                <a href="{{facebookUrl}}" title="Like us on Facebook">📘</a>
+                <a href="{{instagramUrl}}" title="Follow us on Instagram">📸</a>
+                <a href="{{youtubeUrl}}" title="Subscribe to our YouTube">📺</a>
+            </div>
+            
+            <p>
+                Questions about AI features? Visit our 
+                <a href="{{aiDocsUrl}}">AI Tools Documentation</a> or reply to this email.
+            </p>
+            
+            <p>
+                <a href="{{dashboardUrl}}">Dashboard</a> | 
+                <a href="{{aiToolsUrl}}">AI Tools</a> | 
+                <a href="{{settingsUrl}}">Account Settings</a>
+            </p>
+            
+            <p style="margin-top: 20px; color: #999; font-size: 12px;">
+                © 2025 SoundSwap. All rights reserved.<br>
+                You're receiving this email as a valued SoundSwap member.<br>
+                <a href="{{unsubscribeUrl}}" style="color: #999;">Unsubscribe from feature updates</a>
+            </p>
+        </div>
+    </div>
+</body>
+</html>

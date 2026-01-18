@@ -12,7 +12,9 @@
     "test:all": "npm run test:trends && npm run test:production",
     "deploy:check": "npm run test:all",
     "build": "echo 'No build step needed for Node.js'",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "send-ai-features": "node scripts/send-ai-features-email.js",
+    "test-ai-email": "node -e \"import('./emailService.js').then(m => m.sendAIFeaturesEmail('test@example.com', 'Test User', false).then(() => console.log('✅ Test email sent')).catch(console.error))\""
   },
   "keywords": [
     "soundswap",
