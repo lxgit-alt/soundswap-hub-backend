@@ -713,6 +713,747 @@ router.get('/physics-animations', async (req, res) => {
 });
 
 // ============================================
+// ENHANCED VIDEO CREATION FUNCTION
+// ============================================
+
+async function createVideoWithPython(data) {
+  console.log('Creating video with advanced post-processing effects...');
+  
+  try {
+    const pythonScript = `
+import sys
+import json
+import base64
+import random
+import math
+from io import BytesIO
+from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageEnhance, ImageColor
+import moviepy.editor as mp
+import numpy as np
+import tempfile
+import os
+from collections import OrderedDict
+from functools import lru_cache
+
+# ============================================
+# ENHANCED EFFECT LIBRARY
+# ============================================
+
+class EffectLibrary:
+    """Enhanced effect library with all post-processing effects"""
+    
+    @staticmethod
+    def apply_chroma_leak(image: Image.Image, intensity: float = 0.7) -> Image.Image:
+        """Dreamy Ethereal: Chromatic aberration and light leaks"""
+        if image.mode != 'RGB':
+            image = image.convert('RGB')
+        
+        # Split channels
+        r, g, b = image.split()
+        offset = int(3 * intensity)
+        
+        # Apply chromatic aberration
+        r = r.transform(image.size, Image.AFFINE, (1, 0, offset, 0, 1, 0))
+        b = b.transform(image.size, Image.AFFINE, (1, 0, -offset, 0, 1, 0))
+        result = Image.merge("RGB", (r, g, b))
+        
+        # Add light leaks
+        leak = Image.new("RGBA", image.size, (255, 200, 200, int(30 * intensity)))
+        leak_draw = ImageDraw.Draw(leak)
+        for i in range(int(10 * intensity)):
+            x = random.randint(0, image.width)
+            y = random.randint(0, image.height)
+            radius = random.randint(50, int(200 * intensity))
+            leak_draw.ellipse([x, y, x+radius, y+radius], 
+                            fill=(255, 255, 200, random.randint(10, int(40 * intensity))))
+        
+        result = Image.alpha_composite(result.convert("RGBA"), leak)
+        result = result.filter(ImageFilter.GaussianBlur(radius=int(1 * intensity)))
+        enhancer = ImageEnhance.Brightness(result)
+        result = enhancer.enhance(1.0 + (0.05 * intensity))
+        
+        return result.convert("RGB")
+    
+    @staticmethod
+    def apply_film_grain(image: Image.Image, intensity: float = 0.5) -> Image.Image:
+        """Vintage Film: Film grain and subtle burns"""
+        if image.mode != 'RGB':
+            image = image.convert('RGB')
+        
+        result = image.copy()
+        width, height = image.size
+        
+        # Create grain layer
+        grain = Image.new("L", image.size, 128)
+        grain_draw = ImageDraw.Draw(grain)
+        
+        # Add grain
+        for _ in range(int(5000 * intensity)):
+            x = random.randint(0, width-1)
+            y = random.randint(0, height-1)
+            value = random.randint(0, 255)
+            grain_draw.point((x, y), fill=value)
+        
+        # Add subtle burns
+        for _ in range(int(3 * intensity)):
+            x = random.randint(0, width-1)
+            y = random.randint(0, height-1)
+            radius = random.randint(20, int(100 * intensity))
+            burn = Image.new("L", image.size, 0)
+            burn_draw = ImageDraw.Draw(burn)
+            
+            # Create gradient burn
+            for r in range(radius, 0, -1):
+                alpha = int(30 * (1 - r/radius) * intensity)
+                burn_draw.ellipse([x-r, y-r, x+r, y+r], fill=alpha)
+            
+            # Apply burn
+            result = Image.composite(
+                Image.new("RGB", image.size, (255, 0, 0)),
+                result,
+                burn
+            )
+        
+        # Blend grain
+        grain = grain.filter(ImageFilter.GaussianBlur(0.5))
+        result = Image.composite(
+            Image.new("RGB", image.size, (0, 0, 0)),
+            result,
+            grain
+        )
+        
+        # Add subtle vignette
+        vignette = Image.new("L", image.size, 0)
+        vignette_draw = ImageDraw.Draw(vignette)
+        center_x, center_y = width // 2, height // 2
+        max_distance = math.sqrt(center_x**2 + center_y**2)
+        
+        for x in range(width):
+            for y in range(height):
+                distance = math.sqrt((x - center_x)**2 + (y - center_y)**2)
+                alpha = int(255 * (distance / max_distance) * 0.3 * intensity)
+                vignette_draw.point((x, y), fill=alpha)
+        
+        vignette = vignette.filter(ImageFilter.GaussianBlur(20))
+        result = Image.composite(
+            Image.new("RGB", image.size, (0, 0, 0)),
+            result,
+            vignette
+        )
+        
+        return result
+    
+    @staticmethod
+    def apply_glitch_effect(image: Image.Image, intensity: float = 0.6) -> Image.Image:
+        """Digital Glitch: Data moshing and corruption effects"""
+        if image.mode != 'RGB':
+            image = image.convert('RGB')
+        
+        width, height = image.size
+        pixels = np.array(image)
+        
+        # Channel shift (RGB shift)
+        shift_x = int(5 * intensity)
+        shift_y = int(3 * intensity)
+        
+        # Create shifted channels
+        r_channel = np.roll(pixels[:,:,0], shift_x, axis=1)
+        r_channel = np.roll(r_channel, shift_y, axis=0)
+        
+        g_channel = pixels[:,:,1]
+        
+        b_channel = np.roll(pixels[:,:,2], -shift_x, axis=1)
+        b_channel = np.roll(b_channel, -shift_y, axis=0)
+        
+        # Recombine with distortion
+        glitched = np.stack([r_channel, g_channel, b_channel], axis=2)
+        
+        # Add scanlines
+        for y in range(0, height, int(2 / intensity)):
+            if random.random() < 0.3 * intensity:
+                scanline_width = random.randint(1, int(3 * intensity))
+                glitched[y:min(y+scanline_width, height), :, :] = 0
+        
+        # Add digital noise
+        noise_mask = np.random.random((height, width)) < (0.02 * intensity)
+        glitched[noise_mask] = np.random.randint(0, 256, size=(np.sum(noise_mask), 3))
+        
+        # Add pixel blocks (data moshing)
+        if random.random() < 0.4 * intensity:
+            block_size = random.randint(10, int(30 * intensity))
+            block_x = random.randint(0, width - block_size)
+            block_y = random.randint(0, height - block_size)
+            
+            # Duplicate and offset a block
+            source_block = glitched[block_y:block_y+block_size, block_x:block_x+block_size]
+            offset_x = random.randint(-int(50 * intensity), int(50 * intensity))
+            offset_y = random.randint(-int(30 * intensity), int(30 * intensity))
+            
+            target_x = max(0, min(width - block_size, block_x + offset_x))
+            target_y = max(0, min(height - block_size, block_y + offset_y))
+            
+            glitched[target_y:target_y+block_size, target_x:target_x+block_size] = source_block
+        
+        return Image.fromarray(np.uint8(glitched))
+    
+    @staticmethod
+    def apply_vhs_effect(image: Image.Image, intensity: float = 0.8) -> Image.Image:
+        """Lo-fi Aesthetic: VHS effects and analog warmth"""
+        if image.mode != 'RGB':
+            image = image.convert('RGB')
+        
+        width, height = image.size
+        result = image.copy()
+        
+        # Color bleed (analog VHS)
+        for channel in [0, 2]:  # Red and Blue channels
+            channel_img = result.split()[channel]
+            channel_img = channel_img.filter(ImageFilter.GaussianBlur(1.5 * intensity))
+            
+            # Convert back to RGB
+            channels = list(result.split())
+            channels[channel] = channel_img
+            result = Image.merge("RGB", channels)
+        
+        # Add tracking lines
+        draw = ImageDraw.Draw(result)
+        for y in range(0, height, int(10 / intensity)):
+            if random.random() < 0.1 * intensity:
+                line_height = random.randint(1, int(3 * intensity))
+                alpha = random.randint(50, 150)
+                draw.rectangle([(0, y), (width, y + line_height)], 
+                              fill=(0, 0, 0, alpha), outline=None)
+        
+        # Add CRT curvature
+        warped = Image.new("RGB", image.size)
+        warped_draw = ImageDraw.Draw(warped)
+        
+        for x in range(width):
+            for y in range(height):
+                # Simulate CRT curvature
+                dx = int(math.sin(y / height * math.pi) * 2 * intensity)
+                dy = int(math.cos(x / width * math.pi) * 1 * intensity)
+                
+                src_x = max(0, min(width - 1, x + dx))
+                src_y = max(0, min(height - 1, y + dy))
+                
+                pixel = image.getpixel((src_x, src_y))
+                warped_draw.point((x, y), fill=pixel)
+        
+        warped = warped.filter(ImageFilter.GaussianBlur(0.3))
+        
+        # Blend with original
+        result = Image.blend(result, warped, 0.3 * intensity)
+        
+        # Add color temperature (analog warmth)
+        enhancer = ImageEnhance.Color(result)
+        result = enhancer.enhance(1.1)  # Slightly boost color
+        
+        enhancer = ImageEnhance.Contrast(result)
+        result = enhancer.enhance(1.05)  # Slightly boost contrast
+        
+        # Crush blacks slightly
+        result = np.array(result)
+        result = np.clip(result * 0.95 + 10, 0, 255).astype(np.uint8)
+        result = Image.fromarray(result)
+        
+        return result
+    
+    @staticmethod
+    def apply_bloom_effect(image: Image.Image, intensity: float = 0.7) -> Image.Image:
+        """Volumetric Lighting: Bloom and glow effects"""
+        if image.mode != 'RGB':
+            image = image.convert('RGB')
+        
+        # Extract bright areas
+        gray = image.convert('L')
+        bright_mask = gray.point(lambda x: 255 if x > 200 else 0)
+        
+        # Create bloom layer
+        bloom = image.copy()
+        for _ in range(int(3 * intensity)):
+            bloom = bloom.filter(ImageFilter.GaussianBlur(3 * intensity))
+        
+        # Apply bloom only to bright areas
+        bloom = Image.composite(
+            bloom,
+            Image.new("RGB", image.size, (0, 0, 0)),
+            bright_mask
+        )
+        
+        # Blend bloom with original
+        result = Image.blend(image, bloom, 0.3 * intensity)
+        
+        # Add subtle lens flare
+        flare = Image.new("RGBA", image.size, (0, 0, 0, 0))
+        flare_draw = ImageDraw.Draw(flare)
+        
+        # Create multiple flare elements
+        center_x, center_y = image.size[0] // 2, image.size[1] // 2
+        for i in range(int(5 * intensity)):
+            radius = random.randint(20, int(100 * intensity))
+            x = center_x + random.randint(-200, 200)
+            y = center_y + random.randint(-200, 200)
+            
+            # Create circular flare
+            for r in range(radius, 0, -int(10 / intensity)):
+                alpha = int(30 * (1 - r/radius) * intensity)
+                flare_draw.ellipse(
+                    [x-r, y-r, x+r, y+r],
+                    fill=(255, 255, 200, alpha)
+                )
+        
+        result = Image.alpha_composite(result.convert("RGBA"), flare)
+        
+        # Add overall glow
+        result = result.filter(ImageFilter.GaussianBlur(0.5 * intensity))
+        
+        # Boost brightness slightly
+        enhancer = ImageEnhance.Brightness(result)
+        result = enhancer.enhance(1.1)
+        
+        return result.convert("RGB")
+    
+    @staticmethod
+    def apply_particle_effect(image: Image.Image, intensity: float = 0.6) -> Image.Image:
+        """Particle Systems: Dynamic particle effects"""
+        if image.mode != 'RGB':
+            image = image.convert('RGB')
+        
+        result = image.copy()
+        draw = ImageDraw.Draw(result, 'RGBA')
+        width, height = image.size
+        
+        # Add particles
+        num_particles = int(100 * intensity)
+        particle_types = ['sparkle', 'glow', 'streak', 'dot']
+        
+        for _ in range(num_particles):
+            particle_type = random.choice(particle_types)
+            x = random.randint(0, width)
+            y = random.randint(0, height)
+            
+            if particle_type == 'sparkle':
+                # Star-like sparkle
+                size = random.randint(1, int(3 * intensity))
+                for angle in range(0, 360, 45):
+                    dx = int(math.cos(math.radians(angle)) * size * 2)
+                    dy = int(math.sin(math.radians(angle)) * size * 2)
+                    draw.line([(x, y), (x+dx, y+dy)], 
+                             fill=(255, 255, 255, random.randint(100, 200)), 
+                             width=1)
+            
+            elif particle_type == 'glow':
+                # Circular glow
+                radius = random.randint(2, int(8 * intensity))
+                for r in range(radius, 0, -1):
+                    alpha = int(30 * (1 - r/radius) * intensity)
+                    color = random.choice([
+                        (255, 200, 100, alpha),  # Warm
+                        (100, 200, 255, alpha),  # Cool
+                        (255, 100, 200, alpha)   # Pink
+                    ])
+                    draw.ellipse([x-r, y-r, x+r, y+r], fill=color)
+            
+            elif particle_type == 'streak':
+                # Motion streak
+                length = random.randint(10, int(30 * intensity))
+                angle = random.uniform(0, 2 * math.pi)
+                dx = int(math.cos(angle) * length)
+                dy = int(math.sin(angle) * length)
+                
+                # Create gradient streak
+                for i in range(length):
+                    pos_x = x + int(dx * (i/length))
+                    pos_y = y + int(dy * (i/length))
+                    alpha = int(100 * (1 - i/length) * intensity)
+                    radius = int(2 * (1 - i/length))
+                    
+                    draw.ellipse(
+                        [pos_x-radius, pos_y-radius, pos_x+radius, pos_y+radius],
+                        fill=(255, 255, 255, alpha)
+                    )
+            
+            elif particle_type == 'dot':
+                # Simple dot
+                radius = random.randint(1, int(3 * intensity))
+                color = random.choice([
+                    (255, 255, 255, 200),  # White
+                    (255, 255, 200, 150),  # Yellow
+                    (200, 255, 255, 150)   # Cyan
+                ])
+                draw.ellipse([x-radius, y-radius, x+radius, y+radius], fill=color)
+        
+        # Add subtle motion blur to particles
+        result = result.filter(ImageFilter.GaussianBlur(0.3 * intensity))
+        
+        return result
+
+# ============================================
+# STYLE-BASED EFFECT SELECTION
+# ============================================
+
+STYLE_EFFECTS = {
+    'dreamy_ethereal': [
+        ('apply_chroma_leak', 0.7),
+        ('apply_bloom_effect', 0.8),
+        ('apply_particle_effect', 0.5)
+    ],
+    'cyberpunk_glitch': [
+        ('apply_glitch_effect', 0.8),
+        ('apply_chroma_leak', 0.3),
+        ('apply_particle_effect', 0.4)
+    ],
+    'vintage_film': [
+        ('apply_film_grain', 0.9),
+        ('apply_vhs_effect', 0.6),
+        ('apply_chroma_leak', 0.2)
+    ],
+    'lofi_aesthetic': [
+        ('apply_vhs_effect', 0.8),
+        ('apply_film_grain', 0.5),
+        ('apply_chroma_leak', 0.1)
+    ],
+    'kinetic_typography': [
+        ('apply_bloom_effect', 0.4),
+        ('apply_particle_effect', 0.6)
+    ],
+    'minimalist_typography': [
+        ('apply_bloom_effect', 0.3),
+        ('apply_particle_effect', 0.2)
+    ],
+    'particle_abstract': [
+        ('apply_particle_effect', 0.9),
+        ('apply_bloom_effect', 0.7),
+        ('apply_chroma_leak', 0.4)
+    ],
+    'brutalist_bold': [
+        ('apply_film_grain', 0.3),
+        ('apply_glitch_effect', 0.2)
+    ],
+    'floating_dream': [
+        ('apply_bloom_effect', 0.9),
+        ('apply_particle_effect', 0.8),
+        ('apply_chroma_leak', 0.6)
+    ],
+    'glitch_core': [
+        ('apply_glitch_effect', 1.0),
+        ('apply_particle_effect', 0.3),
+        ('apply_chroma_leak', 0.5)
+    ]
+}
+
+def apply_style_effects(image, style_name):
+    """Apply multiple effects based on style"""
+    effects = STYLE_EFFECTS.get(style_name, STYLE_EFFECTS['dreamy_ethereal'])
+    result = image
+    
+    for effect_name, intensity in effects:
+        if hasattr(EffectLibrary, effect_name):
+            effect_func = getattr(EffectLibrary, effect_name)
+            result = effect_func(result, intensity)
+    
+    return result
+
+# ============================================
+# ENHANCED VIDEO GENERATION
+# ============================================
+
+def create_lyric_video():
+    data = json.loads(sys.argv[1])
+    scenes = data.get('scenes', [])
+    settings = data.get('settings', {})
+    job_id = data.get('jobId', '')
+    
+    # Get style for effects
+    style_name = settings.get('style_profile', 'dreamy_ethereal')
+    if 'name' in style_name:
+        style_name = style_name['name'].lower()
+    
+    # Create temporary directory
+    temp_dir = tempfile.mkdtemp()
+    image_paths = []
+    
+    # Process each scene with effects
+    for i, scene in enumerate(scenes):
+        # Decode base64 image or use placeholder
+        if scene.get('imageUrl', '').startswith('data:image'):
+            img_data = scene['imageUrl'].split(',')[1]
+            img_bytes = base64.b64decode(img_data)
+            img = Image.open(BytesIO(img_bytes))
+        else:
+            # Create placeholder with gradient
+            img = Image.new('RGB', (1920, 1080), color=(40, 40, 60))
+            draw = ImageDraw.Draw(img)
+            
+            # Add gradient background
+            for y in range(1080):
+                color = int(40 + (y / 1080) * 60)
+                draw.line([(0, y), (1920, y)], fill=(color, color, color + 20))
+            
+            # Add some abstract elements
+            for _ in range(5):
+                x = random.randint(0, 1920)
+                y = random.randint(0, 1080)
+                radius = random.randint(20, 100)
+                color = random.choice([
+                    (100, 100, 200),
+                    (200, 100, 100),
+                    (100, 200, 100)
+                ])
+                draw.ellipse([x-radius, y-radius, x+radius, y+radius], 
+                           fill=color, outline=None)
+        
+        # Resize to 1080p
+        img = img.resize((1920, 1080), Image.Resampling.LANCZOS)
+        
+        # Apply style-based effects
+        img = apply_style_effects(img, style_name)
+        
+        # Add lyric text with advanced styling
+        draw = ImageDraw.Draw(img, 'RGBA')
+        
+        # Get font style
+        font_style = scene.get('fontStyle', 'modern')
+        font_size = int(settings.get('fontSize', 48))
+        text_color = scene.get('textColor', '#FFFFFF')
+        
+        # Map font styles to actual fonts with fallbacks
+        font_map = {
+            'modern': 'arial.ttf',
+            'serif': 'times.ttf',
+            'script': 'arial.ttf',  # Fallback
+            'bold': 'impact.ttf',
+            'mono': 'cour.ttf',
+            'futuristic': 'arial.ttf'
+        }
+        
+        try:
+            font_path = font_map.get(font_style, 'arial.ttf')
+            if os.path.exists(f'/usr/share/fonts/truetype/{font_path}'):
+                font = ImageFont.truetype(f'/usr/share/fonts/truetype/{font_path}', font_size)
+            elif os.path.exists(f'/usr/share/fonts/{font_path}'):
+                font = ImageFont.truetype(f'/usr/share/fonts/{font_path}', font_size)
+            else:
+                font = ImageFont.truetype("arial.ttf", font_size)
+        except:
+            font = ImageFont.load_default()
+        
+        # Prepare text
+        text = scene.get('lyric', '')
+        
+        # Calculate text position with padding
+        img_width, img_height = img.size
+        text_bbox = draw.textbbox((0, 0), text, font=font)
+        text_width = text_bbox[2] - text_bbox[0]
+        text_height = text_bbox[3] - text_bbox[1]
+        
+        x = (img_width - text_width) // 2
+        y = img_height - text_height - 100
+        
+        # Add text background for readability
+        padding = 20
+        draw.rectangle(
+            [x-padding, y-padding, x+text_width+padding, y+text_height+padding],
+            fill=(0, 0, 0, 128)
+        )
+        
+        # Add text shadow with multiple offsets
+        shadow_color = (0, 0, 0, 200)
+        for offset in [(2, 2), (-2, 2), (2, -2), (-2, -2), (0, 2), (2, 0), (-2, 0), (0, -2)]:
+            draw.text((x + offset[0], y + offset[1]), text, font=font, fill=shadow_color)
+        
+        # Add main text with gradient or solid color
+        if text_color.startswith('#'):
+            r = int(text_color[1:3], 16)
+            g = int(text_color[3:5], 16)
+            b = int(text_color[5:7], 16)
+            
+            # Add subtle text glow
+            for glow_radius in range(3, 0, -1):
+                glow_alpha = 50 // glow_radius
+                for dx in range(-glow_radius, glow_radius + 1):
+                    for dy in range(-glow_radius, glow_radius + 1):
+                        if dx != 0 or dy != 0:
+                            draw.text(
+                                (x + dx, y + dy), 
+                                text, 
+                                font=font, 
+                                fill=(r, g, b, glow_alpha)
+                            )
+            
+            draw.text((x, y), text, font=font, fill=(r, g, b, 255))
+        else:
+            draw.text((x, y), text, font=font, fill=text_color)
+        
+        # Save image
+        img_path = os.path.join(temp_dir, f'scene_{i}.webp')
+        img.save(img_path, 'WEBP', quality=95)
+        image_paths.append((img_path, scene.get('duration', 4)))
+    
+    # Create video from images
+    if image_paths:
+        clips = []
+        for img_path, duration in image_paths:
+            clip = mp.ImageClip(img_path, duration=duration)
+            
+            # Apply advanced animations
+            animation = settings.get('animationType', 'fade')
+            physics_params = settings.get('physicsParams', {})
+            
+            if animation == 'fade':
+                clip = clip.fadein(0.5).fadeout(0.5)
+            elif animation == 'slide':
+                clip = clip.set_position(lambda t: ('center', 1080 * (1 - t/duration)))
+            elif animation == 'zoom':
+                clip = clip.resize(lambda t: 1 + 0.1 * math.sin(t))
+            
+            # Apply physics-based animations if specified
+            if physics_params.get('enablePhysics', False):
+                physics_type = physics_params.get('type', 'float')
+                if physics_type == 'float':
+                    # Simple floating animation
+                    clip = clip.set_position(
+                        lambda t: (
+                            'center',
+                            540 + 20 * math.sin(t * 2)
+                        )
+                    )
+                elif physics_type == 'shake':
+                    # Jitter animation
+                    clip = clip.set_position(
+                        lambda t: (
+                            960 + 5 * random.uniform(-1, 1),
+                            540 + 3 * random.uniform(-1, 1)
+                        )
+                    )
+            
+            clips.append(clip)
+        
+        # Concatenate clips
+        video = mp.concatenate_videoclips(clips, method="compose")
+        
+        # Add audio if provided
+        if settings.get('audioFile'):
+            try:
+                audio_data = settings['audioFile'].split(',')[1]
+                audio_bytes = base64.b64decode(audio_data)
+                audio_path = os.path.join(temp_dir, 'audio.mp3')
+                
+                with open(audio_path, 'wb') as f:
+                    f.write(audio_bytes)
+                
+                audio_clip = mp.AudioFileClip(audio_path)
+                
+                # Match audio duration to video
+                if audio_clip.duration > video.duration:
+                    audio_clip = audio_clip.subclip(0, video.duration)
+                
+                video = video.set_audio(audio_clip)
+            except Exception as e:
+                print(f"Audio processing error: {e}", file=sys.stderr)
+        
+        # Export video with high quality
+        output_path = os.path.join(temp_dir, 'output.mp4')
+        video.write_videofile(
+            output_path,
+            fps=30,
+            codec='libx264',
+            audio_codec='aac' if video.audio else None,
+            temp_audiofile=os.path.join(temp_dir, 'temp_audio.m4a'),
+            remove_temp=True,
+            verbose=False,
+            logger=None,
+            preset='medium',
+            bitrate='5000k'
+        )
+        
+        # Read video as base64
+        with open(output_path, 'rb') as f:
+            video_data = f.read()
+        
+        # Calculate video size
+        video_size = len(video_data)
+        
+        # Cleanup
+        for file in os.listdir(temp_dir):
+            try:
+                os.remove(os.path.join(temp_dir, file))
+            except:
+                pass
+        os.rmdir(temp_dir)
+        
+        return {
+            'success': True,
+            'video': base64.b64encode(video_data).decode('utf-8'),
+            'duration': video.duration,
+            'size': video_size,
+            'scenes': len(scenes),
+            'effects_applied': list(set([e[0] for e in STYLE_EFFECTS.get(style_name, [])]))
+        }
+    
+    return {'success': False, 'error': 'No scenes processed'}
+
+if __name__ == "__main__":
+    try:
+        result = create_lyric_video()
+        print(json.dumps(result))
+    except Exception as e:
+        print(json.dumps({'success': False, 'error': str(e), 'traceback': traceback.format_exc()}))
+`;
+
+    // Write Python script to temporary file
+    const tempDir = os.tmpdir();
+    const scriptPath = path.join(tempDir, `video_generator_enhanced_${Date.now()}.py`);
+    await fs.writeFile(scriptPath, pythonScript);
+
+    // Run Python script
+    const result = await new Promise((resolve, reject) => {
+      const pythonProcess = spawn('python', [scriptPath, JSON.stringify(data)]);
+      
+      let stdout = '';
+      let stderr = '';
+      
+      pythonProcess.stdout.on('data', (data) => {
+        stdout += data.toString();
+      });
+      
+      pythonProcess.stderr.on('data', (data) => {
+        stderr += data.toString();
+      });
+      
+      pythonProcess.on('close', (code) => {
+        // Clean up script file
+        fs.unlink(scriptPath).catch(() => {});
+        
+        if (code === 0) {
+          try {
+            const parsed = JSON.parse(stdout);
+            resolve(parsed);
+          } catch (e) {
+            reject(new Error(`Failed to parse Python output: ${e.message}\nOutput: ${stdout}`));
+          }
+        } else {
+          reject(new Error(`Python script failed with code ${code}: ${stderr}`));
+        }
+      });
+      
+      // Timeout after 60 seconds (increased for effects processing)
+      setTimeout(() => {
+        pythonProcess.kill();
+        reject(new Error('Python script timeout (60 seconds)'));
+      }, 60000);
+    });
+
+    console.log('Enhanced video generation completed with effects');
+    return result;
+  } catch (error) {
+    console.error('Enhanced video generation failed:', error);
+    return { success: false, error: error.message };
+  }
+}
+
+// ============================================
 // JOB PROCESSING FUNCTIONS
 // ============================================
 
@@ -1350,7 +2091,7 @@ async function generateImage(prompt, resolution) {
   }
 }
 
-async function createVideoWithPython(data) {
+async function createVideoWithPythonBasic(data) {
   console.log('Creating video with Python...');
   
   try {
@@ -1412,7 +2153,7 @@ def create_lyric_video():
             'bold': 'impact.ttf',
             'mono': 'cour.ttf',
             'futuristic': 'arial.ttf'
-        }
+        };
         
         try:
             font_path = font_map.get(font_style, 'arial.ttf');
