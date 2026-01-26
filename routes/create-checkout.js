@@ -13,87 +13,102 @@ let db = null;
 
 // Static product catalog with your actual Dodo product IDs
 const PRODUCT_CATALOG = {
-  // One-time purchases (Cover Art Credits)
-  'cover_starter': {
+  // Cover Art Credits
+  cover_starter: {
     id: 'pdt_0NVpYnGqHkTrG1MBpjZDH',
     name: 'Starter Pack',
     description: '10 Cover Art Credits',
     credits: 10,
-    price: 499, // in cents
+    displayPrice: 4.99,
+    currency: 'USD',
     type: 'one_time',
     creditType: 'coverArt'
   },
-  'cover_creator': {
+
+  cover_creator: {
     id: 'pdt_0NVpYz3UZCFhpDsJRpIkJ',
     name: 'Creator Pack',
     description: '25 Cover Art Credits',
     credits: 25,
-    price: 999,
+    displayPrice: 9.99,
+    currency: 'USD',
     type: 'one_time',
     creditType: 'coverArt'
   },
-  'cover_pro': {
+
+  cover_pro: {
     id: 'pdt_0NVpZ68TtojJFxcvTKFHD',
     name: 'Professional Pack',
     description: '100 Cover Art Credits',
     credits: 100,
-    price: 2999,
+    displayPrice: 29.99,
+    currency: 'USD',
     type: 'one_time',
     creditType: 'coverArt'
   },
-  
-  // One-time purchases (Lyric Video Credits)
-  'video_30s': {
+
+  // Lyric Video Credits
+  video_30s: {
     id: 'pdt_0NVpZOxJp5948ZTw1FqGC',
-    name: 'Single 30s Lyric Video',
+    name: 'Single 30s Video',
     description: '1 Lyric Video Credit (30 seconds)',
     credits: 1,
-    price: 999,
+    displayPrice: 9.99,
+    currency: 'USD',
     type: 'one_time',
     creditType: 'lyricVideo',
     videoType: 'seconds'
   },
-  'video_3pack_30s': {
+
+  video_3pack_30s: {
     id: 'pdt_0NVpZWTiwQDBitIEfQbwM',
-    name: '3-Pack 30s Lyric Videos',
+    name: '3-Pack (30s each)',
     description: '3 Lyric Video Credits (30 seconds each)',
     credits: 3,
-    price: 2499,
+    displayPrice: 24.99,
+    currency: 'USD',
     type: 'one_time',
     creditType: 'lyricVideo',
     videoType: 'seconds'
   },
-  'video_full': {
+
+  video_full: {
     id: 'pdt_0NVpZewrUSBHJXdJhB2wx',
-    name: 'Single Full Lyric Video',
+    name: 'Single Full Video',
     description: '2 Lyric Video Credits (Full song)',
     credits: 2,
-    price: 1999,
+    displayPrice: 19.99,
+    currency: 'USD',
     type: 'one_time',
     creditType: 'lyricVideo',
-    videoType: 'fullVideos'
+    videoType: 'full'
   },
-  'video_3pack_full': {
+
+  video_3pack_full: {
     id: 'pdt_0NVpZnLaWqxH7gst9gtHV',
-    name: '3-Pack Full Lyric Videos',
+    name: '3-Pack (Full Length)',
     description: '6 Lyric Video Credits (Full song each)',
     credits: 6,
-    price: 4999,
+    displayPrice: 49.99,
+    currency: 'USD',
     type: 'one_time',
     creditType: 'lyricVideo',
-    videoType: 'fullVideos'
+    videoType: 'full'
   },
-  'video_10pack_full': {
+
+  video_10pack_full: {
     id: 'pdt_0NVpZv5PRx4s9xNTLxNt7',
-    name: '10-Pack Full Lyric Videos',
+    name: '10-Pack (Full Length)',
     description: '20 Lyric Video Credits (Full song each)',
     credits: 20,
-    price: 14999,
+    displayPrice: 149.99,
+    currency: 'USD',
     type: 'one_time',
     creditType: 'lyricVideo',
-    videoType: 'fullVideos'
+    videoType: 'full'
   }
 };
+
 
 // ==================== FIXED DODO PAYMENTS CLIENT ====================
 const getDodoClient = () => {
@@ -390,7 +405,8 @@ router.post('/', async (req, res) => {
           createdAt: new Date(),
           product: variantId,
           productName: product.name,
-          price: product.price,
+          price: product.displayPrice,
+          currency: product.currency,
           credits: product.credits,
           creditType: product.creditType,
           checkoutUrl,
