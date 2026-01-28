@@ -23,7 +23,7 @@ const testWebhookVerification = async () => {
       transaction_id: 'txn_test_123',
       customer: { email: 'test@example.com' },
       amount: 1000,
-      product_cart: [{ product_id: 'prod_one_time', quantity: 1 }],
+      product_cart: [{ variant_id: 'prod_one_time', quantity: 1 }],
       metadata: { user_id: 'user_abc123' }
     }
   });

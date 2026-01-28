@@ -22,7 +22,7 @@ const testWebhookEndpoint = async () => {
       },
       amount: 5000,  // $50.00 in cents
       product_cart: [{ 
-        product_id: 'prod_one_time', 
+        variant_id: 'prod_one_time', 
         quantity: 1 
       }],
       metadata: { 

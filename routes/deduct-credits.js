@@ -454,7 +454,7 @@ router.post('/credits', async (req, res) => {
     // Get updated credits
     const updatedCredits = await getUserCredits(userId);
     
-    // Create checkout URL (simplified - in reality this would be from Dodo Payments)
+    // Create checkout URL (simplified - in reality this would be from  Lemon Squeezy)
     const checkoutUrl = `/checkout/session_${Date.now()}`;
     
     return res.json({

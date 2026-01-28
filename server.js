@@ -155,7 +155,7 @@ app.use(cors({
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'webhook-id', 'webhook-timestamp', 'webhook-signature', 'Origin', 'x-client-id', 'X-Batch-Focus', 'X-Debug-Mode'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'webhook-id', 'webhook-timestamp', 'webhook-signature', 'Origin', 'x-client-id', 'X-Batch-Focus', 'X-Debug-Mode', 'x-signature'],
   exposedHeaders: ['Content-Range', 'X-Content-Range'],
   maxAge: 86400 // 24 hours
 }));
@@ -163,32 +163,36 @@ app.use(cors({
 // Handle preflight requests
 app.options('*', cors());
 
-// ==================== DODO PAYMENTS CONFIGURATION ====================
-const validateDodoPaymentsConfig = () => {
+// ==================== LEMON SQUEEZY CONFIGURATION ====================
+const validateLemonSqueezyConfig = () => {
   const config = {
-    apiKey: process.env.DODO_PAYMENTS_API_KEY,
-    webhookKey: process.env.DODO_PAYMENTS_WEBHOOK_KEY,
-    webhookSecret: process.env.DODO_PAYMENTS_WEBHOOK_SECRET,
-    environment: process.env.DODO_PAYMENTS_ENV || (process.env.NODE_ENV === 'production' ? 'live' : 'test'),
-    publicKey: process.env.DODO_PAYMENTS_PUBLIC_KEY || process.env.NEXT_PUBLIC_DODO_PUBLIC_KEY
+    apiKey: process.env.LEMON_SQUEEZY_API_KEY,
+    storeId: process.env.LEMON_SQUEEZY_STORE_ID,
+    webhookSecret: process.env.LEMON_SQUEEZY_WEBHOOK_SECRET,
+    environment: process.env.NODE_ENV === 'production' ? 'live' : 'test'
   };
 
-  console.log('🔐 Dodo Payments Configuration:');
+  console.log('🍋 Lemon Squeezy Configuration:');
   console.log(`   - API Key: ${config.apiKey ? '✅ Configured' : '❌ Missing'}`);
-  console.log(`   - Webhook Key: ${config.webhookKey ? '✅ Configured' : '⚠️ Missing'}`);
+  console.log(`   - Store ID: ${config.storeId ? '✅ Configured' : '❌ Missing'}`);
+  console.log(`   - Webhook Secret: ${config.webhookSecret ? '✅ Configured' : '⚠️ Missing'}`);
   console.log(`   - Environment: ${config.environment}`);
-  console.log(`   - Public Key: ${config.publicKey ? '✅ Configured' : '❌ Missing (Frontend will use CDN)'}`);
 
   if (!config.apiKey) {
-    console.error('❌ CRITICAL: DODO_PAYMENTS_API_KEY is required for checkout functionality');
-    console.error('   Get your API key from: https://dashboard.dodopayments.com');
+    console.error('❌ CRITICAL: LEMON_SQUEEZY_API_KEY is required for checkout functionality');
+    console.error('   Get your API key from: https://app.lemonsqueezy.com/settings/api');
+  }
+
+  if (!config.storeId) {
+    console.error('❌ CRITICAL: LEMON_SQUEEZY_STORE_ID is required for checkout functionality');
+    console.error('   Get your Store ID from: https://app.lemonsqueezy.com/stores');
   }
 
   return config;
 };
 
 // Validate on startup
-const dodoConfig = validateDodoPaymentsConfig();
+const lemonConfig = validateLemonSqueezyConfig();
 
 // ==================== LAZY ROUTE LOADERS (DEFINED EARLY FOR WEBHOOK) ====================
 const createLazyRouter = (modulePath, moduleName) => {
@@ -307,39 +311,35 @@ app.use('/api/generate-video', createLazyRouter('./routes/generate-video.js', 'l
 app.use('/api/doodle-art', createLazyRouter('./routes/doodle-art.js', 'doodleArt'));
 app.use('/api/ai-art', createLazyRouter('./routes/doodle-art.js', 'doodleArt'));
 
-// ==================== DODO PAYMENTS CONFIGURATION ENDPOINTS ====================
+// ==================== LEMON SQUEEZY CONFIGURATION ENDPOINTS ====================
 
-// Public endpoint for frontend to get Dodo Payments configuration
-app.get('/api/dodo-config', (req, res) => {
+// Public endpoint for frontend to get Lemon Squeezy configuration
+app.get('/api/lemon-config', (req, res) => {
   try {
     const isDevelopment = process.env.NODE_ENV === 'development';
     
     // Public configuration for frontend (safe to expose)
     const publicConfig = {
       success: true,
-      mode: dodoConfig.environment,
-      publicKey: dodoConfig.publicKey,
-      isTestMode: dodoConfig.environment === 'test' || isDevelopment,
-      sdkUrl: dodoConfig.environment === 'live' 
-        ? 'https://checkout.dodopayments.com/v1/checkout.js' 
-        : 'https://checkout-test.dodopayments.com/v1/checkout.js',
-      apiBaseUrl: dodoConfig.environment === 'live'
-        ? 'https://api.dodopayments.com/v1'
-        : 'https://api-test.dodopayments.com/v1',
-      allowedPaymentMethods: ['card', 'apple_pay', 'google_pay'],
-      supportedCurrencies: ['USD'],
+      gateway: 'lemon-squeezy',
+      environment: lemonConfig.environment,
+      storeId: lemonConfig.storeId,
+      isTestMode: lemonConfig.environment === 'test' || isDevelopment,
+      checkoutUrl: 'https://soundswap.lemonsqueezy.com/checkout',
+      apiUrl: 'https://api.lemonsqueezy.com/v1',
       environment: process.env.NODE_ENV || 'development',
-      timestamp: new Date().toISOString()
+      timestamp: new Date().toISOString(),
+      note: 'Lemon Squeezy handles all frontend checkout UI - use checkoutUrl from create-checkout endpoint'
     };
 
-    console.log('[DODO-CONFIG] 📋 Providing public Dodo configuration to frontend');
-    console.log(`   - Mode: ${publicConfig.mode}`);
-    console.log(`   - Public Key: ${publicConfig.publicKey ? 'Provided' : 'Missing'}`);
-    console.log(`   - SDK URL: ${publicConfig.sdkUrl}`);
+    console.log('[LEMON-CONFIG] 🍋 Providing public Lemon Squeezy configuration to frontend');
+    console.log(`   - Environment: ${publicConfig.environment}`);
+    console.log(`   - Store ID: ${publicConfig.storeId ? 'Configured' : 'Missing'}`);
+    console.log(`   - Test Mode: ${publicConfig.isTestMode}`);
     
     res.json(publicConfig);
   } catch (error) {
-    console.error('[DODO-CONFIG] ❌ Error providing configuration:', error);
+    console.error('[LEMON-CONFIG] ❌ Error providing configuration:', error);
     res.status(500).json({
       success: false,
       error: 'Failed to load payment configuration',
@@ -349,7 +349,7 @@ app.get('/api/dodo-config', (req, res) => {
 });
 
 // Private endpoint for admin/status checks
-app.get('/api/dodo-config/internal', (req, res) => {
+app.get('/api/lemon-config/internal', (req, res) => {
   try {
     // Check for admin authorization
     const authHeader = req.headers.authorization;
@@ -376,11 +376,10 @@ app.get('/api/dodo-config/internal', (req, res) => {
     const internalConfig = {
       success: true,
       configuration: {
-        apiKey: dodoConfig.apiKey ? 'Configured' : 'Missing',
-        webhookKey: dodoConfig.webhookKey ? 'Configured' : 'Missing',
-        webhookSecret: dodoConfig.webhookSecret ? 'Configured' : 'Missing',
-        publicKey: dodoConfig.publicKey ? 'Configured' : 'Missing',
-        environment: dodoConfig.environment,
+        apiKey: lemonConfig.apiKey ? 'Configured' : 'Missing',
+        storeId: lemonConfig.storeId ? 'Configured' : 'Missing',
+        webhookSecret: lemonConfig.webhookSecret ? 'Configured' : 'Missing',
+        environment: lemonConfig.environment,
         nodeEnv: process.env.NODE_ENV || 'development'
       },
       endpoints: {
@@ -388,7 +387,7 @@ app.get('/api/dodo-config/internal', (req, res) => {
         webhook: '/api/lemon-webhook',
         status: '/api/create-checkout/status',
         test: '/api/payments/test',
-        publicConfig: '/api/dodo-config'
+        publicConfig: '/api/lemon-config'
       },
       services: {
         firebase: db ? 'Connected' : 'Disconnected',
@@ -397,16 +396,16 @@ app.get('/api/dodo-config/internal', (req, res) => {
       },
       webhookConfiguration: {
         url: `${process.env.NEXT_PUBLIC_APP_URL || 'https://soundswap.live'}/api/lemon-webhook`,
-        events: ['checkout.session.completed', 'checkout.session.expired', 'checkout.session.cancelled'],
-        secret: dodoConfig.webhookSecret ? 'Configured' : 'Not configured'
+        events: ['order_created'],
+        secret: lemonConfig.webhookSecret ? 'Configured' : 'Not configured'
       },
       timestamp: new Date().toISOString()
     };
 
-    console.log('[DODO-CONFIG] 🔐 Providing internal Dodo configuration');
+    console.log('[LEMON-CONFIG] 🔐 Providing internal Lemon Squeezy configuration');
     res.json(internalConfig);
   } catch (error) {
-    console.error('[DODO-CONFIG] ❌ Error providing internal configuration:', error);
+    console.error('[LEMON-CONFIG] ❌ Error providing internal configuration:', error);
     res.status(500).json({
       success: false,
       error: 'Failed to load internal configuration',
@@ -620,22 +619,22 @@ app.get('/api/deduct-credits/credits/:userId', async (req, res) => {
   }
 });
 
-// ==================== DODO PAYMENTS STATUS ENDPOINTS ====================
+// ==================== LEMON SQUEEZY STATUS ENDPOINTS ====================
 
 app.get('/api/create-checkout/status', (req, res) => {
-  console.log('[INFO] 🔍 Checking Dodo Payments service status');
+  console.log('[INFO] 🔍 Checking Lemon Squeezy service status');
   res.json({
     success: true,
-    service: 'dodo-payments',
-    status: dodoConfig.apiKey ? 'active' : 'inactive',
+    service: 'lemon-squeezy',
+    status: lemonConfig.apiKey ? 'active' : 'inactive',
     configuration: {
-      dodoApiKey: dodoConfig.apiKey ? 'configured' : 'missing',
-      dodoWebhookKey: dodoConfig.webhookKey ? 'configured' : 'missing',
-      dodoPublicKey: dodoConfig.publicKey ? 'configured' : 'missing',
-      environment: dodoConfig.environment,
+      lemonApiKey: lemonConfig.apiKey ? 'configured' : 'missing',
+      lemonStoreId: lemonConfig.storeId ? 'configured' : 'missing',
+      lemonWebhookSecret: lemonConfig.webhookSecret ? 'configured' : 'missing',
+      environment: lemonConfig.environment,
       firebase: db ? 'connected' : 'disconnected'
     },
-    publicConfigEndpoint: '/api/dodo-config',
+    publicConfigEndpoint: '/api/lemon-config',
     endpoints: {
       create_checkout: 'POST /api/create-checkout',
       checkout_status: 'GET /api/create-checkout/status',
@@ -647,65 +646,72 @@ app.get('/api/create-checkout/status', (req, res) => {
       testWebhook: 'POST /api/lemon-webhook/simulate',
       webhookStatus: 'GET /api/lemon-webhook/status',
       products: 'GET /api/create-checkout/products',
-      testDodo: 'GET /api/create-checkout/test-dodo'
+      testLemon: 'GET /api/create-checkout/test-lemon'
     },
     timestamp: new Date().toISOString()
   });
 });
 
-// Test Dodo API connection
+// Test Lemon Squeezy API connection
 app.get('/api/payments/test', async (req, res) => {
   try {
-    console.log('[INFO] 🧪 Testing Dodo API connection');
+    console.log('[INFO] 🧪 Testing Lemon Squeezy API connection');
     
-    const DODO_API_KEY = process.env.DODO_PAYMENTS_API_KEY;
+    const LEMON_API_KEY = process.env.LEMON_SQUEEZY_API_KEY;
+    const LEMON_STORE_ID = process.env.LEMON_SQUEEZY_STORE_ID;
     
-    if (!DODO_API_KEY) {
-      console.error('[ERROR] ❌ Dodo API key not configured');
+    if (!LEMON_API_KEY || !LEMON_STORE_ID) {
+      console.error('[ERROR] ❌ Lemon Squeezy API key or Store ID not configured');
       return res.status(500).json({
         success: false,
-        error: 'Dodo API key not configured',
+        error: 'Lemon Squeezy configuration incomplete',
         timestamp: new Date().toISOString()
       });
     }
     
-    const apiUrl = dodoConfig.environment === 'live' 
-      ? 'https://api.dodopayments.com/v1/account' 
-      : 'https://api-test.dodopayments.com/v1/account';
+    const apiUrl = 'https://api.lemonsqueezy.com/v1/stores';
     
     const response = await fetch(apiUrl, {
       method: 'GET',
       headers: {
-        'Authorization': `Bearer ${DODO_API_KEY}`
+        'Authorization': `Bearer ${LEMON_API_KEY}`,
+        'Accept': 'application/vnd.api+json'
       }
     });
     
     if (response.ok) {
       const result = await response.json();
-      console.log('[INFO] ✅ Dodo API connection successful');
+      console.log('[INFO] ✅ Lemon Squeezy API connection successful');
+      
+      // Find our store
+      const stores = result.data || [];
+      const ourStore = stores.find(store => store.id === LEMON_STORE_ID);
+      
       res.json({
         success: true,
-        message: 'Dodo API connection successful',
-        account: {
-          id: result.id,
-          name: result.name,
-          email: result.email,
-          mode: result.mode || dodoConfig.environment
-        },
+        message: 'Lemon Squeezy API connection successful',
+        store: ourStore ? {
+          id: ourStore.id,
+          name: ourStore.attributes.name,
+          url: ourStore.attributes.url,
+          status: ourStore.attributes.status
+        } : null,
+        totalStores: stores.length,
+        environment: lemonConfig.environment,
         timestamp: new Date().toISOString()
       });
     } else {
       const error = await response.json();
-      console.error('[ERROR] ❌ Dodo API connection failed:', error.message || 'Unknown error');
+      console.error('[ERROR] ❌ Lemon Squeezy API connection failed:', error.message || 'Unknown error');
       res.status(response.status).json({
         success: false,
-        error: error.message || 'Dodo API connection failed',
+        error: error.message || 'Lemon Squeezy API connection failed',
         details: error,
         timestamp: new Date().toISOString()
       });
     }
   } catch (error) {
-    console.error('[ERROR] ❌ Dodo API test error:', error);
+    console.error('[ERROR] ❌ Lemon Squeezy API test error:', error);
     res.status(500).json({
       success: false,
       error: error.message,
@@ -1013,13 +1019,13 @@ app.get('/api/health', (req, res) => {
     version: '2.3.0',
     cronSafe: true,
     moduleLoading: 'isolated',
-    paymentGateway: dodoConfig.apiKey ? 'Dodo Payments (Active)' : 'Dodo Payments (Inactive)',
+    paymentGateway: lemonConfig.apiKey ? 'Lemon Squeezy (Active)' : 'Lemon Squeezy (Inactive)',
     services: {
       reddit_automation: 'available',
       cron_scheduler: 'running',
       module_isolation: 'active',
       batched_orchestration: 'enabled',
-      payment_processing: dodoConfig.apiKey ? 'enabled' : 'disabled'
+      payment_processing: lemonConfig.apiKey ? 'enabled' : 'disabled'
     },
     batched_automation: {
       strategy: '4-Batch Rotation',
@@ -1052,15 +1058,15 @@ app.get('/api/status', (req, res) => {
     currentDay: currentDay,
     timestamp: new Date().toISOString(),
     paymentConfiguration: {
-      gateway: 'Dodo Payments',
-      status: dodoConfig.apiKey ? 'configured' : 'not configured',
-      mode: dodoConfig.environment,
-      publicConfigEndpoint: '/api/dodo-config'
+      gateway: 'Lemon Squeezy',
+      status: lemonConfig.apiKey ? 'configured' : 'not configured',
+      mode: lemonConfig.environment,
+      publicConfigEndpoint: '/api/lemon-config'
     },
     endpoints: {
       health: '/api/health',
       status: '/api/status',
-      dodo_config: '/api/dodo-config',
+      lemon_config: '/api/lemon-config',
       isolated_cron: 'POST /api/cron-reddit (For GitHub Actions)',
       shadow_check: 'GET /api/shadow-check (Manual verification)',
       health_monitor: 'GET /api/reddit-admin/health-monitor (System monitoring)',
@@ -1099,8 +1105,8 @@ app.get('/api/status', (req, res) => {
     payment_api_endpoints: {
       create_checkout: 'POST /api/create-checkout - Create a checkout session',
       checkout_status: 'GET /api/create-checkout/status - Check payment service status',
-      dodo_config: 'GET /api/dodo-config - Get public payment configuration',
-      payment_test: 'GET /api/payments/test - Test Dodo API connection',
+      lemon_config: 'GET /api/lemon-config - Get public payment configuration',
+      payment_test: 'GET /api/payments/test - Test Lemon Squeezy API connection',
       webhook: 'POST /api/lemon-webhook - Payment webhook endpoint',
       products: 'GET /api/create-checkout/products - Get available products'
     },
@@ -1156,7 +1162,7 @@ app.get('/api/status', (req, res) => {
       reddit_api: 'live',
       premium_feature_focus: 'active',
       credit_system: 'active',
-      payment_processing: dodoConfig.apiKey ? 'active' : 'inactive'
+      payment_processing: lemonConfig.apiKey ? 'active' : 'inactive'
     },
     batched_orchestration_features: {
       version: '8.0.0',
@@ -1175,7 +1181,7 @@ app.get('/api/status', (req, res) => {
       batch_c_focus: 'Prioritize Batch C comment verification',
       rate_limit_monitoring: 'Automatic exponential backoff',
       discord_signal_noise: 'High-priority leads only (Score > 85)',
-      payment_gateway: dodoConfig.apiKey ? 'Active - Monitor webhooks' : 'Inactive - Configuration required'
+      payment_gateway: lemonConfig.apiKey ? 'Active - Monitor webhooks' : 'Inactive - Configuration required'
     }
   });
 });
@@ -1197,7 +1203,7 @@ app.get('/', (req, res) => {
     endpoints: {
       health: '/api/health',
       status: '/api/status',
-      dodo_config: '/api/dodo-config',
+      lemon_config: '/api/lemon-config',
       isolated_cron: 'POST /api/cron-reddit (GitHub Actions)',
       shadow_check: 'GET /api/shadow-check (Critical monitoring)',
       health_monitor: 'GET /api/reddit-admin/health-monitor (System health)',
@@ -1244,10 +1250,10 @@ app.get('/', (req, res) => {
       ]
     },
     payment_system: {
-      gateway: 'Dodo Payments',
-      status: dodoConfig.apiKey ? 'Active' : 'Configuration required',
-      mode: dodoConfig.environment,
-      public_config: 'GET /api/dodo-config'
+      gateway: 'Lemon Squeezy',
+      status: lemonConfig.apiKey ? 'Active' : 'Configuration required',
+      mode: lemonConfig.environment,
+      public_config: 'GET /api/lemon-config'
     },
     video_generation_api: {
       generate_video: 'POST /api/generate-video',
@@ -1301,7 +1307,7 @@ app.get('/', (req, res) => {
       reddit_api: 'live',
       premium_feature_focus: 'active',
       credit_system: 'active',
-      payment_processing: dodoConfig.apiKey ? 'active' : 'inactive'
+      payment_processing: lemonConfig.apiKey ? 'active' : 'inactive'
     }
   });
 });
@@ -1322,7 +1328,7 @@ app.use('*', (req, res) => {
       '/api/health',
       '/health',
       '/api/status',
-      '/api/dodo-config',
+      '/api/lemon-config',
       '/api/cron-reddit (POST)',
       '/api/shadow-check (Critical monitoring)',
       '/api/reddit-admin/health-monitor (System health)',
@@ -1386,15 +1392,16 @@ if (process.env.NODE_ENV !== 'production' || process.env.VERCEL !== '1') {
     console.log(`👁️  Shadow-check: GET http://localhost:${PORT}/api/shadow-check`);
     console.log(`📊 Health monitor: GET http://localhost:${PORT}/api/reddit-admin/health-monitor`);
     console.log(`🔧 Module status: GET http://localhost:${PORT}/api/module-status`);
-    console.log(`💰 Payment config: GET http://localhost:${PORT}/api/dodo-config`);
+    console.log(`💰 Payment config: GET http://localhost:${PORT}/api/lemon-config`);
     console.log(`🌐 CORS enabled for: localhost:3000, localhost:3001, soundswap.live`);
     console.log(`🎭 Batched Orchestration: 20 subreddits, 4 batches, Discord threshold: Score > 85`);
     
-    // Log Dodo Payments configuration status
-    console.log('\n🔐 Dodo Payments Configuration:');
-    console.log(`   - API Key: ${dodoConfig.apiKey ? '✅ Configured' : '❌ Missing'}`);
-    console.log(`   - Public Key: ${dodoConfig.publicKey ? '✅ Configured' : '❌ Missing'}`);
-    console.log(`   - Environment: ${dodoConfig.environment}`);
-    console.log(`   - Configuration endpoint: http://localhost:${PORT}/api/dodo-config`);
+    // Log Lemon Squeezy configuration status
+    console.log('\n🍋 Lemon Squeezy Configuration:');
+    console.log(`   - API Key: ${lemonConfig.apiKey ? '✅ Configured' : '❌ Missing'}`);
+    console.log(`   - Store ID: ${lemonConfig.storeId ? '✅ Configured' : '❌ Missing'}`);
+    console.log(`   - Environment: ${lemonConfig.environment}`);
+    console.log(`   - Webhook Secret: ${lemonConfig.webhookSecret ? '✅ Configured' : '⚠️ Missing'}`);
+    console.log(`   - Configuration endpoint: http://localhost:${PORT}/api/lemon-config`);
   });
 }

@@ -1,9 +1,9 @@
-// routes/create-checkout.js - COMPLETE FIXED VERSION WITH ERROR HANDLING
+// routes/create-checkout.js - UPDATED FOR LEMON SQUEEZY
 import express from 'express';
 
 const router = express.Router();
 
-console.log('[INFO] 🚀 Dodo Payments Checkout API Initialized');
+console.log('[INFO] 🚀 Lemon Squeezy Checkout API Initialized');
 
 // ==================== LAZY LOADING CONFIGURATION ====================
 
@@ -11,11 +11,11 @@ let isFirebaseLoaded = false;
 let auth = null;
 let db = null;
 
-// Static product catalog with your actual Dodo product IDs
+// Static product catalog with your actual Lemon Squeezy variant IDs
 const PRODUCT_CATALOG = {
   // Cover Art Credits
   cover_starter: {
-    id: 'pdt_0NVpYnGqHkTrG1MBpjZDH',
+    variantId: '1256036',
     name: 'Starter Pack',
     description: '10 Cover Art Credits',
     credits: 10,
@@ -26,7 +26,7 @@ const PRODUCT_CATALOG = {
   },
 
   cover_creator: {
-    id: 'pdt_0NVpYz3UZCFhpDsJRpIkJ',
+    variantId: '1256041',
     name: 'Creator Pack',
     description: '25 Cover Art Credits',
     credits: 25,
@@ -37,7 +37,7 @@ const PRODUCT_CATALOG = {
   },
 
   cover_pro: {
-    id: 'pdt_0NVpZ68TtojJFxcvTKFHD',
+    variantId: '1256043',
     name: 'Professional Pack',
     description: '100 Cover Art Credits',
     credits: 100,
@@ -49,7 +49,7 @@ const PRODUCT_CATALOG = {
 
   // Lyric Video Credits
   video_30s: {
-    id: 'pdt_0NVpZOxJp5948ZTw1FqGC',
+    variantId: '1256045',
     name: 'Single 30s Video',
     description: '1 Lyric Video Credit (30 seconds)',
     credits: 1,
@@ -61,7 +61,7 @@ const PRODUCT_CATALOG = {
   },
 
   video_3pack_30s: {
-    id: 'pdt_0NVpZWTiwQDBitIEfQbwM',
+    variantId: '1256046',
     name: '3-Pack (30s each)',
     description: '3 Lyric Video Credits (30 seconds each)',
     credits: 3,
@@ -73,7 +73,7 @@ const PRODUCT_CATALOG = {
   },
 
   video_full: {
-    id: 'pdt_0NVpZewrUSBHJXdJhB2wx',
+    variantId: '1256048',
     name: 'Single Full Video',
     description: '2 Lyric Video Credits (Full song)',
     credits: 2,
@@ -85,7 +85,7 @@ const PRODUCT_CATALOG = {
   },
 
   video_3pack_full: {
-    id: 'pdt_0NVpZnLaWqxH7gst9gtHV',
+    variantId: '1256051',
     name: '3-Pack (Full Length)',
     description: '6 Lyric Video Credits (Full song each)',
     credits: 6,
@@ -97,7 +97,7 @@ const PRODUCT_CATALOG = {
   },
 
   video_10pack_full: {
-    id: 'pdt_0NVpZv5PRx4s9xNTLxNt7',
+    variantId: '1256057',
     name: '10-Pack (Full Length)',
     description: '20 Lyric Video Credits (Full song each)',
     credits: 20,
@@ -109,53 +109,51 @@ const PRODUCT_CATALOG = {
   }
 };
 
-
-// ==================== FIXED DODO PAYMENTS CLIENT ====================
-const getDodoClient = () => {
+// ==================== LEMON SQUEEZY PAYMENTS CLIENT ====================
+const getLemonClient = () => {
   try {
-    if (!process.env.DODO_PAYMENTS_API_KEY) {
-      console.error('[ERROR] ❌ Dodo Payments API key is not configured');
+    if (!process.env.LEMON_SQUEEZY_API_KEY) {
+      console.error('[ERROR] ❌ Lemon Squeezy API key is not configured');
       return null;
     }
-    
-    const API_KEY = process.env.DODO_PAYMENTS_API_KEY;
-    const isTestMode = process.env.NODE_ENV !== 'production' || 
-                      process.env.DODO_PAYMENTS_ENV === 'test' ||
-                      !process.env.DODO_PAYMENTS_ENV;
-    
-    const BASE_URL = isTestMode 
-      ? 'https://api-test.dodopayments.com' 
-      : 'https://api.dodopayments.com';
-    
-    console.log(`[DODO] 🌐 Using ${isTestMode ? 'TEST' : 'LIVE'} environment: ${BASE_URL}`);
-    
-    // Simple fetch-based client with better error handling
-    const dodoClient = {
+
+    const API_KEY = process.env.LEMON_SQUEEZY_API_KEY;
+    const STORE_ID = process.env.LEMON_SQUEEZY_STORE_ID;
+    const BASE_URL = 'https://api.lemonsqueezy.com/v1';
+
+    if (!STORE_ID) {
+      console.error('[ERROR] ❌ Lemon Squeezy Store ID is not configured');
+      return null;
+    }
+
+    console.log('[LEMON] 🍋 Using Lemon Squeezy API:', BASE_URL);
+
+    // Fetch-based Lemon Squeezy client with strong error handling
+    const lemonClient = {
       createCheckoutSession: async (payload) => {
-        console.log('[DODO] Creating checkout session');
-        
+        console.log('[LEMON] 🛒 Creating Lemon Squeezy checkout session');
+
         try {
           const controller = new AbortController();
-          const timeoutId = setTimeout(() => controller.abort(), 15000); // 15 second timeout
-          
-          const response = await fetch(`${BASE_URL}/v1/checkout/sessions`, {
+          const timeoutId = setTimeout(() => controller.abort(), 15000); // 15s timeout
+
+          const response = await fetch(`${BASE_URL}/checkouts`, {
             method: 'POST',
             headers: {
-              'Content-Type': 'application/json',
               'Authorization': `Bearer ${API_KEY}`,
-              'Accept': 'application/json'
+              'Accept': 'application/vnd.api+json',
+              'Content-Type': 'application/vnd.api+json'
             },
             body: JSON.stringify(payload),
             signal: controller.signal
           });
-          
+
           clearTimeout(timeoutId);
-          
-          console.log('[DODO] Response status:', response.status);
-          
-          // Handle different response types
+
+          console.log('[LEMON] Response status:', response.status);
+
           const contentType = response.headers.get('content-type');
-          
+
           if (!response.ok) {
             let errorBody;
             if (contentType && contentType.includes('application/json')) {
@@ -163,45 +161,50 @@ const getDodoClient = () => {
             } else {
               errorBody = await response.text();
             }
-            
-            console.error('[DODO] API Error:', {
+
+            console.error('[LEMON] API Error:', {
               status: response.status,
               statusText: response.statusText,
               body: errorBody
             });
-            
-            throw new Error(`Dodo API error (${response.status}): ${JSON.stringify(errorBody)}`);
+
+            throw new Error(
+              `Lemon Squeezy API error (${response.status}): ${JSON.stringify(errorBody)}`
+            );
           }
-          
+
           if (!contentType || !contentType.includes('application/json')) {
             const text = await response.text();
-            console.error('[DODO] Non-JSON response:', text.substring(0, 200));
-            throw new Error('Dodo API returned non-JSON response');
+            console.error('[LEMON] ❌ Non-JSON response:', text.substring(0, 200));
+            throw new Error('Lemon Squeezy API returned non-JSON response');
           }
-          
+
           const data = await response.json();
-          console.log('[DODO] API Success:', { 
-            sessionId: data.id, 
-            url: data.url,
-            expiresAt: data.expires_at 
+
+          console.log('[LEMON] ✅ Checkout created:', {
+            checkoutId: data.data?.id,
+            url: data.data?.attributes?.url
           });
-          
+
           return data;
-          
+
         } catch (error) {
           if (error.name === 'AbortError') {
-            throw new Error('Dodo API request timed out after 15 seconds');
+            throw new Error('Lemon Squeezy API request timed out after 15 seconds');
           }
           throw error;
         }
       }
     };
-    
-    console.log('[DODO] ✅ Dodo Payments client ready');
-    return dodoClient;
-    
+
+    console.log('[LEMON] ✅ Lemon Squeezy client ready');
+    return lemonClient;
+
   } catch (error) {
-    console.error('[ERROR] ❌ Failed to initialize Dodo Payments client:', error.message);
+    console.error(
+      '[ERROR] ❌ Failed to initialize Lemon Squeezy client:',
+      error.message
+    );
     return null;
   }
 };
@@ -264,7 +267,7 @@ const loadFirebase = async () => {
   return { auth, db };
 };
 
-// ==================== CHECKOUT ENDPOINT (FIXED) ====================
+// ==================== CHECKOUT ENDPOINT (UPDATED FOR LEMON SQUEEZY) ====================
 
 router.post('/', async (req, res) => {
   console.log('[INFO] 🔄 Received checkout request');
@@ -286,7 +289,7 @@ router.post('/', async (req, res) => {
   try {
     const { variantId, metadata, successUrl, cancelUrl } = req.body;
     
-    console.log(`[INFO] 🛒 Processing checkout for: ${variantId}`);
+    console.log(`[INFO] 🛒 Processing checkout for variant: ${variantId}`);
     console.log(`[INFO] 📝 Metadata:`, metadata || 'No metadata provided');
 
     // 1. Validate variantId
@@ -313,78 +316,114 @@ router.post('/', async (req, res) => {
       });
     }
 
-    console.log(`[INFO] 📦 Product found: ${product.name} (${product.id})`);
+    console.log(`[INFO] 📦 Product found: ${product.name} (${product.variantId})`);
 
-    // 2. Get Dodo client
-    const dodoClient = getDodoClient();
-    if (!dodoClient) {
-      console.error('[ERROR] ❌ Dodo client initialization failed');
+    // 2. Get Lemon Squeezy client
+    const lemonClient = getLemonClient();
+    if (!lemonClient) {
+      console.error('[ERROR] ❌ Lemon Squeezy client initialization failed');
       return res.status(500).json({ 
         success: false, 
         error: 'Payment gateway configuration error',
-        message: 'Dodo Payments API key is not configured or invalid',
+        message: 'Lemon Squeezy API key or Store ID is not configured or invalid',
         timestamp: new Date().toISOString()
       });
     }
 
-    // 3. Prepare Dodo Payload
-    const payload = {
-      line_items: [{
-        price: product.id,  // Using product ID as price ID
-        quantity: 1
-      }],
-      customer: {
-        email: metadata?.userEmail || metadata?.email || 'customer@soundswap.live',
-        name: metadata?.name || 'SoundSwap User'
-      },
-      billing_address_collection: 'auto',
-      metadata: {
-        user_id: metadata?.userId || 'anonymous',
-        product_key: variantId,
-        credit_type: product.creditType,
-        credits: product.credits.toString(),
-        source: 'soundswap-web-v2',
-        firebase_uid: metadata?.userId || 'anonymous',
-        origin: metadata?.origin || req.headers.origin || 'direct'
-      },
-      success_url: successUrl || 
-                  `${process.env.NEXT_PUBLIC_APP_URL || 'https://soundswap.live'}/studio?payment=success&session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: cancelUrl || 
-                 `${process.env.NEXT_PUBLIC_APP_URL || 'https://soundswap.live'}/studio?payment=cancelled`,
-      mode: 'payment',
-      payment_method_types: ['card'],
-      allow_promotion_codes: true,
-      expires_at: Math.floor(Date.now() / 1000) + (30 * 60), // 30 minutes from now
-      submit_type: 'pay'
+    // 3. Prepare Lemon Squeezy Payload (JSON:API format)
+    const storeId = process.env.LEMON_SQUEEZY_STORE_ID;
+    
+    if (!storeId) {
+      console.error('[ERROR] ❌ Lemon Squeezy Store ID not configured');
+      return res.status(500).json({
+        success: false,
+        error: 'Store configuration error',
+        message: 'Lemon Squeezy Store ID is not configured',
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    // Set up custom data for webhook
+    const customData = {
+      userId: metadata?.userId || 'anonymous',
+      productKey: variantId,
+      creditType: product.creditType,
+      credits: product.credits.toString(),
+      source: 'soundswap-web-v2',
+      firebase_uid: metadata?.userId || 'anonymous',
+      origin: metadata?.origin || req.headers.origin || 'direct',
+      videoType: product.videoType || ''
     };
 
-    console.log(`[INFO] 🚀 Calling Dodo API for ${product.name}...`);
+    const payload = {
+      data: {
+        type: 'checkouts',
+        attributes: {
+          custom_price: null,
+          product_options: {
+            redirect_url: successUrl || 
+              `${process.env.NEXT_PUBLIC_APP_URL || 'https://soundswap.live'}/studio?payment=success`,
+            receipt_link_url: `${process.env.NEXT_PUBLIC_APP_URL || 'https://soundswap.live'}/dashboard`,
+            receipt_button_text: "Go to Dashboard",
+            description: product.description
+          },
+          checkout_options: {
+            embed: false,
+            media: false,
+            logo: true,
+            button_color: '#FF6B35'
+          },
+          checkout_data: {
+            custom: customData,
+            email: metadata?.userEmail || metadata?.email || 'customer@soundswap.live',
+            name: metadata?.name || 'SoundSwap User',
+            billing_address: {
+              country: 'US'
+            }
+          },
+          expires_at: null, // Optional: set expiry date
+          preview: false,
+          test_mode: process.env.NODE_ENV === 'development'
+        },
+        relationships: {
+          store: {
+            data: { type: 'stores', id: storeId }
+          },
+          variant: {
+            data: { type: 'variants', id: product.variantId }
+          }
+        }
+      }
+    };
+
+    console.log(`[INFO] 🚀 Calling Lemon Squeezy API for ${product.name}...`);
     console.log(`[DEBUG] Payload:`, JSON.stringify(payload, null, 2));
 
     // 4. Create Checkout Session
     let result;
     try {
-      result = await dodoClient.createCheckoutSession(payload);
-      console.log(`[DEBUG] Dodo API Response:`, JSON.stringify(result, null, 2));
+      result = await lemonClient.createCheckoutSession(payload);
+      console.log(`[DEBUG] Lemon Squeezy API Response:`, JSON.stringify(result, null, 2));
     } catch (apiError) {
-      console.error('[ERROR] ❌ Dodo API call failed:', apiError.message);
+      console.error('[ERROR] ❌ Lemon Squeezy API call failed:', apiError.message);
       console.error('[ERROR] Stack:', apiError.stack);
       
       return res.status(502).json({ 
         success: false, 
         error: 'Payment gateway error',
         message: apiError.message,
-        suggestion: 'Check your Dodo API key and environment settings',
+        suggestion: 'Check your Lemon Squeezy API key and Store ID',
         timestamp: new Date().toISOString()
       });
     }
     
     // 5. Extract checkout URL and session ID
-    const checkoutUrl = result?.url || result?.checkout_url;
-    const sessionId = result?.id || result?.session_id;
+    const checkoutData = result?.data;
+    const checkoutUrl = checkoutData?.attributes?.url;
+    const checkoutId = checkoutData?.id;
     
     if (!checkoutUrl) {
-      console.error('[ERROR] ❌ Dodo API returned no URL. Full response:', JSON.stringify(result, null, 2));
+      console.error('[ERROR] ❌ Lemon Squeezy API returned no URL. Full response:', JSON.stringify(result, null, 2));
       return res.status(502).json({ 
         success: false, 
         error: 'Payment gateway failed to generate checkout URL',
@@ -396,9 +435,9 @@ router.post('/', async (req, res) => {
     // 6. Firestore Tracking (Non-blocking - don't let it fail the request)
     try {
       const { db } = await loadFirebase();
-      if (db && sessionId) {
-        await db.collection('checkout_sessions').doc(String(sessionId)).set({
-          sessionId,
+      if (db && checkoutId) {
+        await db.collection('checkout_sessions').doc(String(checkoutId)).set({
+          checkoutId,
           userId: metadata?.userId || 'anonymous',
           userEmail: metadata?.userEmail || metadata?.email || 'unknown',
           status: 'created',
@@ -409,11 +448,13 @@ router.post('/', async (req, res) => {
           currency: product.currency,
           credits: product.credits,
           creditType: product.creditType,
+          videoType: product.videoType || '',
           checkoutUrl,
-          metadata: payload.metadata,
-          expiresAt: new Date(payload.expires_at * 1000)
+          metadata: customData,
+          variantId: product.variantId,
+          expiresAt: null
         });
-        console.log(`[DB] ✅ Checkout session logged: ${sessionId}`);
+        console.log(`[DB] ✅ Checkout session logged: ${checkoutId}`);
       }
     } catch (firestoreError) {
       console.warn('[DB WARN] Firestore not available for logging:', firestoreError.message);
@@ -421,17 +462,16 @@ router.post('/', async (req, res) => {
     }
 
     // 7. Final JSON Response
-    console.log(`[INFO] ✅ Checkout session ready: ${sessionId}`);
+    console.log(`[INFO] ✅ Checkout session ready: ${checkoutId}`);
     console.log(`[INFO] 🔗 Checkout URL: ${checkoutUrl}`);
     
     const response = {
       success: true,
       checkoutUrl: checkoutUrl,
-      sessionId: sessionId,
-      expiresAt: result.expires_at || new Date(Date.now() + 30 * 60 * 1000).toISOString(),
+      checkoutId: checkoutId,
       product: {
         name: product.name,
-        price: product.price,
+        price: product.displayPrice,
         credits: product.credits,
         variantId: variantId,
         description: product.description
@@ -441,7 +481,7 @@ router.post('/', async (req, res) => {
         product_key: variantId
       },
       webhook_url: `${process.env.NEXT_PUBLIC_APP_URL || 'https://soundswap.live'}/api/lemon-webhook`,
-      note: 'Use this checkoutUrl with DodoPayments.Checkout.open() in the frontend',
+      note: 'Redirect user to this checkoutUrl to complete payment',
       timestamp: new Date().toISOString()
     };
     
@@ -471,7 +511,7 @@ router.post('/test', async (req, res) => {
     // Always return JSON
     res.json({
       success: true,
-      message: 'Checkout endpoint is working',
+      message: 'Lemon Squeezy checkout endpoint is working',
       timestamp: new Date().toISOString(),
       requestBody: req.body || 'No body',
       environment: process.env.NODE_ENV || 'development'
@@ -494,9 +534,9 @@ router.get('/debug', (req, res) => {
   
   try {
     const config = {
-      dodoApiKey: process.env.DODO_PAYMENTS_API_KEY ? 
-        `${process.env.DODO_PAYMENTS_API_KEY.substring(0, 10)}...` : 'Not configured',
-      dodoEnv: process.env.DODO_PAYMENTS_ENV || 'Not set (defaulting to test)',
+      lemonSqueezyApiKey: process.env.LEMON_SQUEEZY_API_KEY ? 
+        `${process.env.LEMON_SQUEEZY_API_KEY.substring(0, 10)}...` : 'Not configured',
+      lemonSqueezyStoreId: process.env.LEMON_SQUEEZY_STORE_ID || 'Not set',
       nodeEnv: process.env.NODE_ENV || 'development',
       appUrl: process.env.NEXT_PUBLIC_APP_URL || 'Not set',
       firebaseLoaded: isFirebaseLoaded,
@@ -712,55 +752,43 @@ router.get('/products/:productId', (req, res) => {
   }
 });
 
-// ==================== STATUS ENDPOINT (FIXED) ====================
+// ==================== STATUS ENDPOINT (UPDATED) ====================
 
 router.get('/status', async (req, res) => {
-  console.log('[INFO] 🔍 Checking Dodo Payments service status');
+  console.log('[INFO] 🔍 Checking Lemon Squeezy service status');
   
   try {
-    // Test Dodo API connection
-    let dodoTest = { connected: false, error: null };
-    const dodoClient = getDodoClient();
+    // Test Lemon Squeezy API connection
+    let lemonTest = { connected: false, error: null };
+    const lemonClient = getLemonClient();
     
-    if (dodoClient) {
+    if (lemonClient) {
       try {
-        // Simple test - try to create a minimal session to verify API key
-        const testPayload = {
-          line_items: [{
-            price: PRODUCT_CATALOG.cover_starter.id,
-            quantity: 1
-          }],
-          success_url: 'https://soundswap.live/test',
-          cancel_url: 'https://soundswap.live/test',
-          mode: 'payment'
-        };
-        
-        // Note: We're not actually creating a session, just checking if we can
-        dodoTest.connected = true;
-        dodoTest.message = 'Dodo API client initialized successfully';
-        
+        lemonTest.connected = true;
+        lemonTest.message = 'Lemon Squeezy API client initialized successfully';
       } catch (testError) {
-        dodoTest.error = testError.message;
+        lemonTest.error = testError.message;
       }
     }
     
     const statusResponse = {
       success: true,
-      service: 'dodo-payments',
+      service: 'lemon-squeezy',
       status: 'operational',
       configuration: {
-        dodoApiKey: process.env.DODO_PAYMENTS_API_KEY ? 'configured' : 'missing',
-        dodoWebhookKey: process.env.DODO_PAYMENTS_WEBHOOK_KEY ? 'configured' : 'missing',
+        lemonSqueezyApiKey: process.env.LEMON_SQUEEZY_API_KEY ? 'configured' : 'missing',
+        lemonSqueezyStoreId: process.env.LEMON_SQUEEZY_STORE_ID ? 'configured' : 'missing',
+        lemonSqueezyWebhookSecret: process.env.LEMON_SQUEEZY_WEBHOOK_SECRET ? 'configured' : 'missing',
         firebaseAuth: auth ? 'available' : 'not_loaded',
         firebaseFirestore: db ? 'available' : 'not_loaded',
         environment: process.env.NODE_ENV || 'development',
         lazyLoading: 'enabled'
       },
       services: {
-        dodoApi: {
-          status: process.env.DODO_PAYMENTS_API_KEY ? 'configured' : 'not_configured',
-          message: process.env.DODO_PAYMENTS_API_KEY ? '✅ API key configured' : '⚠️ API key not configured',
-          test: dodoTest
+        lemonSqueezyApi: {
+          status: process.env.LEMON_SQUEEZY_API_KEY ? 'configured' : 'not_configured',
+          message: process.env.LEMON_SQUEEZY_API_KEY ? '✅ API key configured' : '⚠️ API key not configured',
+          test: lemonTest
         },
         firebaseAuth: {
           loaded: isFirebaseLoaded,
@@ -796,7 +824,7 @@ router.get('/status', async (req, res) => {
         total: Object.keys(PRODUCT_CATALOG).length
       },
       systemInfo: {
-        version: '1.3.0',
+        version: '2.0.0',
         environment: process.env.NODE_ENV || 'development',
         oneTimePurchases: 'enabled',
         transactionHistory: 'available',
@@ -812,7 +840,7 @@ router.get('/status', async (req, res) => {
     console.error('[ERROR] ❌ Status endpoint error:', error.message);
     return res.status(500).json({
       success: false,
-      service: 'dodo-payments',
+      service: 'lemon-squeezy',
       status: 'error',
       error: 'Internal server error',
       timestamp: new Date().toISOString()
@@ -842,16 +870,15 @@ router.post('/test-checkout', async (req, res) => {
     }
     
     // Create a mock checkout URL for testing
-    const mockCheckoutUrl = `https://checkout-test.dodopayments.com/pay/test_${Date.now()}`;
-    const mockSessionId = `test_session_${Date.now()}`;
+    const mockCheckoutUrl = `https://soundswap.lemonsqueezy.com/checkout/buy/test_${Date.now()}`;
+    const mockCheckoutId = `test_checkout_${Date.now()}`;
     
     console.log(`[TEST] 🧪 Creating test checkout for product: ${product.name}`);
     
     res.json({
       success: true,
       checkoutUrl: mockCheckoutUrl,
-      sessionId: mockSessionId,
-      expiresAt: new Date(Date.now() + 3600000).toISOString(), // 1 hour from now
+      checkoutId: mockCheckoutId,
       product: product,
       note: 'This is a test checkout - no actual payment will be processed',
       timestamp: new Date().toISOString()
@@ -867,51 +894,68 @@ router.post('/test-checkout', async (req, res) => {
   }
 });
 
-// Test Dodo API directly
-router.get('/test-dodo', async (req, res) => {
+// Test Lemon Squeezy API directly
+router.get('/test-lemon', async (req, res) => {
   try {
-    console.log('[TEST] 🧪 Testing Dodo API directly');
+    console.log('[TEST] 🧪 Testing Lemon Squeezy API directly');
     
-    const dodoClient = getDodoClient();
-    if (!dodoClient) {
+    const lemonClient = getLemonClient();
+    if (!lemonClient) {
       return res.status(500).json({
         success: false,
-        error: 'Dodo client not available',
+        error: 'Lemon Squeezy client not available',
         timestamp: new Date().toISOString()
       });
     }
     
     // Try to create a simple test session
     const testPayload = {
-      line_items: [{
-        price: PRODUCT_CATALOG.cover_starter.id,
-        quantity: 1
-      }],
-      customer: {
-        email: 'test@soundswap.live',
-        name: 'Test User'
-      },
-      success_url: 'https://soundswap.live/test-success',
-      cancel_url: 'https://soundswap.live/test-cancel',
-      mode: 'payment'
+      data: {
+        type: 'checkouts',
+        attributes: {
+          product_options: {
+            redirect_url: 'https://soundswap.live/test-success',
+            receipt_link_url: 'https://soundswap.live/dashboard'
+          },
+          checkout_data: {
+            custom: {
+              userId: 'test-user',
+              productKey: 'cover_starter',
+              creditType: 'coverArt',
+              credits: '10'
+            },
+            email: 'test@soundswap.live',
+            name: 'Test User'
+          },
+          test_mode: true
+        },
+        relationships: {
+          store: {
+            data: { type: 'stores', id: process.env.LEMON_SQUEEZY_STORE_ID }
+          },
+          variant: {
+            data: { type: 'variants', id: '1256036' } // cover_starter variant
+          }
+        }
+      }
     };
     
-    const result = await dodoClient.createCheckoutSession(testPayload);
+    const result = await lemonClient.createCheckoutSession(testPayload);
     
     res.json({
       success: true,
-      message: 'Dodo API test successful',
-      sessionId: result.id,
-      url: result.url,
+      message: 'Lemon Squeezy API test successful',
+      checkoutId: result.data?.id,
+      url: result.data?.attributes?.url,
       rawResponse: process.env.NODE_ENV === 'development' ? result : undefined,
       timestamp: new Date().toISOString()
     });
     
   } catch (error) {
-    console.error('[TEST] ❌ Dodo API test failed:', error.message);
+    console.error('[TEST] ❌ Lemon Squeezy API test failed:', error.message);
     res.status(500).json({
       success: false,
-      error: 'Dodo API test failed',
+      error: 'Lemon Squeezy API test failed',
       message: error.message,
       timestamp: new Date().toISOString()
     });
@@ -925,7 +969,7 @@ router.get('/health', (req, res) => {
     status: 'healthy',
     timestamp: new Date().toISOString(),
     environment: process.env.NODE_ENV || 'development',
-    service: 'dodo-checkout',
+    service: 'lemon-squeezy-checkout',
     products: Object.keys(PRODUCT_CATALOG).length
   });
 });
@@ -1039,9 +1083,10 @@ router.post('/deduct-credits', async (req, res) => {
   }
 });
 
-console.log('[INFO] ✅ Dodo API Key:', process.env.DODO_PAYMENTS_API_KEY ? 
-  `Configured (${process.env.DODO_PAYMENTS_API_KEY.substring(0, 10)}...)` : 
+console.log('[INFO] ✅ Lemon Squeezy API Key:', process.env.LEMON_SQUEEZY_API_KEY ? 
+  `Configured (${process.env.LEMON_SQUEEZY_API_KEY.substring(0, 10)}...)` : 
   'Not Configured');
+console.log('[INFO] 🏪 Lemon Squeezy Store ID:', process.env.LEMON_SQUEEZY_STORE_ID || 'Not Configured');
 console.log('[INFO] 📊 Products Available:', Object.keys(PRODUCT_CATALOG).length);
 console.log('[INFO] 🎯 Main Endpoint: POST /api/create-checkout');
 console.log('[INFO] 🧪 Test Endpoint: POST /api/create-checkout/test');
