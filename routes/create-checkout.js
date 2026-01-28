@@ -1,15 +1,54 @@
-// routes/create-checkout.js - UPDATED FOR LEMON SQUEEZY
+// api/create-checkout.js - UPDATED FOR LEMON SQUEEZY
 import express from 'express';
+import cors from 'cors';
 
 const router = express.Router();
 
 console.log('[INFO] 🚀 Lemon Squeezy Checkout API Initialized');
 
-// ==================== LAZY LOADING CONFIGURATION ====================
+// Enable CORS for this specific router
+router.use(cors({
+  origin: [
+    'http://localhost:3000',
+    'https://localhost:3000', 
+    'http://localhost:5173',
+    'https://localhost:5173',
+    'http://localhost:3001',
+    'https://localhost:3001',
+    'https://soundswap-backend.vercel.app',
+    'https://soundswap.onrender.com',
+    'https://www.soundswap.onrender.com',
+    'https://soundswap.live',
+    'https://www.soundswap.live',
+    'https://sound-swap-frontend.onrender.com',
+    'https://soundswap-hub.vercel.app',
+    /\.vercel\.app$/ // Allow all Vercel subdomains
+  ],
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept']
+}));
 
-let isFirebaseLoaded = false;
-let auth = null;
-let db = null;
+// Middleware to ensure JSON response
+const ensureJsonResponse = (req, res, next) => {
+  // Capture original send function
+  const originalSend = res.send;
+  res.send = function(body) {
+    // Ensure we always send JSON
+    if (typeof body !== 'string') {
+      body = JSON.stringify(body);
+    }
+    
+    // Ensure content-type is JSON
+    res.setHeader('Content-Type', 'application/json');
+    
+    // Call original send
+    originalSend.call(this, body);
+  };
+  next();
+};
+
+router.use(ensureJsonResponse);
 
 // Static product catalog with your actual Lemon Squeezy variant IDs
 const PRODUCT_CATALOG = {
@@ -112,9 +151,11 @@ const PRODUCT_CATALOG = {
 // ==================== LEMON SQUEEZY PAYMENTS CLIENT ====================
 const getLemonClient = () => {
   try {
+    console.log('[LEMON] 🍋 Initializing Lemon Squeezy client...');
+    
     if (!process.env.LEMON_SQUEEZY_API_KEY) {
-      console.error('[ERROR] ❌ Lemon Squeezy API key is not configured');
-      return null;
+      console.error('[LEMON] ❌ Lemon Squeezy API key is not configured');
+      throw new Error('Lemon Squeezy API key is not configured');
     }
 
     const API_KEY = process.env.LEMON_SQUEEZY_API_KEY;
@@ -122,27 +163,35 @@ const getLemonClient = () => {
     const BASE_URL = 'https://api.lemonsqueezy.com/v1';
 
     if (!STORE_ID) {
-      console.error('[ERROR] ❌ Lemon Squeezy Store ID is not configured');
-      return null;
+      console.error('[LEMON] ❌ Lemon Squeezy Store ID is not configured');
+      throw new Error('Lemon Squeezy Store ID is not configured');
     }
 
-    console.log('[LEMON] 🍋 Using Lemon Squeezy API:', BASE_URL);
+    console.log('[LEMON] ✅ Using Lemon Squeezy API:', {
+      baseUrl: BASE_URL,
+      storeId: STORE_ID,
+      apiKeyLength: API_KEY.length
+    });
 
     // Fetch-based Lemon Squeezy client with strong error handling
     const lemonClient = {
       createCheckoutSession: async (payload) => {
-        console.log('[LEMON] 🛒 Creating Lemon Squeezy checkout session');
+        console.log('[LEMON] 🛒 Creating Lemon Squeezy checkout session...');
+        console.log('[LEMON] 📦 Payload:', JSON.stringify(payload, null, 2));
 
         try {
           const controller = new AbortController();
           const timeoutId = setTimeout(() => controller.abort(), 15000); // 15s timeout
 
+          console.log('[LEMON] 📤 Sending request to Lemon Squeezy API...');
+          
           const response = await fetch(`${BASE_URL}/checkouts`, {
             method: 'POST',
             headers: {
               'Authorization': `Bearer ${API_KEY}`,
               'Accept': 'application/vnd.api+json',
-              'Content-Type': 'application/vnd.api+json'
+              'Content-Type': 'application/vnd.api+json',
+              'User-Agent': 'SoundSwap/2.0'
             },
             body: JSON.stringify(payload),
             signal: controller.signal
@@ -150,48 +199,43 @@ const getLemonClient = () => {
 
           clearTimeout(timeoutId);
 
-          console.log('[LEMON] Response status:', response.status);
+          console.log('[LEMON] Response status:', response.status, response.statusText);
 
-          const contentType = response.headers.get('content-type');
+          // Get response as text first
+          const responseText = await response.text();
+          console.log('[LEMON] Raw response:', responseText.substring(0, 500));
 
           if (!response.ok) {
-            let errorBody;
-            if (contentType && contentType.includes('application/json')) {
-              errorBody = await response.json();
-            } else {
-              errorBody = await response.text();
-            }
-
-            console.error('[LEMON] API Error:', {
-              status: response.status,
-              statusText: response.statusText,
-              body: errorBody
-            });
-
+            console.error('[LEMON] ❌ API Error Response:', responseText);
             throw new Error(
-              `Lemon Squeezy API error (${response.status}): ${JSON.stringify(errorBody)}`
+              `Lemon Squeezy API error (${response.status}): ${responseText.substring(0, 200)}`
             );
           }
 
-          if (!contentType || !contentType.includes('application/json')) {
-            const text = await response.text();
-            console.error('[LEMON] ❌ Non-JSON response:', text.substring(0, 200));
-            throw new Error('Lemon Squeezy API returned non-JSON response');
+          // Try to parse JSON
+          let data;
+          try {
+            data = JSON.parse(responseText);
+          } catch (parseError) {
+            console.error('[LEMON] ❌ Failed to parse JSON response:', parseError.message);
+            console.error('[LEMON] Raw response that failed to parse:', responseText.substring(0, 200));
+            throw new Error('Lemon Squeezy API returned invalid JSON');
           }
-
-          const data = await response.json();
 
           console.log('[LEMON] ✅ Checkout created:', {
             checkoutId: data.data?.id,
-            url: data.data?.attributes?.url
+            url: data.data?.attributes?.url ? 'Yes' : 'No URL',
+            testMode: data.data?.attributes?.test_mode || false
           });
 
           return data;
 
         } catch (error) {
           if (error.name === 'AbortError') {
+            console.error('[LEMON] ❌ Request timed out after 15 seconds');
             throw new Error('Lemon Squeezy API request timed out after 15 seconds');
           }
+          console.error('[LEMON] ❌ Error creating checkout session:', error.message);
           throw error;
         }
       }
@@ -209,84 +253,49 @@ const getLemonClient = () => {
   }
 };
 
-// ==================== LAZY LOAD HELPER ====================
+// ==================== SIMPLE AUTH HELPER ====================
 
-const loadFirebase = async () => {
-  if (!isFirebaseLoaded) {
-    console.log('[INFO] 🔥 Firebase: Lazy loading Firebase Admin');
-    try {
-      const adminModule = await import('firebase-admin');
-      const admin = adminModule.default;
-      
-      if (admin.apps.length > 0) {
-        auth = admin.auth();
-        db = admin.firestore();
-        console.log('[INFO] 🔥 Firebase: Using existing Firebase Admin instance');
-      } else {
-        console.log('[INFO] 🔥 Firebase: Initializing Firebase Admin');
-        const serviceAccount = {
-          projectId: process.env.FIREBASE_PROJECT_ID,
-          clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-          privateKey: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n'),
-        };
-        
-        if (serviceAccount.projectId && serviceAccount.clientEmail && serviceAccount.privateKey) {
-          admin.initializeApp({
-            credential: admin.credential.cert(serviceAccount),
-            databaseURL: process.env.FIREBASE_DATABASE_URL
-          });
-          auth = admin.auth();
-          db = admin.firestore();
-          console.log('[INFO] 🔥 Firebase: Initialized successfully');
-        } else {
-          console.error('[ERROR] ❌ Firebase credentials incomplete');
-          auth = null;
-          db = null;
-        }
-      }
-      
-      isFirebaseLoaded = true;
-      console.log('[INFO] 🔥 Firebase: Admin auth and firestore loaded successfully');
-    } catch (error) {
-      console.error('[ERROR] ❌ Failed to load Firebase Admin:', error.message);
-      // Create mock auth for testing
-      auth = {
-        verifyIdToken: async (token) => {
-          console.log('[TEST] 🔐 Mock token verification for testing');
-          return { 
-            uid: token === 'test-token' ? 'test-user-id' : 'mock-user-id',
-            email: 'test@example.com'
-          };
-        }
-      };
-      db = null;
-      isFirebaseLoaded = true;
-      console.log('[INFO] 🔥 Firebase: Using mock auth for testing');
-    }
+const verifyAuth = async (req) => {
+  // Simple authentication check - just verify we have a user ID
+  const { userId } = req.body;
+  
+  if (!userId || userId === 'anonymous' || userId === 'undefined') {
+    console.warn('[AUTH] ⚠️ No valid userId provided:', userId);
+    return {
+      authenticated: false,
+      userId: 'anonymous',
+      email: 'anonymous@soundswap.live'
+    };
   }
-  return { auth, db };
+  
+  return {
+    authenticated: true,
+    userId,
+    email: req.body.email || 'user@soundswap.live'
+  };
 };
 
-// ==================== CHECKOUT ENDPOINT (UPDATED FOR LEMON SQUEEZY) ====================
+// ==================== CHECKOUT ENDPOINT ====================
 
 router.post('/', async (req, res) => {
   console.log('[INFO] 🔄 Received checkout request');
-  console.log('[INFO] Request body:', JSON.stringify(req.body, null, 2));
   
-  // Set headers immediately to prevent empty response
-  res.setHeader('Content-Type', 'application/json');
-  
-  // Ensure body is parsed
-  if (!req.body || typeof req.body !== 'object') {
-    console.error('[ERROR] ❌ Invalid request body');
-    return res.status(400).json({
-      success: false,
-      error: 'Invalid request body',
-      timestamp: new Date().toISOString()
-    });
-  }
-
   try {
+    // Always send JSON headers first
+    res.setHeader('Content-Type', 'application/json');
+    
+    // Ensure body is parsed
+    if (!req.body || typeof req.body !== 'object') {
+      console.error('[ERROR] ❌ Invalid request body');
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid request body',
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    console.log('[INFO] Request body:', JSON.stringify(req.body, null, 2));
+
     const { variantId, metadata, successUrl, cancelUrl } = req.body;
     
     console.log(`[INFO] 🛒 Processing checkout for variant: ${variantId}`);
@@ -298,8 +307,6 @@ router.post('/', async (req, res) => {
       return res.status(400).json({ 
         success: false, 
         error: 'variantId is required',
-        received: variantId,
-        availableVariants: Object.keys(PRODUCT_CATALOG),
         timestamp: new Date().toISOString()
       });
     }
@@ -310,7 +317,6 @@ router.post('/', async (req, res) => {
       return res.status(400).json({ 
         success: false, 
         error: `Invalid variantId: ${variantId}`,
-        received: variantId,
         availableVariants: Object.keys(PRODUCT_CATALOG),
         timestamp: new Date().toISOString()
       });
@@ -330,7 +336,11 @@ router.post('/', async (req, res) => {
       });
     }
 
-    // 3. Prepare Lemon Squeezy Payload (JSON:API format)
+    // 3. Verify authentication
+    const authInfo = await verifyAuth(req);
+    console.log('[AUTH] 🔐 Authentication result:', authInfo);
+
+    // 4. Prepare Lemon Squeezy Payload
     const storeId = process.env.LEMON_SQUEEZY_STORE_ID;
     
     if (!storeId) {
@@ -338,34 +348,38 @@ router.post('/', async (req, res) => {
       return res.status(500).json({
         success: false,
         error: 'Store configuration error',
-        message: 'Lemon Squeezy Store ID is not configured',
         timestamp: new Date().toISOString()
       });
     }
 
     // Set up custom data for webhook
     const customData = {
-      userId: metadata?.userId || 'anonymous',
+      userId: authInfo.userId,
+      userEmail: authInfo.email,
       productKey: variantId,
+      productName: product.name,
       creditType: product.creditType,
-      credits: product.credits.toString(),
+      credits: product.credits,
+      price: product.displayPrice,
+      currency: product.currency,
       source: 'soundswap-web-v2',
-      firebase_uid: metadata?.userId || 'anonymous',
-      origin: metadata?.origin || req.headers.origin || 'direct',
-      videoType: product.videoType || ''
+      timestamp: new Date().toISOString(),
+      videoType: product.videoType || '',
+      sessionId: `checkout_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
     };
 
+    // Build the payload according to Lemon Squeezy API spec
     const payload = {
       data: {
         type: 'checkouts',
         attributes: {
-          custom_price: null,
           product_options: {
             redirect_url: successUrl || 
               `${process.env.NEXT_PUBLIC_APP_URL || 'https://soundswap.live'}/studio?payment=success`,
             receipt_link_url: `${process.env.NEXT_PUBLIC_APP_URL || 'https://soundswap.live'}/dashboard`,
             receipt_button_text: "Go to Dashboard",
-            description: product.description
+            description: product.description,
+            enabled_variants: [product.variantId]
           },
           checkout_options: {
             embed: false,
@@ -375,15 +389,15 @@ router.post('/', async (req, res) => {
           },
           checkout_data: {
             custom: customData,
-            email: metadata?.userEmail || metadata?.email || 'customer@soundswap.live',
+            email: authInfo.email,
             name: metadata?.name || 'SoundSwap User',
             billing_address: {
               country: 'US'
             }
           },
-          expires_at: null, // Optional: set expiry date
+          expires_at: null, // No expiry
           preview: false,
-          test_mode: process.env.NODE_ENV === 'development'
+          test_mode: process.env.NODE_ENV !== 'production'
         },
         relationships: {
           store: {
@@ -397,74 +411,42 @@ router.post('/', async (req, res) => {
     };
 
     console.log(`[INFO] 🚀 Calling Lemon Squeezy API for ${product.name}...`);
-    console.log(`[DEBUG] Payload:`, JSON.stringify(payload, null, 2));
 
-    // 4. Create Checkout Session
+    // 5. Create Checkout Session
     let result;
     try {
       result = await lemonClient.createCheckoutSession(payload);
-      console.log(`[DEBUG] Lemon Squeezy API Response:`, JSON.stringify(result, null, 2));
+      console.log(`[INFO] ✅ Lemon Squeezy API response received`);
     } catch (apiError) {
       console.error('[ERROR] ❌ Lemon Squeezy API call failed:', apiError.message);
-      console.error('[ERROR] Stack:', apiError.stack);
       
       return res.status(502).json({ 
         success: false, 
         error: 'Payment gateway error',
         message: apiError.message,
-        suggestion: 'Check your Lemon Squeezy API key and Store ID',
         timestamp: new Date().toISOString()
       });
     }
     
-    // 5. Extract checkout URL and session ID
+    // 6. Extract checkout URL and session ID
     const checkoutData = result?.data;
     const checkoutUrl = checkoutData?.attributes?.url;
     const checkoutId = checkoutData?.id;
     
     if (!checkoutUrl) {
-      console.error('[ERROR] ❌ Lemon Squeezy API returned no URL. Full response:', JSON.stringify(result, null, 2));
+      console.error('[ERROR] ❌ Lemon Squeezy API returned no URL');
       return res.status(502).json({ 
         success: false, 
         error: 'Payment gateway failed to generate checkout URL',
-        debug: process.env.NODE_ENV === 'development' ? result : undefined,
+        debug: process.env.NODE_ENV !== 'production' ? { result, payload } : undefined,
         timestamp: new Date().toISOString()
       });
     }
 
-    // 6. Firestore Tracking (Non-blocking - don't let it fail the request)
-    try {
-      const { db } = await loadFirebase();
-      if (db && checkoutId) {
-        await db.collection('checkout_sessions').doc(String(checkoutId)).set({
-          checkoutId,
-          userId: metadata?.userId || 'anonymous',
-          userEmail: metadata?.userEmail || metadata?.email || 'unknown',
-          status: 'created',
-          createdAt: new Date(),
-          product: variantId,
-          productName: product.name,
-          price: product.displayPrice,
-          currency: product.currency,
-          credits: product.credits,
-          creditType: product.creditType,
-          videoType: product.videoType || '',
-          checkoutUrl,
-          metadata: customData,
-          variantId: product.variantId,
-          expiresAt: null
-        });
-        console.log(`[DB] ✅ Checkout session logged: ${checkoutId}`);
-      }
-    } catch (firestoreError) {
-      console.warn('[DB WARN] Firestore not available for logging:', firestoreError.message);
-      // Don't fail the request if Firestore is down
-    }
-
-    // 7. Final JSON Response
     console.log(`[INFO] ✅ Checkout session ready: ${checkoutId}`);
     console.log(`[INFO] 🔗 Checkout URL: ${checkoutUrl}`);
     
+    // 7. Final JSON Response
     const response = {
       success: true,
       checkoutUrl: checkoutUrl,
@@ -474,18 +456,18 @@ router.post('/', async (req, res) => {
         price: product.displayPrice,
         credits: product.credits,
         variantId: variantId,
-        description: product.description
+        description: product.description,
+        lemonVariantId: product.variantId
       },
       metadata: {
-        user_id: metadata?.userId || 'anonymous',
+        user_id: authInfo.userId,
         product_key: variantId
       },
-      webhook_url: `${process.env.NEXT_PUBLIC_APP_URL || 'https://soundswap.live'}/api/lemon-webhook`,
-      note: 'Redirect user to this checkoutUrl to complete payment',
+      note: 'Redirect user to checkoutUrl to complete payment',
       timestamp: new Date().toISOString()
     };
     
-    console.log(`[INFO] 📤 Sending response:`, JSON.stringify(response, null, 2));
+    console.log(`[INFO] 📤 Sending successful response`);
     return res.status(200).json(response);
 
   } catch (error) {
@@ -502,19 +484,20 @@ router.post('/', async (req, res) => {
   }
 });
 
-// ==================== SIMPLE TEST ENDPOINT ====================
+// ==================== TEST ENDPOINTS ====================
 
+// Simple test endpoint
 router.post('/test', async (req, res) => {
   console.log('[TEST] 🧪 Testing checkout endpoint');
   
   try {
-    // Always return JSON
     res.json({
       success: true,
       message: 'Lemon Squeezy checkout endpoint is working',
       timestamp: new Date().toISOString(),
       requestBody: req.body || 'No body',
-      environment: process.env.NODE_ENV || 'development'
+      environment: process.env.NODE_ENV || 'development',
+      endpoint: '/api/create-checkout/test'
     });
   } catch (error) {
     console.error('[TEST] ❌ Error in test endpoint:', error);
@@ -522,373 +505,6 @@ router.post('/test', async (req, res) => {
       success: false,
       error: 'Test endpoint error',
       message: error.message,
-      timestamp: new Date().toISOString()
-    });
-  }
-});
-
-// ==================== DEBUG ENDPOINT ====================
-
-router.get('/debug', (req, res) => {
-  console.log('[DEBUG] 🔍 Debug endpoint called');
-  
-  try {
-    const config = {
-      lemonSqueezyApiKey: process.env.LEMON_SQUEEZY_API_KEY ? 
-        `${process.env.LEMON_SQUEEZY_API_KEY.substring(0, 10)}...` : 'Not configured',
-      lemonSqueezyStoreId: process.env.LEMON_SQUEEZY_STORE_ID || 'Not set',
-      nodeEnv: process.env.NODE_ENV || 'development',
-      appUrl: process.env.NEXT_PUBLIC_APP_URL || 'Not set',
-      firebaseLoaded: isFirebaseLoaded,
-      timestamp: new Date().toISOString(),
-      products: Object.keys(PRODUCT_CATALOG)
-    };
-    
-    console.log('[DEBUG] Configuration:', config);
-    
-    res.json({
-      success: true,
-      config,
-      endpoints: {
-        createCheckout: 'POST /',
-        test: 'POST /test',
-        status: 'GET /status',
-        debug: 'GET /debug'
-      },
-      timestamp: new Date().toISOString()
-    });
-  } catch (error) {
-    console.error('[DEBUG] ❌ Error in debug endpoint:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Debug endpoint error',
-      timestamp: new Date().toISOString()
-    });
-  }
-});
-
-// ==================== TRANSACTIONS ENDPOINT ====================
-
-router.get('/transactions/:userId', async (req, res) => {
-  try {
-    const { userId } = req.params;
-    const { limit = 50, type } = req.query;
-    
-    console.log(`[INFO] 📋 Fetching transactions for user: ${userId}, limit: ${limit}, type: ${type || 'all'}`);
-    
-    // Ensure Firebase is loaded
-    await loadFirebase();
-    
-    if (!db) {
-      console.error('[ERROR] ❌ Firebase Firestore not available');
-      return res.status(503).json({ 
-        success: false, 
-        error: 'Database unavailable',
-        timestamp: new Date().toISOString()
-      });
-    }
-
-    let query = db.collection('credit_transactions')
-      .where('userId', '==', userId)
-      .orderBy('date', 'desc')
-      .limit(parseInt(limit) || 50);
-    
-    if (type) {
-      query = query.where('creditType', '==', type);
-    }
-    
-    const snapshot = await query.get();
-    const transactions = snapshot.docs.map(doc => {
-      const data = doc.data();
-      return {
-        id: doc.id,
-        ...data,
-        date: data.date && typeof data.date.toDate === 'function' 
-              ? data.date.toDate().toISOString() 
-              : (data.date || new Date().toISOString())
-      };
-    });
-    
-    console.log(`[INFO] ✅ Found ${transactions.length} transactions for user ${userId}`);
-    
-    return res.json({ 
-      success: true,
-      transactions,
-      count: transactions.length,
-      userId,
-      timestamp: new Date().toISOString()
-    });
-  } catch (error) {
-    console.error('[ERROR] ❌ Error fetching transactions:', error);
-    return res.status(500).json({ 
-      success: false,
-      error: error.message || 'Internal server error',
-      timestamp: new Date().toISOString()
-    });
-  }
-});
-
-// ==================== PURCHASES ENDPOINT ====================
-
-router.get('/purchases/:userId', async (req, res) => {
-  try {
-    const { userId } = req.params;
-    const { limit = 20 } = req.query;
-    
-    console.log(`[INFO] 🛍️ Fetching purchases for user: ${userId}, limit: ${limit}`);
-    
-    // Ensure Firebase is loaded
-    await loadFirebase();
-    
-    if (!db) {
-      console.error('[ERROR] ❌ Firebase Firestore not available');
-      return res.status(503).json({ 
-        success: false, 
-        error: 'Database unavailable',
-        timestamp: new Date().toISOString()
-      });
-    }
-    
-    const query = db.collection('purchases')
-      .where('userId', '==', userId)
-      .orderBy('date', 'desc')
-      .limit(parseInt(limit) || 20);
-    
-    const snapshot = await query.get();
-    const purchases = snapshot.docs.map(doc => {
-      const data = doc.data();
-      return {
-        id: doc.id,
-        ...data,
-        date: data.date && typeof data.date.toDate === 'function'
-              ? data.date.toDate().toISOString() 
-              : (data.date || new Date().toISOString())
-      };
-    });
-    
-    console.log(`[INFO] ✅ Found ${purchases.length} purchases for user ${userId}`);
-    
-    return res.json({
-      success: true,
-      purchases,
-      count: purchases.length,
-      userId,
-      timestamp: new Date().toISOString()
-    });
-  } catch (error) {
-    console.error('[ERROR] ❌ Error fetching purchases:', error);
-    return res.status(500).json({ 
-      success: false, 
-      error: error.message || 'Internal server error',
-      timestamp: new Date().toISOString()
-    });
-  }
-});
-
-// ==================== HELPER ENDPOINTS ====================
-
-// Get available products
-router.get('/products', (req, res) => {
-  try {
-    console.log('[INFO] 📦 Fetching product catalog');
-    
-    const { type, creditType } = req.query;
-    let products = Object.values(PRODUCT_CATALOG);
-    
-    if (type) {
-      products = products.filter(p => p.type === type);
-    }
-    
-    if (creditType) {
-      products = products.filter(p => p.creditType === creditType);
-    }
-    
-    res.json({
-      success: true,
-      products: products,
-      count: products.length,
-      timestamp: new Date().toISOString(),
-      note: 'All products are one-time purchases'
-    });
-  } catch (error) {
-    console.error('[ERROR] ❌ Error fetching products:', error.message);
-    res.status(500).json({
-      success: false,
-      error: error.message,
-      timestamp: new Date().toISOString()
-    });
-  }
-});
-
-// Get specific product
-router.get('/products/:productId', (req, res) => {
-  try {
-    const { productId } = req.params;
-    console.log(`[INFO] 📦 Fetching product: ${productId}`);
-    
-    const product = PRODUCT_CATALOG[productId];
-    
-    if (!product) {
-      return res.status(404).json({
-        success: false,
-        error: `Product not found: ${productId}`,
-        availableProducts: Object.keys(PRODUCT_CATALOG),
-        timestamp: new Date().toISOString()
-      });
-    }
-    
-    res.json({
-      success: true,
-      product: product,
-      timestamp: new Date().toISOString()
-    });
-  } catch (error) {
-    console.error('[ERROR] ❌ Error fetching product:', error.message);
-    res.status(500).json({
-      success: false,
-      error: error.message,
-      timestamp: new Date().toISOString()
-    });
-  }
-});
-
-// ==================== STATUS ENDPOINT (UPDATED) ====================
-
-router.get('/status', async (req, res) => {
-  console.log('[INFO] 🔍 Checking Lemon Squeezy service status');
-  
-  try {
-    // Test Lemon Squeezy API connection
-    let lemonTest = { connected: false, error: null };
-    const lemonClient = getLemonClient();
-    
-    if (lemonClient) {
-      try {
-        lemonTest.connected = true;
-        lemonTest.message = 'Lemon Squeezy API client initialized successfully';
-      } catch (testError) {
-        lemonTest.error = testError.message;
-      }
-    }
-    
-    const statusResponse = {
-      success: true,
-      service: 'lemon-squeezy',
-      status: 'operational',
-      configuration: {
-        lemonSqueezyApiKey: process.env.LEMON_SQUEEZY_API_KEY ? 'configured' : 'missing',
-        lemonSqueezyStoreId: process.env.LEMON_SQUEEZY_STORE_ID ? 'configured' : 'missing',
-        lemonSqueezyWebhookSecret: process.env.LEMON_SQUEEZY_WEBHOOK_SECRET ? 'configured' : 'missing',
-        firebaseAuth: auth ? 'available' : 'not_loaded',
-        firebaseFirestore: db ? 'available' : 'not_loaded',
-        environment: process.env.NODE_ENV || 'development',
-        lazyLoading: 'enabled'
-      },
-      services: {
-        lemonSqueezyApi: {
-          status: process.env.LEMON_SQUEEZY_API_KEY ? 'configured' : 'not_configured',
-          message: process.env.LEMON_SQUEEZY_API_KEY ? '✅ API key configured' : '⚠️ API key not configured',
-          test: lemonTest
-        },
-        firebaseAuth: {
-          loaded: isFirebaseLoaded,
-          available: auth !== null,
-          message: auth ? '✅ Firebase auth ready' : '⚠️ Firebase auth not loaded'
-        },
-        firebaseFirestore: {
-          loaded: db !== null,
-          message: db ? '✅ Firestore ready' : '⚠️ Firestore not loaded'
-        },
-        productCatalog: {
-          count: Object.keys(PRODUCT_CATALOG).length,
-          message: `✅ ${Object.keys(PRODUCT_CATALOG).length} products available`
-        },
-        webhookIntegration: {
-          status: 'CONNECTED',
-          route: '/api/lemon-webhook',
-          message: '✅ Using existing webhook at routes/lemon-webhook.js'
-        }
-      },
-      endpoints: {
-        createCheckout: 'POST /api/create-checkout',
-        getTransactions: 'GET /api/create-checkout/transactions/:userId',
-        getPurchases: 'GET /api/create-checkout/purchases/:userId',
-        creditCheck: 'GET /api/deduct-credits/credits/:userId',
-        creditDeduction: 'POST /api/deduct-credits/credits/:userId',
-        webhook: 'POST /api/lemon-webhook',
-        status: 'GET /api/create-checkout/status'
-      },
-      productTypes: {
-        coverArt: Object.values(PRODUCT_CATALOG).filter(p => p.creditType === 'coverArt').length,
-        lyricVideo: Object.values(PRODUCT_CATALOG).filter(p => p.creditType === 'lyricVideo').length,
-        total: Object.keys(PRODUCT_CATALOG).length
-      },
-      systemInfo: {
-        version: '2.0.0',
-        environment: process.env.NODE_ENV || 'development',
-        oneTimePurchases: 'enabled',
-        transactionHistory: 'available',
-        purchaseHistory: 'available'
-      },
-      timestamp: new Date().toISOString()
-    };
-    
-    console.log('[INFO] ✅ Status check complete');
-    return res.json(statusResponse);
-    
-  } catch (error) {
-    console.error('[ERROR] ❌ Status endpoint error:', error.message);
-    return res.status(500).json({
-      success: false,
-      service: 'lemon-squeezy',
-      status: 'error',
-      error: 'Internal server error',
-      timestamp: new Date().toISOString()
-    });
-  }
-});
-
-// Test checkout creation (for debugging)
-router.post('/test-checkout', async (req, res) => {
-  try {
-    const { variantId } = req.body;
-    
-    if (!variantId) {
-      return res.status(400).json({
-        success: false,
-        error: 'variantId is required'
-      });
-    }
-    
-    const product = PRODUCT_CATALOG[variantId];
-    if (!product) {
-      return res.status(400).json({
-        success: false,
-        error: 'Invalid product variant',
-        availableProducts: Object.keys(PRODUCT_CATALOG)
-      });
-    }
-    
-    // Create a mock checkout URL for testing
-    const mockCheckoutUrl = `https://soundswap.lemonsqueezy.com/checkout/buy/test_${Date.now()}`;
-    const mockCheckoutId = `test_checkout_${Date.now()}`;
-    
-    console.log(`[TEST] 🧪 Creating test checkout for product: ${product.name}`);
-    
-    res.json({
-      success: true,
-      checkoutUrl: mockCheckoutUrl,
-      checkoutId: mockCheckoutId,
-      product: product,
-      note: 'This is a test checkout - no actual payment will be processed',
-      timestamp: new Date().toISOString()
-    });
-    
-  } catch (error) {
-    console.error('[ERROR] ❌ Test checkout error:', error.message);
-    res.status(500).json({
-      success: false,
-      error: error.message,
       timestamp: new Date().toISOString()
     });
   }
@@ -908,7 +524,17 @@ router.get('/test-lemon', async (req, res) => {
       });
     }
     
-    // Try to create a simple test session
+    const storeId = process.env.LEMON_SQUEEZY_STORE_ID;
+    
+    if (!storeId) {
+      return res.status(500).json({
+        success: false,
+        error: 'Store ID not configured',
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    // Simple test payload
     const testPayload = {
       data: {
         type: 'checkouts',
@@ -922,7 +548,8 @@ router.get('/test-lemon', async (req, res) => {
               userId: 'test-user',
               productKey: 'cover_starter',
               creditType: 'coverArt',
-              credits: '10'
+              credits: '10',
+              test: true
             },
             email: 'test@soundswap.live',
             name: 'Test User'
@@ -931,7 +558,7 @@ router.get('/test-lemon', async (req, res) => {
         },
         relationships: {
           store: {
-            data: { type: 'stores', id: process.env.LEMON_SQUEEZY_STORE_ID }
+            data: { type: 'stores', id: storeId }
           },
           variant: {
             data: { type: 'variants', id: '1256036' } // cover_starter variant
@@ -940,6 +567,7 @@ router.get('/test-lemon', async (req, res) => {
       }
     };
     
+    console.log('[TEST] 📤 Sending test request to Lemon Squeezy...');
     const result = await lemonClient.createCheckoutSession(testPayload);
     
     res.json({
@@ -947,7 +575,7 @@ router.get('/test-lemon', async (req, res) => {
       message: 'Lemon Squeezy API test successful',
       checkoutId: result.data?.id,
       url: result.data?.attributes?.url,
-      rawResponse: process.env.NODE_ENV === 'development' ? result : undefined,
+      testMode: result.data?.attributes?.test_mode || false,
       timestamp: new Date().toISOString()
     });
     
@@ -964,138 +592,148 @@ router.get('/test-lemon', async (req, res) => {
 
 // Health check endpoint
 router.get('/health', (req, res) => {
+  const configStatus = {
+    lemonSqueezyApiKey: process.env.LEMON_SQUEEZY_API_KEY ? 
+      `Configured (${process.env.LEMON_SQUEEZY_API_KEY.substring(0, 10)}...)` : 
+      'Missing',
+    lemonSqueezyStoreId: process.env.LEMON_SQUEEZY_STORE_ID || 'Missing',
+    environment: process.env.NODE_ENV || 'development',
+    productsAvailable: Object.keys(PRODUCT_CATALOG).length
+  };
+  
+  console.log('[HEALTH] ❤️ Health check:', configStatus);
+  
   res.json({
     success: true,
     status: 'healthy',
     timestamp: new Date().toISOString(),
-    environment: process.env.NODE_ENV || 'development',
     service: 'lemon-squeezy-checkout',
-    products: Object.keys(PRODUCT_CATALOG).length
+    config: configStatus
   });
 });
 
-// Deduct credits endpoint (for internal use)
-router.post('/deduct-credits', async (req, res) => {
+// Debug endpoint
+router.get('/debug', (req, res) => {
+  console.log('[DEBUG] 🔍 Debug endpoint called');
+  
   try {
-    const { userId, type, amount = 1, description } = req.body;
+    const config = {
+      lemonSqueezyApiKey: process.env.LEMON_SQUEEZY_API_KEY ? 
+        `${process.env.LEMON_SQUEEZY_API_KEY.substring(0, 10)}...` : 'Not configured',
+      lemonSqueezyStoreId: process.env.LEMON_SQUEEZY_STORE_ID || 'Not set',
+      nodeEnv: process.env.NODE_ENV || 'development',
+      appUrl: process.env.NEXT_PUBLIC_APP_URL || 'Not set',
+      timestamp: new Date().toISOString(),
+      products: Object.keys(PRODUCT_CATALOG)
+    };
     
-    console.log(`[CREDITS] 🔻 Deducting ${amount} ${type} credits for user: ${userId}`);
+    console.log('[DEBUG] Configuration:', config);
     
-    if (!userId || !type) {
-      return res.status(400).json({
-        success: false,
-        error: 'Missing userId or type',
-        timestamp: new Date().toISOString()
-      });
-    }
-    
-    // Load Firebase
-    await loadFirebase();
-    
-    if (!db) {
-      return res.status(503).json({
-        success: false,
-        error: 'Database unavailable',
-        timestamp: new Date().toISOString()
-      });
-    }
-    
-    const userRef = db.collection('users').doc(userId);
-    const userDoc = await userRef.get();
-    
-    if (!userDoc.exists) {
-      return res.status(404).json({
-        success: false,
-        error: 'User not found',
-        timestamp: new Date().toISOString()
-      });
-    }
-    
-    const userData = userDoc.data();
-    
-    // Determine credit field
-    let creditField;
-    let currentCredits;
-    
-    if (type === 'coverArt') {
-      creditField = 'coverArtCredits';
-      currentCredits = userData.coverArtCredits || userData.points || 0;
-    } else if (type === 'lyricVideo') {
-      creditField = 'lyricVideoCredits';
-      currentCredits = userData.lyricVideoCredits || 0;
-    } else {
-      return res.status(400).json({
-        success: false,
-        error: 'Invalid credit type. Use "coverArt" or "lyricVideo"',
-        timestamp: new Date().toISOString()
-      });
-    }
-    
-    // Check if user has enough credits
-    if (currentCredits < amount) {
-      return res.status(400).json({
-        success: false,
-        error: `Insufficient ${type} credits. Available: ${currentCredits}, Required: ${amount}`,
-        timestamp: new Date().toISOString()
-      });
-    }
-    
-    // Update credits
-    const newCredits = currentCredits - amount;
-    await userRef.update({
-      [creditField]: newCredits,
-      updatedAt: new Date()
-    });
-    
-    // Log transaction
-    await db.collection('credit_transactions').add({
-      userId,
-      type: 'deduction',
-      creditType: type,
-      amount: -amount,
-      description: description || `${type} credit deduction`,
-      previousBalance: currentCredits,
-      newBalance: newCredits,
-      date: new Date(),
-      createdAt: new Date()
-    });
-    
-    console.log(`[CREDITS] ✅ Deducted ${amount} ${type} credits from ${userId}. New balance: ${newCredits}`);
-    
-    return res.json({
+    res.json({
       success: true,
-      userId,
-      creditType: type,
-      amountDeducted: amount,
-      newBalance: newCredits,
-      previousBalance: currentCredits,
-      description: description || `${type} credit deduction`,
+      config,
+      endpoints: {
+        createCheckout: 'POST /',
+        test: 'POST /test',
+        testLemon: 'GET /test-lemon',
+        health: 'GET /health',
+        debug: 'GET /debug'
+      },
       timestamp: new Date().toISOString()
     });
-    
   } catch (error) {
-    console.error('[ERROR] ❌ Error deducting credits:', error);
-    return res.status(500).json({
+    console.error('[DEBUG] ❌ Error in debug endpoint:', error);
+    res.status(500).json({
       success: false,
-      error: error.message || 'Internal server error',
+      error: 'Debug endpoint error',
       timestamp: new Date().toISOString()
     });
   }
 });
+
+// Status endpoint
+router.get('/status', async (req, res) => {
+  console.log('[INFO] 🔍 Checking Lemon Squeezy service status');
+  
+  try {
+    // Test Lemon Squeezy API connection
+    let lemonTest = { connected: false, error: null };
+    const lemonClient = getLemonClient();
+    
+    if (lemonClient) {
+      try {
+        lemonTest.connected = true;
+        lemonTest.message = 'Lemon Squeezy API client initialized successfully';
+      } catch (testError) {
+        lemonTest.error = testError.message;
+      }
+    }
+    
+    const statusResponse = {
+      success: true,
+      service: 'lemon-squeezy-checkout',
+      status: 'operational',
+      configuration: {
+        lemonSqueezyApiKey: process.env.LEMON_SQUEEZY_API_KEY ? 'configured' : 'missing',
+        lemonSqueezyStoreId: process.env.LEMON_SQUEEZY_STORE_ID ? 'configured' : 'missing',
+        environment: process.env.NODE_ENV || 'development'
+      },
+      services: {
+        lemonSqueezyApi: {
+          status: process.env.LEMON_SQUEEZY_API_KEY ? 'configured' : 'not_configured',
+          message: process.env.LEMON_SQUEEZY_API_KEY ? '✅ API key configured' : '⚠️ API key not configured',
+          test: lemonTest
+        },
+        productCatalog: {
+          count: Object.keys(PRODUCT_CATALOG).length,
+          message: `✅ ${Object.keys(PRODUCT_CATALOG).length} products available`
+        }
+      },
+      productTypes: {
+        coverArt: Object.values(PRODUCT_CATALOG).filter(p => p.creditType === 'coverArt').length,
+        lyricVideo: Object.values(PRODUCT_CATALOG).filter(p => p.creditType === 'lyricVideo').length,
+        total: Object.keys(PRODUCT_CATALOG).length
+      },
+      systemInfo: {
+        version: '2.0.0',
+        environment: process.env.NODE_ENV || 'development',
+        oneTimePurchases: 'enabled'
+      },
+      timestamp: new Date().toISOString()
+    };
+    
+    console.log('[INFO] ✅ Status check complete');
+    return res.json(statusResponse);
+    
+  } catch (error) {
+    console.error('[ERROR] ❌ Status endpoint error:', error.message);
+    return res.status(500).json({
+      success: false,
+      service: 'lemon-squeezy-checkout',
+      status: 'error',
+      error: 'Internal server error',
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+// ==================== STARTUP LOGS ====================
 
 console.log('[INFO] ✅ Lemon Squeezy API Key:', process.env.LEMON_SQUEEZY_API_KEY ? 
   `Configured (${process.env.LEMON_SQUEEZY_API_KEY.substring(0, 10)}...)` : 
   'Not Configured');
 console.log('[INFO] 🏪 Lemon Squeezy Store ID:', process.env.LEMON_SQUEEZY_STORE_ID || 'Not Configured');
 console.log('[INFO] 📊 Products Available:', Object.keys(PRODUCT_CATALOG).length);
-console.log('[INFO] 🎯 Main Endpoint: POST /api/create-checkout');
-console.log('[INFO] 🧪 Test Endpoint: POST /api/create-checkout/test');
-console.log('[INFO] 🔍 Debug Endpoint: GET /api/create-checkout/debug');
-console.log('[INFO] 📋 Status Endpoint: GET /api/create-checkout/status');
-console.log('[INFO] 📋 Transactions Endpoint: GET /api/create-checkout/transactions/:userId');
-console.log('[INFO] 🛍️ Purchases Endpoint: GET /api/create-checkout/purchases/:userId');
-console.log('[INFO] 🔄 Webhook Integration: Using existing routes/lemon-webhook.js');
-console.log('[INFO] 📍 Webhook URL: https://soundswap-backend.vercel.app/api/lemon-webhook');
+console.log('[INFO] 🎯 Main Endpoint: POST /');
+console.log('[INFO] 🧪 Test Endpoint: POST /test');
+console.log('[INFO] 🔍 Debug Endpoint: GET /debug');
+console.log('[INFO] 📋 Status Endpoint: GET /status');
 console.log('[INFO] ✅ All endpoints return proper JSON responses');
+console.log('[INFO] 🔧 Environment:', process.env.NODE_ENV || 'development');
+console.log('[INFO] 🌐 CORS Enabled for:', [
+  'http://localhost:3000',
+  'https://soundswap.live',
+  '*.vercel.app'
+].join(', '));
 
 export default router;
